@@ -1,56 +1,58 @@
-import xlrd
+from openpyxl import load_workbook
 import numpy as np
 
 
 class Assay:
-	def __init__(self, path, resolution=1, contents={}):
+	def __init__(self, path, resolution=1, contents=None):
 		"""Clariostar plate reader data as saved by Mars.
 
 		If contents is given, it must be a mapping from strings to well indices.
 		"""
-		DEACTIVATE_INFO_CELL = 10, 0
-		TIME_ROW = 13
+		DEACTIVATE_INFO_CELL = 11, 1
+		TIME_ROW = 14
 		CONTENT_COL = 1
-		SAMPLE_FIRST_ROW = 14
-		SAMPLE_FIRST_COL = 2
+		SAMPLE_FIRST_ROW = 15
+		SAMPLE_FIRST_COL = 3
 
-		book = xlrd.open_workbook(path)
-		data = book.sheet_by_index(0)
+		self.path = path
 
-		SAMPLE_LAST_ROW = len(data.col_values(SAMPLE_FIRST_COL))
+		wb = load_workbook(self.path)
+		ws = wb["Table All Cycles"]
+
+		SAMPLE_LAST_ROW = ws.max_row
 
 		# read deactivated wells from header info
 		self.deactivated = [
 			well.strip()
-			for well in data.cell(*DEACTIVATE_INFO_CELL).value.split(':')[-1].split(';')
+			for well in ws.cell(*DEACTIVATE_INFO_CELL).value.split(':')[-1].split(';')
 		]
 
 		# time and raw read information (incl. deactivated wells)
-		self.times = np.array(data.row_values(TIME_ROW)[2::resolution])
+		self.times = np.array([ cell.value for cell in np.array(ws[TIME_ROW][2::resolution])])
 		self.wells = np.array([
-			data.row_values(y)[2::resolution]
-			for y in range(SAMPLE_FIRST_ROW, SAMPLE_LAST_ROW)
+			[cell.value for cell in ws[y][2::resolution]]
+			for y in range(SAMPLE_FIRST_ROW, SAMPLE_LAST_ROW+1)
 		])
 
 		# mapping of content to well indices (excl. deactivated wells)
 		if not contents:
 			contents = {}
-			for idx, content in enumerate(
-				data.col_values(CONTENT_COL)[SAMPLE_FIRST_ROW: SAMPLE_LAST_ROW]
-			):
-				if data.cell(SAMPLE_FIRST_ROW+idx, 0).value in self.deactivated:
-					continue
+			for idx, row in enumerate(ws[SAMPLE_FIRST_ROW: SAMPLE_LAST_ROW]):
+				if row[0].value in self.deactivated: continue
+				content = row[CONTENT_COL].value
 				contents[content] = contents.get(content, []) + [idx]
 		self.contents = contents
 
+	def __repr__(self):
+		return f'<Assay "{self.path}">'
+
 
 if __name__ == '__main__':
-	
 	from scipy.linalg import block_diag
 	from scipy.integrate import solve_ivp
 	from matplotlib import pyplot as plt
 	from lmfit import create_params, Parameter, minimize, fit_report
-	
+
 	assay = Assay("./Clariostar - Raw Data Output (4 repeats with excluded wells).xlsx", resolution=1)
 	
 	initial = np.array([
