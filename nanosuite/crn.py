@@ -49,6 +49,15 @@ class CRN:
             for rhs in self.complexes
         ])
 
+    def scale_concentration_unit(self, factor):
+        """Scale reaction rate constants to account for a change in concentration unit
+        
+        For example, if current rate constants are given in M^-1s^-1, the call
+        crn.scale_concentration_unit(1e-9) will rescale those to nM^-1s^-1.
+        """
+        for reaction, rate in self.reactions.items():
+            rate.value *= factor**(len(reaction[0])-1)
+
     def add_reaction(self, lhs, rhs, rate):
         if rate.name in self.parameters:
             raise ValueError(f"Parameter '{rate.name}' is already used.")
@@ -120,25 +129,48 @@ class CRN:
     @classmethod
     def from_string(cls, string, species=None):
         crn = cls(species=species)
-        idx = 0 # reaction index
-        for line in string.split('\n'):
-            reaction, sep, rate_constant = line.partition(';')
-            if '->' not in reaction:
-                continue
-            lhs, rhs = cls._parse_reaction(reaction)
-            # format of rate_constant string: [identifier][=][float-literal]
-            param, equals, val = rate_constant.partition('=')
-            if equals:
-                constant = Parameter(param.strip(), value=float(val), vary=True, min=0)
-            else:
-                try:
-                    val = float(param)
-                    constant = Parameter(f"k{idx}", value=val, vary=True, min=0)
-                    idx += 1 # FIXME: make sure parameter name is not taken
-                except ValueError:
-                    constant = Parameter(param.strip(), value=0, vary=True, min=0)
 
+        # parse reaction
+        reactions = [] # reaction list: (lhs, rhs, name, val)
+        for raw_line in string.split('\n'):
+            line, _, __ = raw_line.partition('#') # remove comments
+            line = line.strip()
+            if not line:
+                continue
+
+            reaction, sep, rate_constant = line.partition(';')
+
+            if '->' in reaction:
+                lhs, rhs = cls._parse_reaction(reaction)
+                # format of rate_constant string: [identifier][=][float-literal]
+                if not sep:
+                    reactions.append((lhs, rhs, None, 1))
+                else:
+                    param, equals, val = rate_constant.partition('=')
+                    if equals:
+                        reactions.append((lhs, rhs, param.strip(), float(val)))
+                    else:
+                        try:
+                            val = float(param)
+                            reactions.append((lhs, rhs, None, val))
+                        except ValueError:
+                            reactions.append((lhs, rhs, param.strip(), 1))
+
+            else:
+                raise ValueError(f"Invalid input: {raw_line.strip()}")
+
+        # name unnamed constants
+        bound_names = [name for lhs, rhs, name, val in reactions]
+        free_names = [name for idx, _ in enumerate(reactions)
+                      if (name := f'k{idx}') not in bound_names]
+
+        # add reactions
+        for lhs, rhs, name, val in reactions:
+            if not name:
+                name = free_names.pop(0)
+            constant = Parameter(name, value=val, vary=True, min=0)
             crn.add_reaction(lhs, rhs, constant)
+
         return crn
 
     @classmethod
@@ -172,7 +204,7 @@ class CRN:
                 k_effective = kf*kb/(kf+kb)
 
                 constant = Parameter(f"k{idx}", value=k_effective, vary=True, min=0)
-                idx += 1 # FIXME: make sure parameter name is not taken
+                idx += 1
 
                 crn.add_reaction(lhs, rhs, constant)
 
