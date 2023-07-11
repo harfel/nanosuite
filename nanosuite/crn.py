@@ -2,7 +2,7 @@
 """
 import csv
 import re
-from typing import cast, List, Tuple, Dict, Optional, Callable
+from typing import cast, List, Tuple, Dict, Callable, Optional, Union
 import numpy as np
 import numpy.typing as npt
 from scipy.linalg import block_diag
@@ -41,11 +41,9 @@ class CRN:
         species: list of strings
         complexes: list of species, stoichiomentry pair tuples
         reactions: mapping of complex pairs to lmfit.Parameter instances
-        parameters: lmfit.Parameters objects containing all rate constant
     """
-    # FIXME: do not keep Parameter's in self.parameters and self.reactions
-    # FIXME: make lmfit.Parameter's optional and if possible transparent.
     # TODO: support open networks and buffered species
+    # TODO: make lmfit.Parameter's optional and if possible transparent.
 
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], Parameter]
@@ -65,7 +63,6 @@ class CRN:
         self.species: List[str] = species or []
         self.complexes: List[Reactants] = []
         self.reactions: Dict[Tuple[Reactants, Reactants], Parameter] = {}
-        self.parameters: Parameters = Parameters()
 
     def _repr_html_(self) -> str:
         def reactants(multiset):
@@ -149,7 +146,7 @@ class CRN:
         products: tuple of species names
         rate: lmfit.Parameter of the rate constant
         """
-        if rate.name in self.parameters:
+        if any(current_rate.name == rate.name for current_rate in self.reactions.values()):
             raise ValueError(f"Parameter '{rate.name}' is already used.")
 
         # collect species and complexes
@@ -162,7 +159,44 @@ class CRN:
                 self.complexes.append(compl)
 
         self.reactions[educts, products] = rate
-        self.parameters[rate.name] = rate
+
+    def parameterize(self, params: Parameters=None, **kwds: Dict[str, Union[float, Parameter]]):
+        """Parameterize rate constants
+
+        Parameters
+        ----------
+        params: an lmfit.Parameters objects
+        kwds: additional parameters names with either float or Parameter instances
+        """
+        kwds = {
+            kwd_name: kwd_val if isinstance(kwd_val, Parameter) else Parameter(kwd_name, kwd_val)
+            for kwd_name, kwd_val in kwds.items()
+        }
+        if params is None:
+            params = Parameters(**kwds)
+        else:
+            params.update(Parameters(**kwds))
+
+        for reaction, rate_const in self.reactions.items():
+            if (name := rate_const.name) in params:
+                self.reactions[reaction] = params[name]
+
+    def __getitem__(self, name: str) -> Parameter:
+        for _, rate_const in self.reactions.items():
+            if rate_const.name == name:
+                return rate_const
+        raise KeyError(f"No parameter '{name}'")
+
+    def __setitem__(self, name: str, value: Union[float, Parameter]):
+        for reaction, rate_const in self.reactions.items():
+            if rate_const.name == name:
+                if isinstance(value, Parameter):
+                    self.reactions[reaction] = value
+                else:
+                    self.reactions[reaction] = Parameter(name, value)
+                break
+        raise KeyError(f"No parameter '{name}'")
+
 
     def rate_law(self, repeats: int=1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -202,7 +236,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: np.ndarray,
-                  t0: float=0., t_eval: np.ndarray=None) -> np.ndarray:     # pylint: disable=invalid-name
+                  t0: float=0., t_eval: np.ndarray=None) -> np.ndarray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -382,8 +416,3 @@ class CRN:
                 crn.add_reaction(educts, products, constant)
 
             return crn
-
-if __name__ == '__main__':
-    print(CRN.from_string("""
-        2H2O + 6*CO_2 -> C6H12O6 + 6  O_2
-    """).reactions)
