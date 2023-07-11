@@ -1,20 +1,78 @@
-from warnings import warn
+"""Chemical reaction networks
+"""
 import csv
 import re
+from typing import cast, List, Tuple, Dict, Optional, Callable
 import numpy as np
+import numpy.typing as npt
 from scipy.linalg import block_diag
 from scipy.integrate import solve_ivp
 from lmfit import Parameter, Parameters
 
+Reactants = Tuple[Tuple[str, int], ...]
 
 class CRN:
-    def __init__(self, species=None):
-        self.species = species or []
-        self.complexes = []
-        self.reactions = {}
-        self.parameters = Parameters()
+    """Chemical reaction network
 
-    def _repr_html_(self):
+    CRN represents a chemical reaction network, i.e. reactions among
+    multisets of species. Kinetics are assumed to follow mass action
+    kinetics. CRN supports only irreversible reactions. To model
+    reversible reactions, express them as two separate forward and
+    backward reactions.
+
+    There are several ways to create a new reaction network:
+
+    >>> from lmfit import Parameter
+    >>> crn = CRN()
+    >>> crn.add_reaction((("A", 1), ("B", 1)), (("C", 1),),
+                         Parameter('k_forward', 0.1))
+    >>> crn.add_reaction((("C", 1),), (("A", 1) , ("B", 1)),
+                         Parameter('k_backward', 1.0))
+
+    This is equivalent to the more convenient function:
+
+    >>> crn = CRN.from_string(\"\"\"
+    ...    A + B -> C; k_forward = 0.1
+    ...    C -> A + B; k_backward = 1.0
+    ... \"\"\")
+    
+    Instance attributes
+    -------------------
+        species: list of strings
+        complexes: list of species, stoichiomentry pair tuples
+        reactions: mapping of complex pairs to lmfit.Parameter instances
+        parameters: lmfit.Parameters objects containing all rate constant
+    """
+    # FIXME: do not keep Parameter's in self.parameters and self.reactions
+    # FIXME: make lmfit.Parameter's optional and if possible transparent.
+    # TODO: support open networks and buffered species
+
+    complexes: List[Reactants]
+    reactions: Dict[Tuple[Reactants, Reactants], Parameter]
+
+    def __init__(self, species: List[str]=None):
+        """Create an empty reaction network.
+
+        To populate a new CRN with reactions, use crn.add_reaction.
+    
+        Parameters
+        ----------
+        species: list of strings
+            If species names are provided, they determine the order of
+            the species in the state vector used in crn.integrate and
+            crn.rate_law
+        """
+        self.species: List[str] = species or []
+        self.complexes: List[Reactants] = []
+        self.reactions: Dict[Tuple[Reactants, Reactants], Parameter] = {}
+        self.parameters: Parameters = Parameters()
+
+    def _repr_html_(self) -> str:
+        def reactants(multiset):
+            return ' + '.join(
+                species if stoich == 1 else f'{stoich} {species}'
+                for species, stoich in multiset
+            )
         return (
             '<table>'
             + '\n'.join(
@@ -30,7 +88,17 @@ class CRN:
         )
 
     @property
-    def complex_graph(self):
+    def complex_graph(self) -> np.ndarray:
+        """Complex graph of the reaction network.
+
+        See van der Schaft et al. (2011) SIAM J Appl Math 73(2):953-973
+        for details.
+
+        Returns
+        -------
+        A 2D numpy.array where each row vector gives the stoichiometries
+        of each involved species.
+        """
         return np.array([
             [
                 sum(stoich for species, stoich in compl if species == name)
@@ -40,7 +108,17 @@ class CRN:
         ])
 
     @property
-    def complex_adjacency(self):
+    def complex_adjacency(self) -> np.ndarray:
+        """Augmented complex graph adjacency matrix.
+
+        See van der Schaft et al. (2011) SIAM J Appl Math 73(2):953-973
+        for details.
+
+        Returns
+        -------
+        A 2D numpy array denoting reaction rate constants among reaction
+        complexes.
+        """
         return np.array([
             [
                 self.reactions.get((educts, products), 0.)
@@ -49,16 +127,28 @@ class CRN:
             for products in self.complexes
         ])
 
-    def scale_concentration_unit(self, factor):
-        """Scale reaction rate constants to account for a change in concentration unit
-        
-        For example, if current rate constants are given in M^-1s^-1, the call
-        crn.scale_concentration_unit(1e-9) will rescale those to nM^-1s^-1.
+    def scale_concentration_unit(self, scale_factor: float):
+        """Scale reaction rate constants to new concentration unit.
+
+        For example, if current rate constants are given in M^-1s^-1, the
+        call crn.scale_concentration_unit(1e-9) will rescale those to
+        nM^-1s^-1.
         """
         for reaction, rate in self.reactions.items():
-            rate.value *= factor**(len(reaction[0])-1)
+            rate.value *= scale_factor**(len(reaction[0])-1)
 
-    def add_reaction(self, educts, products, rate):
+    def add_reaction(self, educts: Reactants, products: Reactants, rate: Parameter):
+        """Add a reaction to the network.
+
+        Any novel species that occur among the reactants are automatically
+        added to the set of species of the network.
+
+        Parameters
+        ----------
+        educts: tuple of species names
+        products: tuple of species names
+        rate: lmfit.Parameter of the rate constant
+        """
         if rate.name in self.parameters:
             raise ValueError(f"Parameter '{rate.name}' is already used.")
 
@@ -74,24 +164,27 @@ class CRN:
         self.reactions[educts, products] = rate
         self.parameters[rate.name] = rate
 
-    def rate_law(self, repeats=1):
-        """Mass action kinetics derived from complex graph
+    def rate_law(self, repeats: int=1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
+        """Derive mass action kinetic rate function.
 
-        This method generates mass action kinetic equations for a
-        chemical reaction network using the method of van der Schaft et al.
+        Internally, this method uses the method of van der Schaft et al.
         (2011) SIAM J Appl Math 73(2):953-973.
 
-        Params
-        ------
-        Z: the complex map, n x m numpy array
-        A: the augmented complex graph adjacency, m x x numpy array
+        Parameters
+        ----------
+        repeats: positive integer
+            Number of states for which rates should be calculated
+            simultaneously.
 
         Returns
         -------
-        A function with signature func(t, x) where
-        t is the time (not used) and x is a numpy array of length n
-        indicating the system state.
+        A function rate(time: float, state: numpy.array) that gives the
+        mass action rate vector for the given state. If repeat is given
+        and not equal to 1, the rate function will accept a matrix of states
+        and return rates for each provided state.
         """
+        # pylint: disable=invalid-name
+
         # calculate graph Laplacian
         sum_diag = np.diag(np.sum(self.complex_adjacency, axis=0))
         laplacian = sum_diag - self.complex_adjacency
@@ -102,22 +195,49 @@ class CRN:
         def kinetics(_, state):
             # complex_graph.T @ log(state) with convention 0*inf = 0
             with np.errstate(invalid='ignore'):
-                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=(state != 0))
+                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state!=0)
                 tmp = np.nansum(Z*tmp, axis=0)
             return -Z @ L @ np.exp(tmp)
 
         return kinetics
 
-    def integrate(self, initial_condition, t0=0., t_eval=None):
-        r = 1 if len(initial_condition.shape) == 1 else initial_condition.shape[0]
-        kinetics = self.rate_law(r)
+    def integrate(self, initial_condition: np.ndarray,
+                  t0: float=0., t_eval: np.ndarray=None) -> np.ndarray:     # pylint: disable=invalid-name
+        """Generate trajectory for given initial condition(s).
+
+        If the initial condition is a 1D vector, this returns a
+        2D numpy.array of states over the requested interval t_eval.
+
+        If the initial condition is a 2D matrix, the return value is
+        a 3D numpye.array, one trajectory for each initial condition.
+
+        Internally, the method uses scipy.integrate.solve_ivp with
+        default parameters.
+
+        Parameters
+        ----------
+        initial_condition: numpy.array
+            1D or 2D initial condition(s).
+        t_eval: numpy.array
+            Array of time points at which system states should be reported.
+            (Does not influence the numerical step width of integration).
+        t0: float
+            time point at which integration starts.
+
+        Returns
+        -------
+            2D or 2D numpy.array of trajectories. See above.
+        """
+        # TODO: reorder kwd args t_eval, t0
+        repeats = 1 if len(initial_condition.shape) == 1 else initial_condition.shape[0]
+        kinetics = self.rate_law(repeats)
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
         res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
                         t_eval=t_eval, vectorized=True)
         return res.y.reshape(initial_condition.shape+t_eval.shape)
 
     @staticmethod
-    def _parse_reaction(string):
+    def _parse_reaction(string: str) -> Tuple[Reactants, Reactants]:
         def parse_complex(string):
             reactants = {}
             pattern = re.compile(r' *([0-9]*) *\*? *([a-zA-Z_][a-zA-Z0-9_]*) *')
@@ -136,11 +256,37 @@ class CRN:
         return educts, products
 
     @classmethod
-    def from_string(cls, string, species=None):
+    def from_string(cls, string: str, species: List[str]=None):
+        """Construct a CRN from a string representation.
+
+        The format of the string definition is as follows: each reaction is
+        specified on a single line. The left hand side and the right hand
+        side (reaction complexes) of the reaction are separated by the
+        character sequence '->'. Reaction complexes use '+' to separate
+        individual chemical species names. Reactions can be followed by a
+        semicolon (;) after which the reaction rate constant is specified in
+        the format name=value. Both name and value are optional. If no value
+        is given, 1 is assumed. If no name is given, a generic name that is
+        not used in other reactions is provided. A hash character (#)
+        anywhere in the input marks the beginning of a comment that extends
+        until the end of the line. See the class docstring for an example.
+
+        Parameters
+        ----------
+        string: network deifnition.
+            See above.
+        species: list of species names
+            Sort order of species used in state vectors.
+        
+        Returns
+        -------
+        A CRN instance with the given reactions.
+        """
+        # TODO: support reversible reactions
         crn = cls(species=species)
 
         # parse reaction
-        reactions = [] # reaction list: (lhs, rhs, name, val)
+        reactions: List[Tuple[Reactants, Reactants, Optional[str], float]] = []
         for raw_line in string.split('\n'):
             line, _, __ = raw_line.partition('#') # remove comments
             line = line.strip()
@@ -150,42 +296,54 @@ class CRN:
             reaction, sep, rate_constant = line.partition(';')
 
             if '->' in reaction:
-                lhs, rhs = cls._parse_reaction(reaction)
+                educts, products = cls._parse_reaction(reaction)
                 # format of rate_constant string: [identifier][=][float-literal]
                 if not sep:
-                    reactions.append((lhs, rhs, None, 1))
+                    reactions.append((educts, products, None, 1))
                 else:
-                    param, equals, val = rate_constant.partition('=')
+                    param, equals, value = rate_constant.partition('=')
                     if equals:
-                        reactions.append((lhs, rhs, param.strip(), float(val)))
+                        reactions.append((educts, products, param.strip(), float(value)))
                     else:
                         try:
-                            val = float(param)
-                            reactions.append((lhs, rhs, None, val))
+                            reactions.append((educts, products, None, float(param)))
                         except ValueError:
-                            reactions.append((lhs, rhs, param.strip(), 1))
+                            reactions.append((educts, products, param.strip(), 1.))
 
             else:
                 raise ValueError(f"Invalid input: {raw_line.strip()}")
 
         # name unnamed constants
-        bound_names = [name for lhs, rhs, name, val in reactions]
-        free_names = [name for idx, _ in enumerate(reactions)
-                      if (name := f'k{idx}') not in bound_names]
+        bound_names = [name for educts, products, name, val in reactions]
+        free_names = [free_name for idx, _ in enumerate(reactions)
+                      if (free_name := f'k{idx}') not in bound_names]
 
         # add reactions
-        for lhs, rhs, name, val in reactions:
+        for educts, products, name, val in reactions:
             if not name:
                 name = free_names.pop(0)
             constant = Parameter(name, value=val, vary=True, min=0)
-            crn.add_reaction(lhs, rhs, constant)
+            crn.add_reaction(educts, products, constant)
 
         return crn
 
     @classmethod
-    def from_kinDA(cls, path, species=None):
+    # pylint: disable-next=invalid-name
+    def from_kinDA(cls, path: str, species: List[str]=None):
+        """Construct a CRN from a kinDA csv file.
+
+        See https://github.com/DNA-and-Natural-Algorithms-Group/KinDA.
+
+        Parameters
+        ----------
+        A kinDA csv file.
+
+        Returns
+        -------
+        A CRN instance of the kinDA generated network.
+        """
         crn = cls(species=species)
-        with open(path) as csvfile:
+        with open(path, encoding="utf-8") as csvfile:
             reader = csv.reader(csvfile)
 
             # skip to reaction rate data table
@@ -198,10 +356,10 @@ class CRN:
             idx = 0 # reaction index
             while len(row := next(reader)) == 5:
                 reaction, k_forward, _, k_backward = row[:4]
-                lhs, rhs = cls._parse_reaction(reaction)
+                educts, products = cls._parse_reaction(reaction)
 
                 # skip reactions that do not convert species
-                if lhs == rhs:
+                if educts == products:
                     continue
 
                 pattern = re.compile(r"\[Complex\(([^\)]*)\)\]")

@@ -1,70 +1,100 @@
+"""Tools to work with BMG Labtech MARS plate reader data analysis files.
+"""
 from openpyxl import load_workbook
 import numpy as np
 
 
 class Assay:
-	def __init__(self, path, resolution=1, contents=None):
-		"""Clariostar plate reader data as saved by Mars.
+    """Access to MARS data.
 
-		If contents is given, it must be a mapping from strings to well indices.
-		"""
-		DEACTIVATE_INFO_CELL = 11, 1
-		TIME_ROW = 14
-		CONTENT_COL = 1
-		SAMPLE_FIRST_ROW = 15
-		SAMPLE_FIRST_COL = 3
+    Assay instances have the following attributes:
 
-		self.path = path
+    Attributes
+    ----------
+    times: 1D numpy.array
+        Times at which measurements have been taken.
+    wells: 2D numpy.array
+        Fluorescence values at each well and time point.
+    contents:
+        mapping from strings to well indices. See Assay.__init__.
+    path: file path
+        Path of the associated xlsx file (read only).
+    deactivated: list of well indices
+        Wells that had been blanked by the user.
+    
+    """
+    def __init__(self, path, resolution=1, contents=None):
+        """Plate reader data as saved by MARS.
 
-		wb = load_workbook(self.path)
-		ws = wb["Table All Cycles"]
+        Parameters
+        ----------
+        path: file path
+        resolution: int (defaults to 1)
+            If set to n, every nth data point is added to the assay
+        contents: mapping of strings to well indices
+            If not given, the mapping is autimatically inferred from
+            the content column.
+        """
+        deactivated_info_cell = 11, 1
+        time_row = 14
+        content_col = 1
+        sample_first_row = 15
 
-		SAMPLE_LAST_ROW = ws.max_row
+        self.path = path
 
-		# read deactivated wells from header info
-		self.deactivated = [
-			well.strip()
-			for well in ws.cell(*DEACTIVATE_INFO_CELL).value.split(':')[-1].split(';')
-		]
+        workbook = load_workbook(self.path)
+        worksheet = workbook["Table All Cycles"]
 
-		# time and raw read information (incl. deactivated wells)
-		self.times = np.array([ cell.value for cell in np.array(ws[TIME_ROW][2::resolution])])
-		self.wells = np.array([
-			[cell.value for cell in ws[y][2::resolution]]
-			for y in range(SAMPLE_FIRST_ROW, SAMPLE_LAST_ROW+1)
-		], dtype=float)
+        sample_last_row = worksheet.max_row
 
-		# mapping of content to well indices (excl. deactivated wells)
-		if not contents:
-			contents = {}
-			for idx, row in enumerate(ws[SAMPLE_FIRST_ROW: SAMPLE_LAST_ROW]):
-				if row[0].value in self.deactivated: continue
-				content = row[CONTENT_COL].value
-				contents[content] = contents.get(content, []) + [idx]
-		self.contents = contents
+        # read deactivated wells from header info
+        self.deactivated = [
+            well.strip()
+            for well in worksheet.cell(*deactivated_info_cell).value.split(':')[-1].split(';')
+        ]
 
-		self._mean = None
-		self._std = None
+        # time and raw read information (incl. deactivated wells)
+        self.times = np.array([cell.value
+                               for cell in np.array(worksheet[time_row][2::resolution])])
+        self.wells = np.array([
+            [cell.value for cell in worksheet[y][2::resolution]]
+            for y in range(sample_first_row, sample_last_row+1)
+        ], dtype=float)
 
-	def __repr__(self):
-		return f'<Assay "{self.path}">'
+        # mapping of content to well indices (excl. deactivated wells)
+        if not contents:
+            contents = {}
+            for idx, row in enumerate(worksheet[sample_first_row: sample_last_row]):
+                if row[0].value in self.deactivated:
+                    continue
+                content = row[content_col].value
+                contents[content] = contents.get(content, []) + [idx]
+        self.contents = contents
 
-	@property
-	def mean(self):
-		if self._mean is None:
-			self._mean = np.array([
-				np.mean(self.wells[idx], axis=0)
-				for idx in self.contents.values()
-			])
-		return self._mean
+        self._mean = None
+        self._std = None
 
-	@property
-	def std(self):
-		if self._std is None:
-			self._std = np.array([
-				np.std(self.wells[idx], axis=0)
-				for idx in self.contents.values()
-			])
-			# replace 0 std values by smallest positive value
-			self._std[self._std==0] = np.min(self._std, where=self._std!=0, initial=np.inf)
-		return self._std
+    def __repr__(self):
+        return f'<Assay "{self.path}">'
+
+    @property
+    def mean(self):
+        """Average fluorescence of all wells with identical content."""
+        if self._mean is None:
+            self._mean = np.array([
+                np.mean(self.wells[idx], axis=0)
+                for idx in self.contents.values()
+            ])
+        return self._mean
+
+    @property
+    def std(self):
+        """Fluorescence standard deviation of all wells with identical content."""
+        if self._std is None:
+            self._std = np.array([
+                np.std(self.wells[idx], axis=0)
+                for idx in self.contents.values()
+            ])
+            # replace 0 std values by smallest positive value
+            self._std[self._std==0] = np.min(self._std, where=self._std!=0, initial=np.inf)
+        return self._std
