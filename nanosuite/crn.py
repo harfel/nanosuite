@@ -19,9 +19,9 @@ class CRN:
             '<table>'
             + '\n'.join(
                 f'''<tr>
-                    <td style="text-align: right">{' + '.join(reaction[0])}</td>
+                    <td style="text-align: right">{reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
-                    <td style="text-align: left">{' + '.join(reaction[1])}</td>
+                    <td style="text-align: left">{reactants(reaction[1])}</td>
                     <td style="text-align: left">{rate.name} = {rate.value:.2g}</td>
                 </tr>'''
                 for reaction, rate in self.reactions.items()
@@ -33,7 +33,7 @@ class CRN:
     def complex_graph(self):
         return np.array([
             [
-                compl.count(name)
+                sum(stoich for species, stoich in compl if species == name)
                 for compl in self.complexes
             ]
             for name in self.species
@@ -43,10 +43,10 @@ class CRN:
     def complex_adjacency(self):
         return np.array([
             [
-                self.reactions.get((lhs, rhs), 0.)
-                for lhs in self.complexes
+                self.reactions.get((educts, products), 0.)
+                for educts in self.complexes
             ]
-            for rhs in self.complexes
+            for products in self.complexes
         ])
 
     def scale_concentration_unit(self, factor):
@@ -58,20 +58,20 @@ class CRN:
         for reaction, rate in self.reactions.items():
             rate.value *= factor**(len(reaction[0])-1)
 
-    def add_reaction(self, lhs, rhs, rate):
+    def add_reaction(self, educts, products, rate):
         if rate.name in self.parameters:
             raise ValueError(f"Parameter '{rate.name}' is already used.")
 
         # collect species and complexes
-        for name in lhs+rhs:
+        for name, _ in educts+products:
             if name not in self.species:
                 self.species.append(name)
 
-        for compl in [lhs, rhs]:
+        for compl in [educts, products]:
             if compl not in self.complexes:
                 self.complexes.append(compl)
 
-        self.reactions[lhs, rhs] = rate
+        self.reactions[educts, products] = rate
         self.parameters[rate.name] = rate
 
     def rate_law(self, repeats=1):
@@ -119,12 +119,21 @@ class CRN:
     @staticmethod
     def _parse_reaction(string):
         def parse_complex(string):
-            return tuple(sorted(name.strip() for name in string.split('+')))
+            reactants = {}
+            pattern = re.compile(r' *([0-9]*) *\*? *([a-zA-Z_][a-zA-Z0-9_]*) *')
+            for expr in string.split(' + '):
+                match = pattern.fullmatch(expr)
+                if not match:
+                    raise ValueError(f"Syntax error in reaction: '{expr.strip()}'.")
+                name = match.group(2)
+                stoich = int(match.group(1)) if match.group(1) else 1
+                reactants[name] = reactants.get(name, 0) + stoich
+            return tuple(sorted(reactants.items()))
 
-        lhs, _, rhs = string.partition('->')
-        lhs = parse_complex(lhs)
-        rhs = parse_complex(rhs)
-        return lhs, rhs
+        educts_string, _, products_string = string.partition('->')
+        educts = parse_complex(educts_string)
+        products = parse_complex(products_string)
+        return educts, products
 
     @classmethod
     def from_string(cls, string, species=None):
@@ -196,16 +205,27 @@ class CRN:
                     continue
 
                 pattern = re.compile(r"\[Complex\(([^\)]*)\)\]")
-                lhs = tuple(pattern.match(name).group(1) for name in lhs)
-                rhs = tuple(pattern.match(name).group(1) for name in rhs)
+                educts = tuple(
+                    (cast(re.Match, pattern.match(name)).group(1), stoich)
+                    for name, stoich in educts
+                )
+                products = tuple(
+                    (cast(re.Match, pattern.match(name)).group(1), stoich)
+                    for name, stoich in products
+                )
 
-                kf = float(k_forward)
-                kb = float(k_backward)
-                k_effective = kf*kb/(kf+kb)
+                k_plus = float(k_forward)
+                k_minus = float(k_backward)
+                k_effective = k_plus*k_minus/(k_plus+k_minus)
 
                 constant = Parameter(f"k{idx}", value=k_effective, vary=True, min=0)
                 idx += 1
 
-                crn.add_reaction(lhs, rhs, constant)
+                crn.add_reaction(educts, products, constant)
 
             return crn
+
+if __name__ == '__main__':
+    print(CRN.from_string("""
+        2H2O + 6*CO_2 -> C6H12O6 + 6  O_2
+    """).reactions)
