@@ -295,7 +295,7 @@ class CRN:
     def _parse_reaction(string: str) -> Tuple[Reactants, Reactants]:
         def parse_complex(string):
             reactants = {}
-            pattern = re.compile(r' *([0-9]*) *\*? *([a-zA-Z_][a-zA-Z0-9_]*) *')
+            pattern = re.compile(r' *([0-9]*) *\*? *([^\s+0-9][^\s+]*) *')
             for expr in string.split(' + '):
                 match = pattern.fullmatch(expr)
                 if not match:
