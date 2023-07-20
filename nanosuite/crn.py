@@ -197,6 +197,27 @@ class CRN:
                 break
         raise KeyError(f"No parameter '{name}'")
 
+    def state(self, conc: npt.ArrayLike) -> np.ndarray:
+        """Generate a state vector with given species concentrations.
+
+        Parameters
+        ----------
+        conc: a 1D or 2D numpy array with given species concentrations.
+
+        Returns
+        -------
+        A numpy array with the same contents as conc, but padded
+        with 0's for any unspecified species.
+        """
+        if conc.shape[-1] > len(self.species):
+            raise ValueError(
+                f"conc last dimension must be smaller or equal to {len(self.species)}."
+            )
+        if conc.ndim > 2:
+            raise ValueError("conc must have one or two dimensions.")
+
+        exp = len(self.species) - conc.shape[-1]
+        return np.pad(conc, (conc.ndim-1)*[(0, 0)] + [(0, exp)])
 
     def rate_law(self, repeats: int=1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
         """Derive mass action kinetic rate function.
