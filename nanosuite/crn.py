@@ -48,7 +48,7 @@ class CRN:
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], Parameter]
 
-    def __init__(self, species: List[str]=None):
+    def __init__(self, species: Optional[List[str]]=None):
         """Create an empty reaction network.
 
         To populate a new CRN with reactions, use crn.add_reaction.
@@ -197,7 +197,7 @@ class CRN:
                 break
         raise KeyError(f"No parameter '{name}'")
 
-    def state(self, conc: npt.ArrayLike) -> np.ndarray:
+    def state(self, conc: np.ndarray) -> np.ndarray:
         """Generate a state vector with given species concentrations.
 
         Parameters
@@ -257,7 +257,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: np.ndarray,
-                  t0: float=0., t_eval: np.ndarray=None) -> np.ndarray: # pylint: disable=invalid-name
+                  t0: float=0., t_eval: Optional[np.ndarray]=None) -> np.ndarray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -311,7 +311,7 @@ class CRN:
         return educts, products
 
     @classmethod
-    def from_string(cls, string: str, species: List[str]=None):
+    def from_string(cls, string: str, species: Optional[List[str]]=None):
         """Construct a CRN from a string representation.
 
         The format of the string definition is as follows: each reaction is
@@ -384,7 +384,7 @@ class CRN:
 
     @classmethod
     # pylint: disable-next=invalid-name
-    def from_kinDA(cls, path: str, species: List[str]=None):
+    def from_kinDA(cls, path: str, species: Optional[List[str]]=None):
         """Construct a CRN from a kinDA csv file.
 
         See https://github.com/DNA-and-Natural-Algorithms-Group/KinDA.

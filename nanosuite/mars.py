@@ -52,6 +52,7 @@ class Assay:
             well.strip()
             for well in worksheet.cell(*deactivated_info_cell).value.split(':')[-1].split(';')
         ]
+		# FIXME: Assay.deactivated should be indices into Assay.wells
 
         # time and raw read information (incl. deactivated wells)
         self.times = np.array([cell.value
