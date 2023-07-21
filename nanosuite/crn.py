@@ -257,7 +257,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: np.ndarray,
-                  t0: float=0., t_eval: Optional[np.ndarray]=None) -> np.ndarray: # pylint: disable=invalid-name
+                  t_eval: Optional[np.ndarray]=None, t0: float=0.) -> np.ndarray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -283,7 +283,6 @@ class CRN:
         -------
             2D or 2D numpy.array of trajectories. See above.
         """
-        # TODO: reorder kwd args t_eval, t0
         repeats = 1 if len(initial_condition.shape) == 1 else initial_condition.shape[0]
         kinetics = self.rate_law(repeats)
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
