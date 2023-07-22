@@ -65,24 +65,26 @@ class CRN:
         self.reactions: Dict[Tuple[Reactants, Reactants], Parameter] = {}
 
     def _repr_html_(self) -> str:
-        def reactants(multiset):
-            return ' + '.join(
-                species if stoich == 1 else f'{stoich} {species}'
-                for species, stoich in multiset
-            )
         return (
             '<table>'
             + '\n'.join(
                 f'''<tr>
-                    <td style="text-align: right">{reactants(reaction[0])}</td>
+                    <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
-                    <td style="text-align: left">{reactants(reaction[1])}</td>
+                    <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
                     <td style="text-align: left">{rate.name} = {rate.value:.2g}</td>
                 </tr>'''
                 for reaction, rate in self.reactions.items()
             )
             + '</table>'
         )
+
+    def __str__(self) -> str:
+        return '\n'.join(
+            f"{self._render_reactants(reaction[0])} -> {self._render_reactants(reaction[1])}; {rate.name}={rate.value}"
+            for reaction, rate in self.reactions.items()
+        )
+        raise RuntimeError("TODO: not implemented yet")
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -289,6 +291,13 @@ class CRN:
         res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
                         t_eval=t_eval, vectorized=True)
         return res.y.reshape(initial_condition.shape+t_eval.shape)
+
+    @staticmethod
+    def _render_reactants(multiset):
+        return ' + '.join(
+            species if stoich == 1 else f'{stoich} {species}'
+            for species, stoich in multiset
+        )
 
     @staticmethod
     def _parse_reaction(string: str) -> Tuple[Reactants, Reactants]:
