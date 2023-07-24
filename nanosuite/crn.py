@@ -260,7 +260,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: np.ndarray,
-                  t_eval: Optional[np.ndarray]=None, t0: float=0.) -> np.ndarray: # pylint: disable=invalid-name
+                  t_eval: Optional[np.ndarray]=None, t0: float=0., **options) -> np.ndarray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -269,8 +269,9 @@ class CRN:
         If the initial condition is a 2D matrix, the return value is
         a 3D numpye.array, one trajectory for each initial condition.
 
-        Internally, the method uses scipy.integrate.solve_ivp with
-        default parameters.
+        Internally, the method uses scipy.integrate.solve_ivp.
+        Optional keyword arguments (method, atol, rtol, etc.) are
+        passed to solve_ivp.
 
         Parameters
         ----------
@@ -290,7 +291,7 @@ class CRN:
         kinetics = self.rate_law(repeats)
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
         res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
-                        t_eval=t_eval, vectorized=True)
+                        t_eval=t_eval, vectorized=True, **options)
         return res.y.reshape(initial_condition.shape+t_eval.shape)
 
     @staticmethod
