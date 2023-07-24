@@ -197,7 +197,8 @@ class CRN:
                 else:
                     self.reactions[reaction] = Parameter(name, value)
                 break
-        raise KeyError(f"No parameter '{name}'")
+        else:
+            raise KeyError(f"No parameter '{name}'")
 
     def state(self, conc: np.ndarray) -> np.ndarray:
         """Generate a state vector with given species concentrations.
