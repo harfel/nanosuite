@@ -4,7 +4,7 @@ import csv
 import re
 from typing import cast, List, Tuple, Dict, Callable, Optional, Union
 import numpy as np
-import numpy.typing as npt
+import numpy.typing as npt # pylint: disable=no-name-in-module,import-error
 from scipy.linalg import block_diag
 from scipy.integrate import solve_ivp
 from lmfit import Parameter, Parameters
@@ -35,7 +35,7 @@ class CRN:
     ...    A + B -> C; k_forward = 0.1
     ...    C -> A + B; k_backward = 1.0
     ... \"\"\")
-    
+
     Instance attributes
     -------------------
         species: list of strings
@@ -43,16 +43,15 @@ class CRN:
         reactions: mapping of complex pairs to lmfit.Parameter instances
     """
     # TODO: support open networks and buffered species
-    # TODO: make lmfit.Parameter's optional and if possible transparent.
 
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], Parameter]
 
-    def __init__(self, species: Optional[List[str]]=None):
+    def __init__(self, species: Optional[List[str]] = None):
         """Create an empty reaction network.
 
         To populate a new CRN with reactions, use crn.add_reaction.
-    
+
         Parameters
         ----------
         species: list of strings
@@ -80,11 +79,11 @@ class CRN:
         )
 
     def __str__(self) -> str:
-        return '\n'.join(
-            f"{self._render_reactants(reaction[0])} -> {self._render_reactants(reaction[1])}; {rate.name}={rate.value}"
-            for reaction, rate in self.reactions.items()
-        )
-        raise RuntimeError("TODO: not implemented yet")
+        def render(complexes, rate):
+            educts = self._render_reactants(complexes[0])
+            products = self._render_reactants(complexes[1])
+            return f"{educts} -> {products}; {rate.name}={rate.value}"
+        return '\n'.join(render(*reaction) for reaction in self.reactions.items())
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -162,7 +161,7 @@ class CRN:
 
         self.reactions[educts, products] = rate
 
-    def parameterize(self, params: Parameters=None, **kwds: Dict[str, Union[float, Parameter]]):
+    def parameterize(self, params: Parameters = None, **kwds: Dict[str, Union[float, Parameter]]):
         """Parameterize rate constants
 
         Parameters
@@ -180,7 +179,7 @@ class CRN:
             params.update(Parameters(**kwds))
 
         for reaction, rate_const in self.reactions.items():
-            if (name := rate_const.name) in params:
+            if name := rate_const.name in params:
                 self.reactions[reaction] = params[name]
 
     def __getitem__(self, name: str) -> Parameter:
@@ -222,7 +221,7 @@ class CRN:
         exp = len(self.species) - conc.shape[-1]
         return np.pad(conc, (conc.ndim-1)*[(0, 0)] + [(0, exp)])
 
-    def rate_law(self, repeats: int=1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
+    def rate_law(self, repeats: int = 1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
         """Derive mass action kinetic rate function.
 
         Internally, this method uses the method of van der Schaft et al.
@@ -253,14 +252,14 @@ class CRN:
         def kinetics(_, state):
             # complex_graph.T @ log(state) with convention 0*inf = 0
             with np.errstate(invalid='ignore'):
-                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state!=0)
+                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
                 tmp = np.nansum(Z*tmp, axis=0)
             return -Z @ L @ np.exp(tmp)
 
         return kinetics
 
-    def integrate(self, initial_condition: np.ndarray,
-                  t_eval: Optional[np.ndarray]=None, t0: float=0., **options) -> np.ndarray: # pylint: disable=invalid-name
+    def integrate(self, initial_condition: np.ndarray, # pylint: disable=invalid-name
+                  t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -292,7 +291,9 @@ class CRN:
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
         res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
                         t_eval=t_eval, vectorized=True, **options)
-        return res.y.reshape(initial_condition.shape+t_eval.shape) if len(res.y) else np.array([])
+        if len(res.y) != 0:
+            return res.y.reshape(initial_condition.shape+t_eval.shape)
+        return np.array([])
 
     @staticmethod
     def _render_reactants(multiset):
@@ -321,7 +322,7 @@ class CRN:
         return educts, products
 
     @classmethod
-    def from_string(cls, string: str, species: Optional[List[str]]=None):
+    def from_string(cls, string: str, species: Optional[List[str]] = None):
         """Construct a CRN from a string representation.
 
         The format of the string definition is as follows: each reaction is
@@ -342,7 +343,7 @@ class CRN:
             See above.
         species: list of species names
             Sort order of species used in state vectors.
-        
+
         Returns
         -------
         A CRN instance with the given reactions.
@@ -393,8 +394,7 @@ class CRN:
         return crn
 
     @classmethod
-    # pylint: disable-next=invalid-name
-    def from_kinDA(cls, path: str, species: Optional[List[str]]=None):
+    def from_kinDA(cls, path: str, species: Optional[List[str]] = None): # pylint: disable=invalid-name
         """Construct a CRN from a kinDA csv file.
 
         See https://github.com/DNA-and-Natural-Algorithms-Group/KinDA.

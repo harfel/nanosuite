@@ -1,7 +1,8 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
-from openpyxl import load_workbook
+from typing import List, Dict, Optional
 import numpy as np
+from openpyxl import load_workbook  # pylint: disable=import-error
 
 
 class Assay:
@@ -21,19 +22,19 @@ class Assay:
         Path of the associated xlsx file (read only).
     deactivated: list of well indices
         Wells that had been blanked by the user.
-    
     """
-    def __init__(self, path, resolution=1, contents=None):
+    def __init__(self, path: str,
+                 contents: Optional[Dict[str, List[int]]] = None, resolution: int = 1):
         """Plate reader data as saved by MARS.
 
         Parameters
         ----------
         path: file path
-        resolution: int (defaults to 1)
-            If set to n, every nth data point is added to the assay
         contents: mapping of strings to well indices
             If not given, the mapping is autimatically inferred from
             the content column.
+        resolution: int (defaults to 1)
+            If set to n, every nth data point is added to the assay
         """
         deactivated_info_cell = 11, 1
         time_row = 14
@@ -72,14 +73,14 @@ class Assay:
                 contents[content] = contents.get(content, []) + [idx]
         self.contents = contents
 
-        self._mean = None
-        self._std = None
+        self._mean: Optional[np.ndarray] = None
+        self._std: Optional[np.ndarray] = None
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
 
     @property
-    def mean(self):
+    def mean(self) -> np.ndarray:
         """Average fluorescence of all wells with identical content."""
         if self._mean is None:
             self._mean = np.array([
@@ -89,7 +90,7 @@ class Assay:
         return self._mean
 
     @property
-    def std(self):
+    def std(self) -> np.ndarray:
         """Fluorescence standard deviation of all wells with identical content."""
         if self._std is None:
             self._std = np.array([
@@ -97,5 +98,5 @@ class Assay:
                 for idx in self.contents.values()
             ])
             # replace 0 std values by smallest positive value
-            self._std[self._std==0] = np.min(self._std, where=self._std!=0, initial=np.inf)
+            self._std[self._std == 0] = np.min(self._std, where=self._std != 0, initial=np.inf)
         return self._std
