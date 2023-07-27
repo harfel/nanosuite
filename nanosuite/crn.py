@@ -292,7 +292,7 @@ class CRN:
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
         res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
                         t_eval=t_eval, vectorized=True, **options)
-        return res.y.reshape(initial_condition.shape+t_eval.shape)
+        return res.y.reshape(initial_condition.shape+t_eval.shape) if len(res.y) else np.array([])
 
     @staticmethod
     def _render_reactants(multiset):
