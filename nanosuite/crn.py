@@ -38,9 +38,10 @@ class CRN:
 
     Instance attributes
     -------------------
-        species: list of strings
-        complexes: list of species, stoichiomentry pair tuples
-        reactions: mapping of complex pairs to lmfit.Parameter instances
+    species: list of strings
+        order of species names in state vector
+    complexes: list of (species, stoichiomentry) pairs
+    reactions: mapping of complex pairs to lmfit.Parameter instances
     """
     # TODO: support open networks and buffered species
 
@@ -161,23 +162,15 @@ class CRN:
 
         self.reactions[educts, products] = rate
 
-    def parameterize(self, params: Parameters = None, **kwds: Dict[str, Union[float, Parameter]]):
-        """Parameterize rate constants
-
-        Parameters
-        ----------
-        params: an lmfit.Parameters objects
-        kwds: additional parameters names with either float or Parameter instances
-        """
-        kwds = {
-            kwd_name: kwd_val if isinstance(kwd_val, Parameter) else Parameter(kwd_name, kwd_val)
-            for kwd_name, kwd_val in kwds.items()
-        }
-        if params is None:
-            params = Parameters(**kwds)
-        else:
-            params.update(Parameters(**kwds))
-
+    @property
+    def params(self) -> Parameters:
+        """Access rate constants as lmfit.Parameters object"""
+        params = Parameters()
+        for param in self.reactions.values():
+            params[param.name] = param
+        return params
+    @params.setter
+    def params(self, params) -> None:
         for reaction, rate_const in self.reactions.items():
             if (name := rate_const.name) in params:
                 self.reactions[reaction] = params[name]
@@ -261,8 +254,8 @@ class CRN:
 
     # TODO: compute Jacobian of the rate law to reduce need for numerical estimation through integration
 
-    def integrate(self, initial_condition: np.ndarray, # pylint: disable=invalid-name
-                  t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:
+    def integrate(self, initial_condition: np.ndarray,                                            # pylint: disable=invalid-name
+                  t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:  # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
