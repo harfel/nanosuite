@@ -246,6 +246,7 @@ class CRN:
         sum_diag = np.diag(np.sum(self.complex_adjacency, axis=0))
         laplacian = sum_diag - self.complex_adjacency
 
+        # FIXME: avoid large sparse block diagonal matrices to improve performance and memory use
         Z = block_diag(*repeats*[self.complex_graph])
         L = block_diag(*repeats*[laplacian])
 
@@ -257,6 +258,8 @@ class CRN:
             return -Z @ L @ np.exp(tmp)
 
         return kinetics
+
+    # TODO: compute Jacobian of the rate law to reduce need for numerical estimation through integration
 
     def integrate(self, initial_condition: np.ndarray, # pylint: disable=invalid-name
                   t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:
