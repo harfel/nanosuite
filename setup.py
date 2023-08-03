@@ -10,4 +10,11 @@ setup(name='Nanosuite',
       author='Harold Fellermann',
       author_email='harold@nanovery.co.uk',
       url='http://harfel.teerun.de/',
+      packages=['nanosuite'],
+      install_requires=[
+        "numpy",
+        "openpyxl",
+        "scipy",
+        "lmfit",
+      ]
 )

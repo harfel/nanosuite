@@ -1,4 +1,0 @@
-openpyxl
-numpy
-scipy
-lmfit
