@@ -1,0 +1,4 @@
+.ipynb_checkpoints/
+Nanosuite.egg-info/
+__pycache__/
+build/
