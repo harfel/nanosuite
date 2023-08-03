@@ -179,7 +179,7 @@ class CRN:
             params.update(Parameters(**kwds))
 
         for reaction, rate_const in self.reactions.items():
-            if name := rate_const.name in params:
+            if (name := rate_const.name) in params:
                 self.reactions[reaction] = params[name]
 
     def __getitem__(self, name: str) -> Parameter:
