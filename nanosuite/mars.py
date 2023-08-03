@@ -1,6 +1,6 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
-from typing import cast
+from typing import cast, Tuple, Callable
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -28,7 +28,7 @@ class Assay:
     deactivated: list of well indices
         Wells that had been blanked by the user.
     """
-    def __init__(self, path: str,):
+    def __init__(self, path: str):
         """Plate reader data as saved by MARS.
 
         Parameters
@@ -69,13 +69,59 @@ class Assay:
              for y in range(sample_first_row, sample_last_row+1)],
             [("content", content), ("time", self.times)],
             name="RFU",
-            attrs={
+            attrs=dict(
                 cell[0].value.partition(': ')[::2]
                 for cell in worksheet['A1':'A9']
-            },
+            ),
         ).astype(float)
 
-        self.wells = self.all_wells.where(~self.all_wells.well.isin(self.deactivated))
+        mask = ~self.all_wells.well.isin(self.deactivated)
+        self.wells = self.all_wells[mask]
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
+
+    def _repr_html_(self) -> str:
+        return self.wells._repr_html_() # pylint: disable=protected-access
+
+    def calibrate(
+        self, positive: str, negative: str, pos_conc: float, neg_conc: float
+    ) -> Tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray], np.ndarray]]:
+        """Compute transforms between raw and normalized RFU values
+
+        Transforms are based on the linear relations
+
+        (rfu-neg)/(pos-neg) = (conc-neg_conc)/(pos_conc-neg_conc)
+
+        where the left hand side captures the linear interpolation
+        between repeat-averaged negative and positive control RFU
+        values and the right hand side captures the linear
+        interpolation between the scalar concentrations neg_pos and
+        right_pos.
+
+        Parameters
+        ----------
+        positive: str -- element of self.wells.coords['sample']
+            Label of the positive control sample
+        negative: str -- element of self.wells.coords['sample']
+            Label of the negative control sample
+        pos_conc: float
+            Concentration associated with positive control
+        neg_conc: float
+            Concentration associated with negative control
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: np.ndarray) -> np.ndarray
+        toRFU(rfu: np.ndarray) -> np.ndarray
+        """
+        neg = self.wells.loc[negative].mean(axis=0).to_numpy()
+        pos = self.wells.loc[positive].mean(axis=0).to_numpy()
+        def from_rfu(rfu):
+            # FIXME: make sure that this works for all supported rfu.ndims
+            return neg_conc + (rfu-neg) * (pos_conc-neg_conc)/(pos-neg)
+        def to_rfu(conc):
+            return neg + (conc-neg_conc) * (pos-neg)/(pos_conc-neg_conc)
+        return from_rfu, to_rfu
