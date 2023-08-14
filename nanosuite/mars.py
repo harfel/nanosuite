@@ -1,6 +1,6 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
-from typing import cast, Tuple, Callable
+from typing import cast, Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -19,16 +19,16 @@ class Assay:
     times: 1D numpy.array
         Times at which measurements have been taken.
 
-    wells: 2D xarray DataArray
+    plate: 2D xarray DataArray
         Fluorescence values of all active wells and time points.
 
-    all_wells: 2D xarray DataArray
+    full_plate: 2D xarray DataArray
         Fluorescence values of all wells and time points.
 
     deactivated: list of well indices
         Wells that had been blanked by the user.
     """
-    def __init__(self, path: str):
+    def __init__(self, path: str, groups: Optional[Dict[str, List[str]]] = None):
         """Plate reader data as saved by MARS.
 
         Parameters
@@ -37,12 +37,22 @@ class Assay:
               file path
         """
         deactivated_info_cell = 11, 1
+        attr_first_row = 1
+        attr_last_row = 9
         time_row = 14
+        sample_first_row = 15
         well_col = 0
         content_col = 1
-        sample_first_row = 15
 
         self.path = path
+
+        groups = groups or {}
+
+        groups_reverse = {
+            sample: group
+            for group, samples in groups.items()
+            for sample in samples
+        }
 
         workbook = load_workbook(self.path)
         worksheet = workbook["Table All Cycles"]
@@ -60,29 +70,35 @@ class Assay:
                                for cell in np.array(worksheet[time_row][2:])])
 
         content = pd.MultiIndex.from_tuples([
-            (row[content_col].value, row[well_col].value)
-            for idx, row in enumerate(worksheet[sample_first_row: sample_last_row])
-        ], names=("sample", "well"))
+            (groups_reverse.get(cast(str, row[content_col].value), 'Unknown'),
+             row[content_col].value,
+             row[well_col].value)
+            for idx, row in enumerate(
+                worksheet.iter_rows(min_row=sample_first_row,
+                                    max_row=sample_last_row)
+            )
+        ], names=("group", "sample", "well"))
 
-        self.all_wells = xr.DataArray(
+        self.full_plate = xr.DataArray(
             [[cell.value for cell in worksheet[y][2:]]
              for y in range(sample_first_row, sample_last_row+1)],
             [("content", content), ("time", self.times)],
             name="RFU",
             attrs=dict(
-                cell[0].value.partition(': ')[::2]
-                for cell in worksheet['A1':'A9']
+                cast(str, cell[0].value).partition(': ')[::2]
+                for cell in worksheet.iter_rows(min_row=attr_first_row,
+                                                max_row=attr_last_row)
             ),
         ).astype(float)
 
-        mask = ~self.all_wells.well.isin(self.deactivated)
-        self.wells = self.all_wells[mask]
+        mask = ~self.full_plate.well.isin(self.deactivated)
+        self.plate = self.full_plate[mask]
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
 
     def _repr_html_(self) -> str:
-        return self.wells._repr_html_() # pylint: disable=protected-access
+        return self.plate._repr_html_() # pylint: disable=protected-access
 
     def calibrate(
         self, positive: str, negative: str, pos_conc: float, neg_conc: float
@@ -101,9 +117,9 @@ class Assay:
 
         Parameters
         ----------
-        positive: str -- element of self.wells.coords['sample']
+        positive: str -- element of self.plate.coords['sample']
             Label of the positive control sample
-        negative: str -- element of self.wells.coords['sample']
+        negative: str -- element of self.plate.coords['sample']
             Label of the negative control sample
         pos_conc: float
             Concentration associated with positive control
@@ -117,8 +133,8 @@ class Assay:
         fromRFU(rfu: np.ndarray) -> np.ndarray
         toRFU(rfu: np.ndarray) -> np.ndarray
         """
-        neg = self.wells.loc[negative].mean(axis=0).to_numpy()
-        pos = self.wells.loc[positive].mean(axis=0).to_numpy()
+        neg = self.plate.loc[negative].mean(axis=0).to_numpy()
+        pos = self.plate.loc[positive].mean(axis=0).to_numpy()
         def from_rfu(rfu):
             # FIXME: make sure that this works for all supported rfu.ndims
             return neg_conc + (rfu-neg) * (pos_conc-neg_conc)/(pos-neg)
