@@ -60,11 +60,11 @@ class Assay:
         sample_last_row = worksheet.max_row
 
         # read deactivated wells from header info
+        deactivated_cells = worksheet.cell(*deactivated_info_cell).value
         self.deactivated = [
             well.strip()
-            for well in cast(str, worksheet.cell(*deactivated_info_cell).value)
-                            .split(':')[-1].split(';')
-        ]
+            for well in cast(str, deactivated_cells) .split(':')[-1].split(';')
+        ] if deactivated_cells else []
 
         self.times = np.array([cell.value
                                for cell in np.array(worksheet[time_row][2:])])
