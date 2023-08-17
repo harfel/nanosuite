@@ -2,9 +2,10 @@
 """
 import csv
 import re
-from typing import cast, List, Tuple, Dict, Callable, Optional, Union
+from typing import cast, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import numpy as np
 import numpy.typing as npt # pylint: disable=no-name-in-module,import-error
+import pandas as pd
 from scipy.linalg import block_diag
 from scipy.integrate import solve_ivp
 from lmfit import Parameter, Parameters
@@ -48,7 +49,7 @@ class CRN:
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], Parameter]
 
-    def __init__(self, species: Optional[List[str]] = None):
+    def __init__(self, species: Optional[Iterable[str]] = None):
         """Create an empty reaction network.
 
         To populate a new CRN with reactions, use crn.add_reaction.
@@ -60,7 +61,7 @@ class CRN:
             the species in the state vector used in crn.integrate and
             crn.rate_law
         """
-        self.species: List[str] = species or []
+        self.species: pd.Index = pd.Index(species or [])
         self.complexes: List[Reactants] = []
         self.reactions: Dict[Tuple[Reactants, Reactants], Parameter] = {}
 
@@ -152,9 +153,10 @@ class CRN:
             raise ValueError(f"Parameter '{rate.name}' is already used.")
 
         # collect species and complexes
-        for name, _ in educts+products:
-            if name not in self.species:
-                self.species.append(name)
+        self.species = self.species.append(pd.Index([
+            name for name, _ in educts+products
+            if name not in self.species
+        ]))
 
         for compl in [educts, products]:
             if compl not in self.complexes:
@@ -282,6 +284,7 @@ class CRN:
         -------
             2D or 2D numpy.array of trajectories. See above.
         """
+        initial_condition = self.state(initial_condition)
         repeats = 1 if len(initial_condition.shape) == 1 else initial_condition.shape[0]
         kinetics = self.rate_law(repeats)
         t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
