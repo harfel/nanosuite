@@ -10,6 +10,9 @@ from scipy.linalg import block_diag
 from scipy.integrate import solve_ivp
 from lmfit import Parameter, Parameters
 
+# TODO: replace numpy.arrays by xarray.DataArrays
+# TODO: make CRN a subclass of lmfit.Model
+
 Reactants = Tuple[Tuple[str, int], ...]
 
 class CRN:
@@ -39,13 +42,14 @@ class CRN:
 
     Instance attributes
     -------------------
-    species: list of strings
-        order of species names in state vector
+    species: pandas.Index
+        species names in state vector
     complexes: list of (species, stoichiomentry) pairs
     reactions: mapping of complex pairs to lmfit.Parameter instances
     """
     # TODO: support open networks and buffered species
 
+    species: pd.Index
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], Parameter]
 
@@ -61,7 +65,7 @@ class CRN:
             the species in the state vector used in crn.integrate and
             crn.rate_law
         """
-        self.species: pd.Index = pd.Index(species or [])
+        self.species = pd.Index(species or [])
         self.complexes: List[Reactants] = []
         self.reactions: Dict[Tuple[Reactants, Reactants], Parameter] = {}
 

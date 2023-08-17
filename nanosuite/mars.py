@@ -133,6 +133,7 @@ class Assay:
         fromRFU(rfu: np.ndarray) -> np.ndarray
         toRFU(rfu: np.ndarray) -> np.ndarray
         """
+        # TODO: support different calibration methods
         neg = self.plate.loc[negative].mean(axis=0).to_numpy()
         pos = self.plate.loc[positive].mean(axis=0).to_numpy()
         def from_rfu(rfu):
