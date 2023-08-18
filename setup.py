@@ -3,9 +3,10 @@
 """
 
 from setuptools import setup
+from nanosuite import __version__
 
 setup(name='Nanosuite',
-      version='0.2.0',
+      version=__version__,
       description='Utilities for work with DNA nanotechnology',
       author='Harold Fellermann',
       author_email='harold@nanovery.co.uk',
