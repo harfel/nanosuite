@@ -11,7 +11,6 @@ from scipy.integrate import solve_ivp # type: ignore
 from lmfit import Parameter, Parameters # type: ignore
 
 # TODO: replace numpy.arrays by xarray.DataArrays
-# TODO: make CRN a subclass of lmfit.Model
 
 Reactants = Tuple[Tuple[str, int], ...]
 
@@ -72,6 +71,13 @@ class CRN:
         for reaction in reactions or []:
             self.add_reaction(*reaction)
 
+    def __str__(self) -> str:
+        def render(complexes, rate):
+            educts = self._render_reactants(complexes[0])
+            products = self._render_reactants(complexes[1])
+            return f"{educts} -> {products}; {rate.name}={rate.value}"
+        return '\n'.join(render(*reaction) for reaction in self.reactions.items())
+
     def _repr_html_(self) -> str:
         return (
             '<table>'
@@ -86,13 +92,6 @@ class CRN:
             )
             + '</table>'
         )
-
-    def __str__(self) -> str:
-        def render(complexes, rate):
-            educts = self._render_reactants(complexes[0])
-            products = self._render_reactants(complexes[1])
-            return f"{educts} -> {products}; {rate.name}={rate.value}"
-        return '\n'.join(render(*reaction) for reaction in self.reactions.items())
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -301,6 +300,8 @@ class CRN:
             return res.y.reshape(initial_condition.shape+t_eval.shape)
         return np.array([])
 
+    # TODO: fit
+
     @staticmethod
     def _render_reactants(multiset):
         return ' + '.join(
@@ -336,7 +337,62 @@ class ImpureCRN(CRN):
         for impurity, side_reaction in impurities.items() if impurities else []:
             self.add_impurity(impurity, *side_reaction)
 
-    # FIXME: override _repr_html_ and __str__
+    def __str__(self) -> str:
+        def render(impurity, side_reaction):
+            fraction, stoichiometry = side_reaction
+            educts = ' + '.join(
+                (species if stoich == -1 else f"{-stoich} {species}")
+                + (' [impure]' if species == impurity else '')
+                for species, stoich in zip(self.species, stoichiometry)
+                if stoich<0
+            )
+            products = ' + '.join(
+                species if stoich == 1 else f"{stoich} {species}"
+                for species, stoich in zip(self.species, stoichiometry)
+                if stoich>0
+            )
+            return f"{educts} -> {products}; {fraction.name}={fraction.value}"
+        return super().__str__() + '\n' + '\n'.join(
+            render(*side_reaction) for side_reaction in self.side_reactions.items()
+        )
+
+    def _repr_html_(self) -> str:
+        def render(impurity, side_reaction):
+            fraction, stoichiometry = side_reaction
+            educts = ' + '.join(
+                (species if stoich == -1 else f"{-stoich} {species}")
+                + (' [impure]' if species == impurity else '')
+                for species, stoich in zip(self.species, stoichiometry)
+                if stoich<0
+            )
+            products = ' + '.join(
+                species if stoich == 1 else f"{stoich} {species}"
+                for species, stoich in zip(self.species, stoichiometry)
+                if stoich>0
+            )
+            return educts, products, fraction
+        return (
+            '<table>'
+            + '\n'.join(
+                f'''<tr>
+                    <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
+                    <td style="text-align: center">&LongRightArrow;</td>
+                    <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
+                    <td style="text-align: left">{rate.name} = {rate.value:.2g}</td>
+                </tr>'''
+                for reaction, rate in self.reactions.items()
+            )
+            + '\n'.join(
+                f'''<tr>
+                    <td style="text-align: right">{(res:=render(impurity, side_reaction))[0]}</td>
+                    <td style="text-align: center">&LongRightArrow;</td>
+                    <td style="text-align: left">{res[1]}</td>
+                    <td style="text-align: left">{res[2].name} = {res[2].value:.2g}</td>
+                </tr>'''
+                for impurity, side_reaction in self.side_reactions.items()
+            )
+            + '</table>'
+        )
 
     def add_impurity(self, impurity: str, educts: Reactants, products: Reactants,
                      fraction: Parameter):
@@ -364,7 +420,7 @@ class ImpureCRN(CRN):
         for species, stoich in products:
             stoich_vector[self.species.get_loc(species)] += stoich
 
-        if not stoich_vector[self.species.get_log(impurity)] < 0:
+        if not stoich_vector[self.species.get_loc(impurity)] < 0:
             raise ValueError("Side reactions cannot be catalytic")
 
         self.side_reactions[impurity] = fraction, stoich_vector
@@ -418,9 +474,10 @@ class ImpureCRN(CRN):
                   t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:  # pylint: disable=invalid-name
         fluxes = []
         initial_condition = self.state(initial_condition)
+        shape = initial_condition.shape
         for impurity, side_reaction in self.side_reactions.items():
             impure_loc = self.species.get_loc(impurity)
-            conc = initial_condition[self.species.get_loc(impurity)]
+            conc = initial_condition[..., self.species.get_loc(impurity)]
             fraction, stoichiometry = side_reaction
             flux = np.min([
                 -(fraction if idx==impure_loc else 1.)/stoich*conc
@@ -430,7 +487,7 @@ class ImpureCRN(CRN):
             fluxes.append(flux)
         for side_reaction, flux in zip(self.side_reactions.values(), fluxes):
             initial_condition = initial_condition + flux.reshape(-1,1)*side_reaction[1]
-
+        initial_condition = initial_condition.reshape(shape)
         return super().integrate(initial_condition, t_eval, t0, **options)
 
 
@@ -525,8 +582,10 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
 
     # name unnamed constants
     bound_names = [name for educts, products, name, val, impurity in reactions if name]
-    free_names = [free_name for idx, _ in enumerate(reactions)
+    rate_names = [free_name for idx, _ in enumerate(reactions)
                   if (free_name := f'k{idx}') not in bound_names]
+    frac_names = [free_name for idx, _ in enumerate(reactions)
+                  if (free_name := f'p{idx}') not in bound_names]
 
     cls = ImpureCRN if any(impurity for _, __, ___, ____, impurity in reactions) else CRN
     network = cls(species=species)
@@ -534,7 +593,7 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     # add reactions
     for educts, products, name, val, impurity in reactions:
         if not name:
-            name = free_names.pop(0)
+            name = rate_names.pop(0) if not impurity else frac_names.pop(0)
         constant = Parameter(name, value=val, vary=True, min=0)
         if impurity:
             cast(ImpureCRN, network).add_impurity(impurity, educts, products, constant)
@@ -594,5 +653,4 @@ def from_kinDA(path: str, species: Optional[List[str]] = None): # pylint: disabl
             idx += 1
 
             network.add_reaction(educts, products, constant)
-
         return network
