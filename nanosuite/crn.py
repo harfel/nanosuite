@@ -3,14 +3,12 @@
 import csv
 import re
 from typing import cast, Callable, Dict, Iterable, List, Optional, Tuple, Union
+import xarray as xr
 import numpy as np
-import numpy.typing as npt # pylint: disable=no-name-in-module,import-error
 import pandas as pd
 from scipy.linalg import block_diag # type: ignore
 from scipy.integrate import solve_ivp # type: ignore
 from lmfit import Parameter, Parameters # type: ignore
-
-# TODO: replace numpy.arrays by xarray.DataArrays
 
 Reactants = Tuple[Tuple[str, int], ...]
 
@@ -200,56 +198,39 @@ class CRN:
         else:
             raise KeyError(f"No parameter '{name}'")
 
-    def state(self, conc: np.ndarray) -> np.ndarray:
+    def state(self, conc: xr.DataArray) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
 
         Parameters
         ----------
-        conc: a 1D or 2D numpy array with given species concentrations.
+        conc: an xarray.DataArray with coordinate "species"
+            giving species concentrations.
 
         Returns
         -------
-        A numpy array with the same contents as conc, but padded
+        A DataArray with the same contents as conc, but padded
         with 0's for any unspecified species.
         """
-        if conc.shape[-1] > len(self.species):
-            raise ValueError(
-                f"conc last dimension must be smaller or equal to {len(self.species)}."
-            )
-        if conc.ndim > 2:
-            raise ValueError("conc must have one or two dimensions.")
+        # TODO: accept different inputs, e.g. iterables, dicts, DataArrays
+        return conc.reindex({'species': self.species}, fill_value=0.)
 
-        exp = len(self.species) - conc.shape[-1]
-        return np.pad(conc, (conc.ndim-1)*[(0, 0)] + [(0, exp)])
-
-    def rate_law(self, repeats: int = 1) -> Callable[[float, npt.ArrayLike], np.ndarray]:
+    def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
 
         Internally, this method uses the method of van der Schaft et al.
         (2011) SIAM J Appl Math 73(2):953-973.
 
-        Parameters
-        ----------
-        repeats: positive integer
-            Number of states for which rates should be calculated
-            simultaneously.
-
         Returns
         -------
-        A function rate(time: float, state: numpy.array) that gives the
-        mass action rate vector for the given state. If repeat is given
-        and not equal to 1, the rate function will accept a matrix of states
-        and return rates for each provided state.
+        A function rate(time: float, state: xarray.DataArray) that
+        gives the mass action rate vector for the given state.
         """
         # pylint: disable=invalid-name
 
         # calculate graph Laplacian
-        sum_diag = np.diag(np.sum(self.complex_adjacency, axis=0))
-        laplacian = sum_diag - self.complex_adjacency
-
-        # TODO: avoid large sparse block diagonal matrices to improve performance and memory use
-        Z = block_diag(*repeats*[self.complex_graph])
-        L = block_diag(*repeats*[laplacian])
+        Z = self.complex_graph
+        D = np.diag(np.sum(self.complex_adjacency, axis=0))
+        L = D - self.complex_adjacency
 
         def kinetics(_, state):
             # complex_graph.T @ log(state) with convention 0*inf = 0
@@ -262,15 +243,15 @@ class CRN:
 
     # TODO: compute Jacobian of the rate law to reduce need for numerical estimation
 
-    def integrate(self, initial_condition: np.ndarray,                                            # pylint: disable=invalid-name
-                  t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:  # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
+                  t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
-        2D numpy.array of states over the requested interval t_eval.
+        2D DataArray of states over the requested interval t_eval.
 
-        If the initial condition is a 2D matrix, the return value is
-        a 3D numpye.array, one trajectory for each initial condition.
+        If the initial condition is a 2D DataArray, the return value is
+        a 3D DataArray with trajectories for each initial condition.
 
         Internally, the method uses scipy.integrate.solve_ivp.
         Optional keyword arguments (method, atol, rtol, etc.) are
@@ -278,9 +259,9 @@ class CRN:
 
         Parameters
         ----------
-        initial_condition: numpy.array
-            1D or 2D initial condition(s).
-        t_eval: numpy.array
+        initial_condition: 1D or 2D xarray.DataArray
+            the last coord must denote species concentrations
+        t_eval: pd.Index
             Array of time points at which system states should be reported.
             (Does not influence the numerical step width of integration).
         t0: float
@@ -288,17 +269,24 @@ class CRN:
 
         Returns
         -------
-            2D or 2D numpy.array of trajectories. See above.
+            2D or 3D DataArray of trajectories. See above.
         """
         initial_condition = self.state(initial_condition)
-        repeats = 1 if len(initial_condition.shape) == 1 else initial_condition.shape[0]
-        kinetics = self.rate_law(repeats)
-        t_eval = t_eval if t_eval is not None else np.linspace(0, 100, 101)
-        res = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition.flatten(),
-                        t_eval=t_eval, vectorized=True, **options)
-        if len(res.y) != 0:
-            return res.y.reshape(initial_condition.shape+t_eval.shape)
-        return np.array([])
+        t_eval = t_eval if t_eval is not None else pd.Index(np.linspace(0, 100, 101), name="time")
+        kinetics = self.rate_law()
+
+        result = xr.DataArray(
+            np.zeros(initial_condition.shape+t_eval.shape),
+            list(initial_condition.indexes.items())+[t_eval]
+        )
+        if len(initial_condition.dims) == 1:
+            result[0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition,
+                                   t_eval=t_eval, vectorized=True, **options).y
+        else:
+            for idx, initial in enumerate(initial_condition):
+                result[idx, 0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial,
+                                            t_eval=t_eval, vectorized=True, **options).y
+        return result
 
     # TODO: fit
 
@@ -470,24 +458,24 @@ class ImpureCRN(CRN):
         else:
             raise KeyError(f"No parameter '{name}'")
 
-    def integrate(self, initial_condition: np.ndarray,                                            # pylint: disable=invalid-name
-                  t_eval: Optional[np.ndarray] = None, t0: float = 0., **options) -> np.ndarray:  # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
+                  t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
         fluxes = []
         initial_condition = self.state(initial_condition)
-        shape = initial_condition.shape
         for impurity, side_reaction in self.side_reactions.items():
-            impure_loc = self.species.get_loc(impurity)
-            conc = initial_condition[..., self.species.get_loc(impurity)]
+            conc = initial_condition.sel(species=impurity)
             fraction, stoichiometry = side_reaction
             flux = np.min([
-                -(fraction if idx==impure_loc else 1.)/stoich*conc
-                for idx, (conc, stoich) in enumerate(zip(initial_condition.T, stoichiometry))
+                -(fraction if conc.species==impurity else 1.)/stoich*conc
+                for conc, stoich in zip(initial_condition.T, stoichiometry)
                 if stoich < 0
             ], axis=0)
             fluxes.append(flux)
         for side_reaction, flux in zip(self.side_reactions.values(), fluxes):
-            initial_condition = initial_condition + flux.reshape(-1,1)*side_reaction[1]
-        initial_condition = initial_condition.reshape(shape)
+            if len(initial_condition.dims) == 1:
+                initial_condition = initial_condition + flux*side_reaction[1]
+            else:
+                initial_condition = initial_condition + flux.reshape(-1,1)*side_reaction[1]
         return super().integrate(initial_condition, t_eval, t0, **options)
 
 
