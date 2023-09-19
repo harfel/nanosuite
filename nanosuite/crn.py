@@ -2,13 +2,13 @@
 """
 import csv
 import re
+from copy import deepcopy
 from typing import cast, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import xarray as xr
 import numpy as np
 import pandas as pd
-from scipy.linalg import block_diag # type: ignore
 from scipy.integrate import solve_ivp # type: ignore
-from lmfit import Parameter, Parameters # type: ignore
+import lmfit # type: ignore
 
 Reactants = Tuple[Tuple[str, int], ...]
 
@@ -47,10 +47,10 @@ class CRN:
 
     species: pd.Index
     complexes: List[Reactants]
-    reactions: Dict[Tuple[Reactants, Reactants], Parameter]
+    reactions: Dict[Tuple[Reactants, Reactants], lmfit.Parameter]
 
     def __init__(self,
-                 reactions: Optional[List[Tuple[Reactants, Reactants, Parameter]]] = None,
+                 reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
                  species: Optional[Iterable[str]] = None):
         """Create an chemical reaction network.
 
@@ -141,7 +141,7 @@ class CRN:
         for reaction, rate in self.reactions.items():
             rate.value *= scale_factor**(len(reaction[0])-1)
 
-    def add_reaction(self, educts: Reactants, products: Reactants, rate: Parameter):
+    def add_reaction(self, educts: Reactants, products: Reactants, rate: lmfit.Parameter):
         """Add a reaction to the network.
 
         Any novel species that occur among the reactants are automatically
@@ -169,9 +169,9 @@ class CRN:
         self.reactions[educts, products] = rate
 
     @property
-    def params(self) -> Parameters:
+    def params(self) -> lmfit.Parameters:
         """Access rate constants as lmfit.Parameters object"""
-        params = Parameters()
+        params = lmfit.Parameters()
         for param in self.reactions.values():
             params[param.name] = param
         return params
@@ -181,19 +181,19 @@ class CRN:
             if (name := rate_const.name) in params:
                 self.reactions[reaction] = params[name]
 
-    def __getitem__(self, name: str) -> Parameter:
+    def __getitem__(self, name: str) -> lmfit.Parameter:
         for _, rate_const in self.reactions.items():
             if rate_const.name == name:
                 return rate_const
         raise KeyError(f"No parameter '{name}'")
 
-    def __setitem__(self, name: str, value: Union[float, Parameter]):
+    def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
         for reaction, rate_const in self.reactions.items():
             if rate_const.name == name:
-                if isinstance(value, Parameter):
+                if isinstance(value, lmfit.Parameter):
                     self.reactions[reaction] = value
                 else:
-                    self.reactions[reaction] = Parameter(name, value)
+                    self.reactions[reaction] = lmfit.Parameter(name, value)
                 break
         else:
             raise KeyError(f"No parameter '{name}'")
@@ -241,8 +241,6 @@ class CRN:
 
         return kinetics
 
-    # TODO: compute Jacobian of the rate law to reduce need for numerical estimation
-
     def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
                   t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
@@ -277,7 +275,7 @@ class CRN:
 
         result = xr.DataArray(
             np.zeros(initial_condition.shape+t_eval.shape),
-            list(initial_condition.indexes.items())+[t_eval]
+            [(dim, initial_condition.indexes[dim]) for dim in initial_condition.dims]+[t_eval]
         )
         if len(initial_condition.dims) == 1:
             result[0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition,
@@ -288,7 +286,41 @@ class CRN:
                                             t_eval=t_eval, vectorized=True, **options).y
         return result
 
-    # TODO: fit
+    def fit(self,
+            data: xr.DataArray,
+            initial: xr.DataArray,
+            conversion: Optional[Callable[[xr.DataArray], xr.DataArray]]=None,
+            error: Union[float, xr.DataArray]=1.,
+            t0: Optional[lmfit.Parameter]=None) -> lmfit.minimizer.MinimizerResult:
+        """Fit model parameters to experimental data
+
+        Parameters
+        ----------
+        data: xarray.DataArray with rfu over time
+        initial: xarray.DataArray with concentrations of species
+        conversion: a function that converts concentrations to RFU values
+            The conversion must accept DataArrays of concentrations
+            over time and must return a DataArray of RFU values over
+            time. Can be obtained from mars.Assay.calibrate.
+
+        Result
+        ------
+            An lmfit MinimizerResult that contains (among others) the
+            attribute params, which are the optimized parameters.
+        """
+        conversion = conversion or (lambda conc: conc)
+        original = deepcopy(self.params)
+        params = self.params
+        t0 = t0 if t0 is not None else lmfit.Parameter('t0', value=0., max=0.)
+        params.add(t0)
+        def objective(params):
+            self.params = params
+            model = conversion(self.integrate(initial, t_eval=data.time,
+                                              t0=params['t0'].value))
+            return (data-model)/error
+        fit = lmfit.minimize(objective, params)
+        self.params = original
+        return fit
 
     @staticmethod
     def _render_reactants(multiset):
@@ -307,12 +339,14 @@ class ImpureCRN(CRN):
     will engage into the side reaction instantaneously at the beginning
     of a simulation, consuming the impure fraction as much as possible.
     """
-    side_reactions: Dict[str, Tuple[Parameter, np.ndarray]]
+    side_reactions: Dict[str, Tuple[lmfit.Parameter, np.ndarray]]
 
-    def __init__(self,
-                 reactions: Optional[List[Tuple[Reactants, Reactants, Parameter]]] = None,
-                 impurities: Optional[Dict[str, Tuple[Reactants, Reactants, Parameter]]] = None,
-                 species: Optional[Iterable[str]] = None):
+    def __init__(
+        self,
+        reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
+        impurities: Optional[Dict[str, Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
+        species: Optional[Iterable[str]] = None
+    ):
         """Create impure reaction network
 
         Parameters
@@ -383,7 +417,7 @@ class ImpureCRN(CRN):
         )
 
     def add_impurity(self, impurity: str, educts: Reactants, products: Reactants,
-                     fraction: Parameter):
+                     fraction: lmfit.Parameter):
         """Add side reaction for impure species
 
         Parameters
@@ -414,9 +448,9 @@ class ImpureCRN(CRN):
         self.side_reactions[impurity] = fraction, stoich_vector
 
     @property
-    def params(self) -> Parameters:
+    def params(self) -> lmfit.Parameters:
         """Access rate constants as lmfit.Parameters object"""
-        params = Parameters()
+        params = lmfit.Parameters()
         for param in self.reactions.values():
             params[param.name] = param
         for param, _ in self.side_reactions.values():
@@ -434,7 +468,7 @@ class ImpureCRN(CRN):
                 self.side_reactions[impurity] = params[name], stoich
                 break
 
-    def __getitem__(self, name: str) -> Parameter:
+    def __getitem__(self, name: str) -> lmfit.Parameter:
         for rate_const in self.reactions.values():
             if rate_const.name == name:
                 return rate_const
@@ -443,9 +477,9 @@ class ImpureCRN(CRN):
                 return fraction
         raise KeyError(f"No parameter '{name}'")
 
-    def __setitem__(self, name: str, value: Union[float, Parameter]):
-        if not isinstance(value, Parameter):
-            value = Parameter(name, value)
+    def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
+        if not isinstance(value, lmfit.Parameter):
+            value = lmfit.Parameter(name, value)
         for reaction, rate_const in self.reactions.items():
             if rate_const.name == name:
                 self.reactions[reaction] = value
@@ -582,8 +616,9 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     for educts, products, name, val, impurity in reactions:
         if not name:
             name = rate_names.pop(0) if not impurity else frac_names.pop(0)
-        constant = Parameter(name, value=val, vary=True, min=0)
+        constant = lmfit.Parameter(name, value=val, vary=True, min=0)
         if impurity:
+            constant.max=1.
             cast(ImpureCRN, network).add_impurity(impurity, educts, products, constant)
         else:
             network.add_reaction(educts, products, constant)
@@ -637,7 +672,7 @@ def from_kinDA(path: str, species: Optional[List[str]] = None): # pylint: disabl
             k_minus = float(k_backward)
             k_effective = k_plus*k_minus/(k_plus+k_minus)
 
-            constant = Parameter(f"k{idx}", value=k_effective, vary=True, min=0)
+            constant = lmfit.Parameter(f"k{idx}", value=k_effective, vary=True, min=0)
             idx += 1
 
             network.add_reaction(educts, products, constant)

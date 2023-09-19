@@ -7,6 +7,7 @@ import xarray as xr
 from openpyxl import load_workbook
 
 class Assay:
+    # TODO: API to activate/deactivate wells
     """Access to MARS data.
 
     Assay instances have the following attributes:
@@ -15,9 +16,6 @@ class Assay:
     ----------
     path: str
         Path of the associated xlsx file (read only).
-
-    times: 1D numpy.array
-        Times at which measurements have been taken.
 
     plate: 2D xarray DataArray
         Fluorescence values of all active wells and time points.
@@ -36,6 +34,8 @@ class Assay:
         path: str
               file path
         """
+        # TODO: support reading transposed raw data
+        # TODO: support slices instead of lists in groups
         deactivated_info_cell = 11, 1
         attr_first_row = 1
         attr_last_row = 9
@@ -66,8 +66,8 @@ class Assay:
             for well in cast(str, deactivated_cells) .split(':')[-1].split(';')
         ] if deactivated_cells else []
 
-        self.times = np.array([cell.value
-                               for cell in np.array(worksheet[time_row][2:])])
+        times = np.array([cell.value
+                         for cell in np.array(worksheet[time_row][2:])])
 
         content = pd.MultiIndex.from_tuples([
             (groups_reverse.get(cast(str, row[content_col].value), 'Unknown'),
@@ -82,7 +82,7 @@ class Assay:
         self.full_plate = xr.DataArray(
             [[cell.value for cell in worksheet[y][2:]]
              for y in range(sample_first_row, sample_last_row+1)],
-            [("content", content), ("time", self.times)],
+            [("content", content), ("time", times)],
             name="RFU",
             attrs=dict(
                 cast(str, cell[0].value).partition(': ')[::2]
@@ -101,13 +101,14 @@ class Assay:
         return self.plate._repr_html_() # pylint: disable=protected-access
 
     def calibrate(
-        self, positive: str, negative: str, pos_conc: float, neg_conc: float
-    ) -> Tuple[Callable[[np.ndarray], np.ndarray], Callable[[np.ndarray], np.ndarray]]:
+        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
+        pos_rfu=None, neg_rfu=None
+    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw and normalized RFU values
 
         Transforms are based on the linear relations
 
-        (rfu-neg)/(pos-neg) = (conc-neg_conc)/(pos_conc-neg_conc)
+        (rfu-neg_rfu)/(pos_rfu-neg_rfu) = (conc-neg_conc)/(pos_conc-neg_conc)
 
         where the left hand side captures the linear interpolation
         between repeat-averaged negative and positive control RFU
@@ -117,28 +118,44 @@ class Assay:
 
         Parameters
         ----------
-        positive: str -- element of self.plate.coords['sample']
-            Label of the positive control sample
-        negative: str -- element of self.plate.coords['sample']
-            Label of the negative control sample
-        pos_conc: float
+        pos_conc: xarray.DataArray
             Concentration associated with positive control
-        neg_conc: float
+        neg_conc: xarray.DataArray
             Concentration associated with negative control
+        pos_rfu: optional xarray.DataArray
+            RFU values of the positive control            
+        neg_rfu: optional xarray.DataArray
+            RFU values of the negative control
+
+        If pos_rfu or neg_rfu are not provided, the calibration
+        uses the computes the mean fluorescences of all wells
+        associated with pos_conc.sample and neg_conc.sample.
 
         Returns
         -------
         Two functions from_rfu and to_rfu with signatures
 
-        fromRFU(rfu: np.ndarray) -> np.ndarray
-        toRFU(rfu: np.ndarray) -> np.ndarray
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
         """
         # TODO: support different calibration methods
-        neg = self.plate.loc[negative].mean(axis=0).to_numpy()
-        pos = self.plate.loc[positive].mean(axis=0).to_numpy()
+        pos_rfu = (
+            pos_rfu
+            if pos_rfu is not None
+            else self.plate.sel(sample=pos_conc.sample).mean(axis=0)
+        )
+        neg_rfu = (
+            neg_rfu
+            if neg_rfu is not None
+            else self.plate.sel(sample=neg_conc.sample).mean(axis=0)
+        )
         def from_rfu(rfu):
-            # FIXME: make sure that this works for all supported rfu.ndims
-            return neg_conc + (rfu-neg) * (pos_conc-neg_conc)/(pos-neg)
+            return neg_conc + (pos_conc-neg_conc) * (rfu-neg_rfu)/(pos_rfu-neg_rfu)
         def to_rfu(conc):
-            return neg + (conc-neg_conc) * (pos-neg)/(pos_conc-neg_conc)
+            rfu = (neg_rfu + (pos_rfu-neg_rfu)
+                   * ((conc-neg_conc)/(pos_conc-neg_conc))
+                        .where(pos_conc != neg_conc)
+                        .mean(axis=conc.get_axis_num("species")))
+            rfu.name = "RFU"
+            return rfu.transpose()
         return from_rfu, to_rfu
