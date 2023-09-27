@@ -461,12 +461,10 @@ class ImpureCRN(CRN):
         for reaction, rate_const in self.reactions.items():
             if (name := rate_const.name) in params:
                 self.reactions[reaction] = params[name]
-                break
         for impurity, side_reaction in self.side_reactions.items():
             fraction, stoich = side_reaction
             if (name := fraction.name) in params:
                 self.side_reactions[impurity] = params[name], stoich
-                break
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
         for rate_const in self.reactions.values():
