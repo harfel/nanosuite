@@ -1,47 +1,60 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
-from typing import List, Dict, Optional
+import warnings
+from typing import cast, Callable, Dict, List, Optional, Tuple
 import numpy as np
-from openpyxl import load_workbook  # pylint: disable=import-error
-
+import pandas as pd
+import xarray as xr
+import lmfit # type: ignore
+from openpyxl import load_workbook
 
 class Assay:
+    # TODO: API to activate/deactivate wells
     """Access to MARS data.
 
     Assay instances have the following attributes:
 
     Attributes
     ----------
-    times: 1D numpy.array
-        Times at which measurements have been taken.
-    wells: 2D numpy.array
-        Fluorescence values at each well and time point.
-    contents:
-        mapping from strings to well indices. See Assay.__init__.
-    path: file path
+    path: str
         Path of the associated xlsx file (read only).
+
+    plate: 2D xarray DataArray
+        Fluorescence values of all active wells and time points.
+
+    full_plate: 2D xarray DataArray
+        Fluorescence values of all wells and time points.
+
     deactivated: list of well indices
         Wells that had been blanked by the user.
     """
-    def __init__(self, path: str,
-                 contents: Optional[Dict[str, List[int]]] = None, resolution: int = 1):
+    def __init__(self, path: str, groups: Optional[Dict[str, List[str]]] = None):
         """Plate reader data as saved by MARS.
 
         Parameters
         ----------
-        path: file path
-        contents: mapping of strings to well indices
-            If not given, the mapping is autimatically inferred from
-            the content column.
-        resolution: int (defaults to 1)
-            If set to n, every nth data point is added to the assay
+        path: str
+              file path
         """
+        # TODO: support reading transposed raw data
+        # TODO: support slices instead of lists in groups
         deactivated_info_cell = 11, 1
+        attr_first_row = 1
+        attr_last_row = 9
         time_row = 14
-        content_col = 1
         sample_first_row = 15
+        well_col = 0
+        content_col = 1
 
         self.path = path
+
+        groups = groups or {}
+
+        groups_reverse = {
+            sample: group
+            for group, samples in groups.items()
+            for sample in samples
+        }
 
         workbook = load_workbook(self.path)
         worksheet = workbook["Table All Cycles"]
@@ -49,54 +62,235 @@ class Assay:
         sample_last_row = worksheet.max_row
 
         # read deactivated wells from header info
+        deactivated_cells = worksheet.cell(*deactivated_info_cell).value
         self.deactivated = [
             well.strip()
-            for well in worksheet.cell(*deactivated_info_cell).value.split(':')[-1].split(';')
-        ]
-		# FIXME: Assay.deactivated should be indices into Assay.wells
+            for well in cast(str, deactivated_cells) .split(':')[-1].split(';')
+        ] if deactivated_cells else []
 
-        # time and raw read information (incl. deactivated wells)
-        self.times = np.array([cell.value
-                               for cell in np.array(worksheet[time_row][2::resolution])])
-        self.wells = np.array([
-            [cell.value for cell in worksheet[y][2::resolution]]
-            for y in range(sample_first_row, sample_last_row+1)
-        ], dtype=float)
+        times = np.array([cell.value
+                         for cell in np.array(worksheet[time_row][2:])])
 
-        # mapping of content to well indices (excl. deactivated wells)
-        if not contents:
-            contents = {}
-            for idx, row in enumerate(worksheet[sample_first_row: sample_last_row]):
-                if row[0].value in self.deactivated:
-                    continue
-                content = row[content_col].value
-                contents[content] = contents.get(content, []) + [idx]
-        self.contents = contents
+        content = pd.MultiIndex.from_tuples([
+            (groups_reverse.get(cast(str, row[content_col].value), 'Unknown'),
+             row[content_col].value,
+             row[well_col].value)
+            for idx, row in enumerate(
+                worksheet.iter_rows(min_row=sample_first_row,
+                                    max_row=sample_last_row)
+            )
+        ], names=("group", "sample", "well"))
 
-        self._mean: Optional[np.ndarray] = None
-        self._std: Optional[np.ndarray] = None
+        self.full_plate = xr.DataArray(
+            [[cell.value for cell in worksheet[y][2:]]
+             for y in range(sample_first_row, sample_last_row+1)],
+            [("content", content), ("time", times)],
+            name="RFU",
+            attrs=dict(
+                cast(str, cell[0].value).partition(': ')[::2]
+                for cell in worksheet.iter_rows(min_row=attr_first_row,
+                                                max_row=attr_last_row)
+            ),
+        ).astype(float)
+
+        mask = ~self.full_plate.well.isin(self.deactivated)
+        self.plate = self.full_plate[mask]
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
 
-    @property
-    def mean(self) -> np.ndarray:
-        """Average fluorescence of all wells with identical content."""
-        if self._mean is None:
-            self._mean = np.array([
-                np.mean(self.wells[idx], axis=0)
-                for idx in self.contents.values()
-            ])
-        return self._mean
+    def _repr_html_(self) -> str:
+        return self.plate._repr_html_() # pylint: disable=protected-access
 
-    @property
-    def std(self) -> np.ndarray:
-        """Fluorescence standard deviation of all wells with identical content."""
-        if self._std is None:
-            self._std = np.array([
-                np.std(self.wells[idx], axis=0)
-                for idx in self.contents.values()
+    @staticmethod
+    def _default_error(_):
+        return 1
+
+    def calibrate(
+        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
+        pos_rfu: Optional[xr.DataArray]=None,
+        neg_rfu: Optional[xr.DataArray]=None, *,
+        method: str='direct',
+        error: Optional[Callable[[float], float]]=None,
+    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transforms between modelled RFU values and concentrations
+
+        Parameters
+        ----------
+        pos_conc, neg_conc: xr.DataArray
+            Concentration vector of the positive and negative controls
+        pos_rfu, neg_rfu: optional xr.DataArray
+            RFU values of positive and negative controls
+            (for direct method only)
+        method: 'direct' (default) or 'relaxation'
+        error: optional function mapping float on float values
+            Error model used for fitting when using the 'relaxation' method 
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
+
+        See documentation of the specialized calibration methods for detail.
+        """
+        if method == 'direct':
+            if error is not None:
+                warnings.warn("Argument error is ignored with method 'direct'.")
+            return self.calibrate_direct(pos_conc, neg_conc, pos_rfu, neg_rfu)
+        if method == 'relaxation':
+            if pos_rfu or neg_rfu:
+                warnings.warn("Arguments pos_rfu and neg_rfu are ignored with method 'relaxation'.")
+            return self.calibrate_relaxation(pos_conc, neg_conc, error=error)
+        raise ValueError(f"""Unsupported calibration method: '{method}'
+        Needs to be one of: direct [default], relaxation""")
+
+    def calibrate_relaxation(
+        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
+        error: Optional[Callable[[float], float]]=None,
+    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transforms between modelled RFU values and concentrations
+
+        Parameters
+        ----------
+        pos_conc, neg_conc: xr.DataArray
+            Concentration vector of the positive and negative controls
+        error: optional function mapping float on float values
+            If provided, the function should return the expected
+            measurement error for a given fluorescence.
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
+
+
+        Same as Assay.calibrate_direct, but calibration is based on a
+        double exponential relaxation model that is fitted against
+        the controls. Specifically, the model assumes that fluoresence
+        quickly equilibrates towards an equilibrium value that itself
+        slowly equilibrates over time.
+        """
+        # TODO: report fit statistics
+        pos_rfu = str(pos_conc.sample.data)
+        neg_rfu = str(neg_conc.sample.data)
+        error = error if error is not None else lambda rfu: 1.
+
+        controls = self.plate[self.plate.sample.isin([pos_rfu, neg_rfu])]
+
+        def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
+            if r_1 == r_2:
+                return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
+                        + r_1*(rfu_1 - rfu_inf)*time*np.exp(-r_1*time))
+            return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
+                    + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
+
+        def well_model(time, params):
+            negative = double_relaxation(
+                time,
+                params['r1'], params['r2'],
+                params['N0'], params['N1'], params['Ninf']
+            )
+            positive = double_relaxation(
+                time,
+                params['r1'], params['r2'],
+                params['P0'], params['P1'], params['Pinf']
+            )
+            return np.array([
+                {
+                    pos_rfu: positive,
+                    neg_rfu: negative,
+                }[str(sample.data)]
+                for sample in controls.sample
             ])
-            # replace 0 std values by smallest positive value
-            self._std[self._std == 0] = np.min(self._std, where=self._std != 0, initial=np.inf)
-        return self._std
+
+        def residuals_for(data):
+            def residuals(params):
+                model = well_model(data.coords['time'], params)
+                return (data-model)/error(data)
+            return residuals
+
+        split = controls.shape[-1]//5
+        params = lmfit.create_params(
+            r1 = {'value': float(10/controls.time[split]) , 'min': 0., 'vary': True},
+            r2 = {'value': float(1/controls.time[-1]), 'min': 0., 'vary': True},
+            N0 = {'value': float(controls[:3].mean(axis=0)[0]), 'min': 0.},
+            N1 = {'value': float(controls[:3].mean(axis=0)[split]), 'min': 0.},
+            Ninf = {'value': float(controls[:3].mean(axis=0)[-1]), 'min': 0.},
+            P0 = {'value': float(controls[3:].mean(axis=0)[0]), 'min': 0.},
+            P1 = {'value': float(controls[3:].mean(axis=0)[split]), 'min': 0.},
+            Pinf = {'value': float(controls[3:].mean(axis=0)[-1]), 'min': 0.},
+        )
+        fit = lmfit.minimize(residuals_for(controls), params)
+
+        neg_model = double_relaxation(
+            controls.time, fit.params['r1'], fit.params['r2'],
+            fit.params['N0'], fit.params['N1'], fit.params['Ninf']
+        )
+
+        pos_model = double_relaxation(
+            controls.time, fit.params['r1'], fit.params['r2'],
+            fit.params['P0'], fit.params['P1'], fit.params['Pinf']
+        )
+
+        return self.calibrate_direct(pos_conc, neg_conc, pos_model, neg_model)
+
+    def calibrate_direct(
+        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
+        pos_rfu=None, neg_rfu=None
+    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transforms between raw RFU values and concentrations
+
+        Transforms are based on the linear relations
+
+        (rfu-neg_rfu)/(pos_rfu-neg_rfu) = (conc-neg_conc)/(pos_conc-neg_conc)
+
+        where the left hand side isa linear interpolation from negative
+        to positive control RFU values and the right hand side expresses
+        the reaction coordinate from neg_conc to pos_conc.
+
+        Parameters
+        ----------
+        pos_conc: xarray.DataArray
+            Concentrations associated with positive control
+        neg_conc: xarray.DataArray
+            Concentrations associated with negative control
+        pos_rfu: optional xarray.DataArray
+            RFU values of the positive control            
+        neg_rfu: optional xarray.DataArray
+            RFU values of the negative control
+
+        If pos_rfu or neg_rfu are not provided, the method uses
+        the mean fluorescence values of all wells associated with
+        pos_conc.sample and neg_conc.sample.
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
+        """
+        pos_rfu = (
+            pos_rfu
+            if pos_rfu is not None
+            else self.plate.sel(sample=pos_conc.sample).mean(axis=0)
+        )
+        neg_rfu = (
+            neg_rfu
+            if neg_rfu is not None
+            else self.plate.sel(sample=neg_conc.sample).mean(axis=0)
+        )
+        def from_rfu(rfu):
+            return neg_conc + (pos_conc-neg_conc) * (rfu-neg_rfu)/(pos_rfu-neg_rfu)
+        def to_rfu(conc):
+            rfu = (neg_rfu + (pos_rfu-neg_rfu)
+                   * ((conc-neg_conc)/(pos_conc-neg_conc))
+                        .where(pos_conc != neg_conc)
+                        .mean(axis=conc.get_axis_num("species")))
+            rfu.name = "RFU"
+            return rfu.transpose()
+        return from_rfu, to_rfu
