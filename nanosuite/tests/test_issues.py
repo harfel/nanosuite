@@ -1,6 +1,6 @@
 import pytest
 import xarray as xr
-from .. import crn
+from nanosuite import crn
 
 def test_issue_0001():
     crn_A = crn.from_string("""

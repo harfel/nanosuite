@@ -347,7 +347,7 @@ class ImpureCRN(CRN):
     will engage into the side reaction instantaneously at the beginning
     of a simulation, consuming the impure fraction as much as possible.
     """
-    side_reactions: Dict[str, Tuple[lmfit.Parameter, np.ndarray]]
+    side_reactions: Dict[str, Tuple[Reactants, Reactants, lmfit.Parameter]]
 
     def __init__(
         self,
@@ -369,17 +369,15 @@ class ImpureCRN(CRN):
 
     def __str__(self) -> str:
         def render(impurity, side_reaction):
-            fraction, stoichiometry = side_reaction
+            educt_set, product_set, fraction = side_reaction
             educts = ' + '.join(
-                (species if stoich == -1 else f"{-stoich} {species}")
+                (species if stoich == 1 else f"{-stoich} {species}")
                 + (' [impure]' if species == impurity else '')
-                for species, stoich in zip(self.species, stoichiometry)
-                if stoich<0
+                for species, stoich in educt_set
             )
             products = ' + '.join(
                 species if stoich == 1 else f"{stoich} {species}"
-                for species, stoich in zip(self.species, stoichiometry)
-                if stoich>0
+                for species, stoich in product_set
             )
             return f"{educts} -> {products}; {fraction.name}={fraction.value}"
         return super().__str__() + '\n' + '\n'.join(
@@ -388,17 +386,15 @@ class ImpureCRN(CRN):
 
     def _repr_html_(self) -> str:
         def render(impurity, side_reaction):
-            fraction, stoichiometry = side_reaction
+            educt_set, product_set, fraction = side_reaction
             educts = ' + '.join(
-                (species if stoich == -1 else f"{-stoich} {species}")
+                (species if stoich == 1 else f"{-stoich} {species}")
                 + (' [impure]' if species == impurity else '')
-                for species, stoich in zip(self.species, stoichiometry)
-                if stoich<0
+                for species, stoich in educt_set
             )
             products = ' + '.join(
                 species if stoich == 1 else f"{stoich} {species}"
-                for species, stoich in zip(self.species, stoichiometry)
-                if stoich>0
+                for species, stoich in product_set
             )
             return educts, products, fraction
         return (
@@ -438,22 +434,13 @@ class ImpureCRN(CRN):
         if impurity in self.side_reactions:
             raise ValueError(f"Species {impurity} can only have one declared side reaction.")
 
+        self.side_reactions[impurity] = educts, products, fraction
+
         # collect species
         self.species = self.species.append(pd.Index([
             name for name, _ in educts+products
             if name not in self.species
         ]))
-
-        stoich_vector = np.zeros_like(self.species) # FIXME: fails if species are added afterwards
-        for species, stoich in educts:
-            stoich_vector[self.species.get_loc(species)] -= stoich
-        for species, stoich in products:
-            stoich_vector[self.species.get_loc(species)] += stoich
-
-        if not stoich_vector[self.species.get_loc(impurity)] < 0:
-            raise ValueError("Side reactions cannot be catalytic")
-
-        self.side_reactions[impurity] = fraction, stoich_vector
 
     @property
     def params(self) -> lmfit.Parameters:
@@ -461,7 +448,7 @@ class ImpureCRN(CRN):
         params = lmfit.Parameters()
         for param in self.reactions.values():
             params[param.name] = param
-        for param, _ in self.side_reactions.values():
+        for *_, param in self.side_reactions.values():
             params[param.name] = param
         return params
     @params.setter
@@ -470,15 +457,15 @@ class ImpureCRN(CRN):
             if (name := rate_const.name) in params:
                 self.reactions[reaction] = params[name]
         for impurity, side_reaction in self.side_reactions.items():
-            fraction, stoich = side_reaction
+            educts, products, fraction = side_reaction
             if (name := fraction.name) in params:
-                self.side_reactions[impurity] = params[name], stoich
+                self.side_reactions[impurity] = educts, products, params[name]
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
         for rate_const in self.reactions.values():
             if rate_const.name == name:
                 return rate_const
-        for fraction, _ in self.side_reactions.values():
+        for *_, fraction in self.side_reactions.values():
             if fraction.name == name:
                 return fraction
         raise KeyError(f"No parameter '{name}'")
@@ -491,9 +478,9 @@ class ImpureCRN(CRN):
                 self.reactions[reaction] = value
                 break
         for impurity, side_reaction in self.side_reactions.items():
-            fraction, stoich = side_reaction
+            educts, products, fraction = side_reaction
             if fraction.name == name:
-                self.side_reactions[impurity] = value, stoich
+                self.side_reactions[impurity] = educts, products, value
                 break
         else:
             raise KeyError(f"No parameter '{name}'")
@@ -504,18 +491,30 @@ class ImpureCRN(CRN):
         initial_condition = self.state(initial_condition)
         for impurity, side_reaction in self.side_reactions.items():
             conc = initial_condition.sel(species=impurity)
-            fraction, stoichiometry = side_reaction
+            educts, products, fraction = side_reaction
+
+            # compute stoichiometry vector
+            stoichiometry = np.zeros_like(self.species)
+            for species, stoich in educts:
+                stoichiometry[self.species.get_loc(species)] -= stoich
+            for species, stoich in products:
+                stoichiometry[self.species.get_loc(species)] += stoich
+
+            if not stoichiometry[self.species.get_loc(impurity)] < 0:
+                raise ValueError("Side reactions cannot be catalytic")
+
             flux = np.min([
                 -(fraction if conc.species==impurity else 1.)/stoich*conc
                 for conc, stoich in zip(initial_condition.T, stoichiometry)
                 if stoich < 0
             ], axis=0)
-            fluxes.append(flux)
-        for side_reaction, flux in zip(self.side_reactions.values(), fluxes):
+            fluxes.append((flux, stoichiometry))
+
+        for flux, stoichiometry in fluxes:
             if len(initial_condition.dims) == 1:
-                initial_condition = initial_condition + flux*side_reaction[1]
+                initial_condition = initial_condition + flux*stoichiometry
             else:
-                initial_condition = initial_condition + flux.reshape(-1,1)*side_reaction[1]
+                initial_condition = initial_condition + flux.reshape(-1,1)*stoichiometry
         return super().integrate(initial_condition, t_eval, t0, **options)
 
 
