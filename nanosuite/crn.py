@@ -264,6 +264,9 @@ class CRN:
             (Does not influence the numerical step width of integration).
         t0: float
             time point at which integration starts.
+        options
+            any remaining keyword arguments are passed to
+            scipy.optimize.solve_ivp
 
         Returns
         -------
@@ -282,6 +285,7 @@ class CRN:
                                    t_eval=t_eval, vectorized=True, **options).y
         else:
             for idx, initial in enumerate(initial_condition):
+                # TODO: parallelize using multiprocessing.Pool's
                 result[idx, 0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial,
                                             t_eval=t_eval, vectorized=True, **options).y
         return result
@@ -291,7 +295,8 @@ class CRN:
             initial: xr.DataArray,
             conversion: Optional[Callable[[xr.DataArray], xr.DataArray]]=None,
             error: Union[float, xr.DataArray]=1.,
-            t0: Optional[lmfit.Parameter]=None) -> lmfit.minimizer.MinimizerResult:
+            t0: Optional[lmfit.Parameter]=None,  # pylint: disable=invalid-name
+            **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
         Parameters
@@ -302,6 +307,9 @@ class CRN:
             The conversion must accept DataArrays of concentrations
             over time and must return a DataArray of RFU values over
             time. Can be obtained from mars.Assay.calibrate.
+        options:
+            Any remaining keyword arguments are pass to
+            lmfit.minimize
 
         Result
         ------
@@ -318,7 +326,7 @@ class CRN:
             model = conversion(self.integrate(initial, t_eval=data.time,
                                               t0=params['t0'].value))
             return (data-model)/error
-        fit = lmfit.minimize(objective, params)
+        fit = lmfit.minimize(objective, params, **options)
         self.params = original
         return fit
 
@@ -436,7 +444,7 @@ class ImpureCRN(CRN):
             if name not in self.species
         ]))
 
-        stoich_vector = np.zeros_like(self.species)
+        stoich_vector = np.zeros_like(self.species) # FIXME: fails if species are added afterwards
         for species, stoich in educts:
             stoich_vector[self.species.get_loc(species)] -= stoich
         for species, stoich in products:
@@ -607,7 +615,7 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     frac_names = [free_name for idx, _ in enumerate(reactions)
                   if (free_name := f'p{idx}') not in bound_names]
 
-    cls = ImpureCRN if any(impurity for _, __, ___, ____, impurity in reactions) else CRN
+    cls = ImpureCRN if any(impurity for *_, impurity in reactions) else CRN
     network = cls(species=species)
 
     # add reactions
