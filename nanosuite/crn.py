@@ -609,9 +609,9 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
 
     # name unnamed constants
     bound_names = [name for educts, products, name, val, impurity in reactions if name]
-    rate_names = [free_name for idx, _ in enumerate(reactions)
+    rate_names = [free_name for idx, _ in enumerate(reactions, 1)
                   if (free_name := f'k{idx}') not in bound_names]
-    frac_names = [free_name for idx, _ in enumerate(reactions)
+    frac_names = [free_name for idx, _ in enumerate(reactions, 1)
                   if (free_name := f'p{idx}') not in bound_names]
 
     cls = ImpureCRN if any(impurity for *_, impurity in reactions) else CRN
