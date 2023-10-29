@@ -509,7 +509,7 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     -------
     A CRN instance with the given reactions.
     """
-    # TODO: support reversible reactions
+    # FIXME: support reversible reactions
 
     # parse reaction
     reactions: List[Tuple[Reactants, Reactants, Optional[str], float, Optional[str]]] = []
