@@ -1,4 +1,17 @@
+import math
 from nanosuite import crn
+
+
+def test_params_add():
+    test_crn = crn.from_string("""
+        A + B -> C; k_f
+        C -> A + B; k_b
+    """)
+    params = test_crn.params
+    params.add('dG', value=-12.5)
+    params['k_b'].expr = 'k_f/exp(-dG)'
+    assert 'dG' in params
+    assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
 def test_from_string_irreversible():
     test_crn = crn.from_string("""

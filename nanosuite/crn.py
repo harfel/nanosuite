@@ -41,13 +41,15 @@ class CRN:
     species: pandas.Index
         species names in state vector
     complexes: list of (species, stoichiomentry) pairs
-    reactions: mapping of complex pairs to lmfit.Parameter instances
+    reactions: mapping of complex pairs to rate constant names
+    params: lmfit.Parameters instance of rate constants
     """
     # TODO: support open networks and buffered species
 
     species: pd.Index
     complexes: List[Reactants]
-    reactions: Dict[Tuple[Reactants, Reactants], lmfit.Parameter]
+    reactions: Dict[Tuple[Reactants, Reactants], str]
+    params: lmfit.Parameters
 
     def __init__(self,
                  reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
@@ -66,15 +68,16 @@ class CRN:
         self.species = pd.Index(species or [])
         self.complexes = []
         self.reactions = {}
+        self.params = lmfit.Parameters()
         for reaction in reactions or []:
             self.add_reaction(*reaction)
 
     def __str__(self) -> str:
-        def render(complexes, rate):
+        def render(complexes, name):
             educts = self._render_reactants(complexes[0])
             products = self._render_reactants(complexes[1])
-            return f"{educts} -> {products}; {rate.name}={rate.value}"
-        return '\n'.join(render(*reaction) for reaction in self.reactions.items())
+            return f"{educts} -> {products}; {name}={self.params[name].value}"
+        return '\n'.join(render(reaction, name) for reaction, name in self.reactions.items())
 
     def _repr_html_(self) -> str:
         return (
@@ -84,9 +87,9 @@ class CRN:
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left">{rate.name} = {rate.value:.2g}</td>
+                    <td style="text-align: left">{name} = {self.params[name].value:.2g}</td>
                 </tr>'''
-                for reaction, rate in self.reactions.items()
+                for reaction, name in self.reactions.items()
             )
             + '</table>'
         )
@@ -125,7 +128,7 @@ class CRN:
         """
         return np.array([
             [
-                self.reactions.get((educts, products), 0.)
+                self.params[name] if (name := self.reactions.get((educts, products), '')) else 0.
                 for educts in self.complexes
             ]
             for products in self.complexes
@@ -138,8 +141,8 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
-        for reaction, rate in self.reactions.items():
-            rate.value *= scale_factor**(len(reaction[0])-1)
+        for reaction, name in self.reactions.items():
+            self.params[name].value *= scale_factor**(len(reaction[0])-1)
 
     def add_reaction(self, educts: Reactants, products: Reactants, rate: lmfit.Parameter):
         """Add a reaction to the network.
@@ -153,7 +156,7 @@ class CRN:
         products: tuple of species name, stoichiometry tuples
         rate: lmfit.Parameter of the rate constant
         """
-        if any(current_rate.name == rate.name for current_rate in self.reactions.values()):
+        if rate.name in self.params:
             raise ValueError(f"Parameter '{rate.name}' is already used.")
 
         # collect species and complexes
@@ -166,37 +169,14 @@ class CRN:
             if compl not in self.complexes:
                 self.complexes.append(compl)
 
-        self.reactions[educts, products] = rate
-
-    @property
-    def params(self) -> lmfit.Parameters:
-        """Access rate constants as lmfit.Parameters object"""
-        params = lmfit.Parameters()
-        for param in self.reactions.values():
-            params[param.name] = param
-        return params
-    @params.setter
-    def params(self, params) -> None:
-        for reaction, rate_const in self.reactions.items():
-            if (name := rate_const.name) in params:
-                self.reactions[reaction] = params[name]
+        self.reactions[educts, products] = rate.name
+        self.params.add(rate)
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
-        for _, rate_const in self.reactions.items():
-            if rate_const.name == name:
-                return rate_const
-        raise KeyError(f"No parameter '{name}'")
+        return self.params[name]
 
     def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
-        for reaction, rate_const in self.reactions.items():
-            if rate_const.name == name:
-                if isinstance(value, lmfit.Parameter):
-                    self.reactions[reaction] = value
-                else:
-                    self.reactions[reaction] = lmfit.Parameter(name, value)
-                break
-        else:
-            raise KeyError(f"No parameter '{name}'")
+        self.params[name] = value
 
     def state(self, conc: xr.DataArray) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
@@ -347,7 +327,7 @@ class ImpureCRN(CRN):
     will engage into the side reaction instantaneously at the beginning
     of a simulation, consuming the impure fraction as much as possible.
     """
-    side_reactions: Dict[str, Tuple[Reactants, Reactants, lmfit.Parameter]]
+    side_reactions: Dict[str, Tuple[Reactants, Reactants, str]]
 
     def __init__(
         self,
@@ -404,9 +384,9 @@ class ImpureCRN(CRN):
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left">{rate.name} = {rate.value:.2g}</td>
+                    <td style="text-align: left">{name} = {self.params[name].value:.2g}</td>
                 </tr>'''
-                for reaction, rate in self.reactions.items()
+                for reaction, name in self.reactions.items()
             )
             + '\n'.join(
                 f'''<tr>
@@ -434,7 +414,8 @@ class ImpureCRN(CRN):
         if impurity in self.side_reactions:
             raise ValueError(f"Species {impurity} can only have one declared side reaction.")
 
-        self.side_reactions[impurity] = educts, products, fraction
+        self.side_reactions[impurity] = educts, products, fraction.name
+        self.params.add(fraction)
 
         # collect species
         self.species = self.species.append(pd.Index([
@@ -442,56 +423,13 @@ class ImpureCRN(CRN):
             if name not in self.species
         ]))
 
-    @property
-    def params(self) -> lmfit.Parameters:
-        """Access rate constants as lmfit.Parameters object"""
-        params = lmfit.Parameters()
-        for param in self.reactions.values():
-            params[param.name] = param
-        for *_, param in self.side_reactions.values():
-            params[param.name] = param
-        return params
-    @params.setter
-    def params(self, params) -> None:
-        for reaction, rate_const in self.reactions.items():
-            if (name := rate_const.name) in params:
-                self.reactions[reaction] = params[name]
-        for impurity, side_reaction in self.side_reactions.items():
-            educts, products, fraction = side_reaction
-            if (name := fraction.name) in params:
-                self.side_reactions[impurity] = educts, products, params[name]
-
-    def __getitem__(self, name: str) -> lmfit.Parameter:
-        for rate_const in self.reactions.values():
-            if rate_const.name == name:
-                return rate_const
-        for *_, fraction in self.side_reactions.values():
-            if fraction.name == name:
-                return fraction
-        raise KeyError(f"No parameter '{name}'")
-
-    def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
-        if not isinstance(value, lmfit.Parameter):
-            value = lmfit.Parameter(name, value)
-        for reaction, rate_const in self.reactions.items():
-            if rate_const.name == name:
-                self.reactions[reaction] = value
-                break
-        for impurity, side_reaction in self.side_reactions.items():
-            educts, products, fraction = side_reaction
-            if fraction.name == name:
-                self.side_reactions[impurity] = educts, products, value
-                break
-        else:
-            raise KeyError(f"No parameter '{name}'")
-
     def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
                   t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
         fluxes = []
         initial_condition = self.state(initial_condition)
         for impurity, side_reaction in self.side_reactions.items():
             conc = initial_condition.sel(species=impurity)
-            educts, products, fraction = side_reaction
+            educts, products, name = side_reaction
 
             # compute stoichiometry vector
             stoichiometry = np.zeros_like(self.species)
@@ -504,7 +442,7 @@ class ImpureCRN(CRN):
                 raise ValueError("Side reactions cannot be catalytic")
 
             flux = np.min([
-                -(fraction if conc.species==impurity else 1.)/stoich*conc
+                -(self.params[name] if conc.species==impurity else 1.)/stoich*conc
                 for conc, stoich in zip(initial_condition.T, stoichiometry)
                 if stoich < 0
             ], axis=0)
