@@ -43,6 +43,8 @@ def test_from_string_reversible():
         A + B <=> C
     """)
     assert len(test_crn.reactions) == 2
+    assert 'kf1' in test_crn.params
+    assert 'kb1' in test_crn.params
 
 def test_from_string_impure():
     test_crn = crn.from_string("""
