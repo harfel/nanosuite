@@ -346,7 +346,7 @@ class ImpureCRN(CRN):
 
     def __str__(self) -> str:
         def render(impurity, side_reaction):
-            educt_set, product_set, fraction = side_reaction
+            educt_set, product_set, name = side_reaction
             educts = ' + '.join(
                 (species if stoich == 1 else f"{-stoich} {species}")
                 + (' [impure]' if species == impurity else '')
@@ -356,7 +356,7 @@ class ImpureCRN(CRN):
                 species if stoich == 1 else f"{stoich} {species}"
                 for species, stoich in product_set
             )
-            return f"{educts} -> {products}; {fraction.name}={fraction.value}"
+            return f"{educts} -> {products}; {name}={self.params[name].value}"
         return super().__str__() + '\n' + '\n'.join(
             render(*side_reaction) for side_reaction in self.side_reactions.items()
         )
