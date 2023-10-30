@@ -38,6 +38,13 @@ def test_from_string_rate_value():
     """)
     assert test_crn.params['k1'] == 10
 
+def test_from_string_reversible():
+    test_crn = crn.from_string("""
+        A + B <=> C
+    """)
+    assert len(test_crn.reactions) == 2
+    assert 'kf1' in test_crn.params
+    assert 'kb1' in test_crn.params
 
 def test_from_string_impure():
     test_crn = crn.from_string("""

@@ -32,8 +32,7 @@ class CRN:
     This is equivalent to the more convenient function:
 
     >>> crn = from_string(\"\"\"
-    ...    A + B -> C; k_forward = 0.1
-    ...    C -> A + B; k_backward = 1.0
+    ...    A + B <=> C; k_forward = 0.1, k_backward = 1.0
     ... \"\"\")
 
     Instance attributes
@@ -156,9 +155,6 @@ class CRN:
         products: tuple of species name, stoichiometry tuples
         rate: lmfit.Parameter of the rate constant
         """
-        if rate.name in self.params:
-            raise ValueError(f"Parameter '{rate.name}' is already used.")
-
         # collect species and complexes
         self.species = self.species.append(pd.Index([
             name for name, _ in educts+products
@@ -170,7 +166,8 @@ class CRN:
                 self.complexes.append(compl)
 
         self.reactions[educts, products] = rate.name
-        self.params.add(rate)
+        if rate.name not in self.params:
+            self.params.add(rate)
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
         return self.params[name]
@@ -456,47 +453,31 @@ class ImpureCRN(CRN):
         return super().integrate(initial_condition, t_eval, t0, **options)
 
 
-def _parse_reaction(string: str) -> Tuple[Reactants, Reactants, Optional[str]]:
-    def parse_complex(string: str) -> Tuple[Reactants, Optional[str]]:
-        reactants: Dict[str, int] = {}
-        pattern = re.compile(r' *([0-9]*) *\*? *([^\s+0-9][^\s+]*) *(\[impure\])? *')
-        impurity: Optional[str] = None
-        for expr in string.split(' + '):
-            match = pattern.fullmatch(expr)
-            if not match:
-                raise ValueError(f"Syntax error in reactant: '{expr.strip()}'.")
-            name = match.group(2)
-            stoich = int(match.group(1)) if match.group(1) else 1
-            reactants[name] = reactants.get(name, 0) + stoich
-            if match.group(3):
-                impurity = name
-        return tuple(sorted(reactants.items())), impurity
-
-    educts_string, _, products_string = string.partition('->')
-    educts, impurity = parse_complex(educts_string)
-    products, prod_impurity = parse_complex(products_string)
-    if prod_impurity:
-        raise ValueError(f"Impurities not allowed in reaction product: {prod_impurity} [impure]")
-    return educts, products, impurity
-
 def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, ImpureCRN]:
     """Construct a chemical reaction network from a string representation.
 
     The format of the string definition is as follows: each reaction is
-    specified on a single line. The left hand side and the right hand
-    side (reaction complexes) of the reaction are separated by the
-    character sequence '->'. Reaction complexes use '+' to separate
-    individual chemical species names. Reactions can be followed by a
-    semicolon (;) after which the reaction rate constant is specified in
-    the format name=value. Both name and value are optional. If no value
-    is given, 1 is assumed. If no name is given, a generic name that is
-    not used in other reactions is provided. A hash character (#)
-    anywhere in the input marks the beginning of a comment that extends
-    until the end of the line. See the class docstring for an example.
+    specified on a single line. A hash character (#) anywhere in the
+    input marks the beginning of a comment that extends until the end of
+    the line.
+    Each line specifies an arreversible ('->') or reversible ('<=>')
+    reaction among educts and products. Educts and products use '+' to
+    separate individual chemical species names. Species names can be
+    preceeded by their stoichiometric factor.
+
+    Reactions can be followed by a semicolon (;) after which the
+    reaction rate constants are specified in the format name=value.
+    For reversible reactions, the forward and backward constant
+    specifications are separated by a comma. In both cases, both name
+    and value are optional. If no value is given, 1 is assumed.
+    If no name is given, a generic name that is not used in other
+    reactions is provided.
 
     If any educt species name is followed by [impure], the function
     returns an ImpureCRN instance and any respectively marked reaction
     is taken to be an instantaneous side reaction.
+
+    See the class docstring for an example.
 
     Parameters
     ----------
@@ -509,66 +490,47 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     -------
     A CRN instance with the given reactions.
     """
-    # TODO: support reversible reactions
+    reactions: List[Tuple[Reactants, Reactants, Optional[str], bool, lmfit.Parameter]] = []
+    context: Dict[str, lmfit.Parameter] = {}
+    # parse reactions line by line
+    for line in string.split('\n'):
+        reactions.extend(_parse_line(line, context))
 
-    # parse reaction
-    reactions: List[Tuple[Reactants, Reactants, Optional[str], float, Optional[str]]] = []
-
-    for raw_line in string.split('\n'):
-        line, _, __ = raw_line.partition('#') # remove comments
-        line = line.strip()
-        if not line:
+    # replace rate name placeholders with descriptive variable names
+    pattern = re.compile(r'\d+')
+    bound_nums = [int(match) for *_, param in reactions
+                  for match in pattern.findall(param.name)
+                  if not param.name.startswith('_')]
+    free_nums = [idx for idx, (*_, rate) in enumerate(reactions, 1)
+                 if idx not in bound_nums]
+    reverse = 0
+    for idx, (educts, products, impurity, reverse, rate) in enumerate(reactions):
+        if not rate.name.startswith('_'):
             continue
-
-        reaction, sep, rate_constant = line.partition(';')
-
-        if '->' in reaction:
-            educts, products, impurity = _parse_reaction(reaction)
-            # format of rate_constant string: [identifier][=][float-literal]
-            if not sep:
-                const_name = None
-                const_val = 0.01 if impurity else 1.
-            else:
-                param, equals, value = rate_constant.partition('=')
-                if equals:
-                    const_name = param.strip()
-                    const_val = float(value)
-                else:
-                    try:
-                        const_name = None
-                        const_val = float(param)
-                    except ValueError:
-                        const_name = param.strip()
-                        const_val = 1.
-            reactions.append((educts, products, const_name, const_val, impurity))
-
-        else:
-            raise ValueError(f"Invalid input: {raw_line.strip()}")
-
-    # name unnamed constants
-    bound_names = [name for educts, products, name, val, impurity in reactions if name]
-    rate_names = [free_name for idx, _ in enumerate(reactions, 1)
-                  if (free_name := f'k{idx}') not in bound_names]
-    frac_names = [free_name for idx, _ in enumerate(reactions, 1)
-                  if (free_name := f'p{idx}') not in bound_names]
-
-    cls = ImpureCRN if any(impurity for *_, impurity in reactions) else CRN
-    network = cls(species=species)
-
-    # add reactions
-    for educts, products, name, val, impurity in reactions:
-        if not name:
-            name = rate_names.pop(0) if not impurity else frac_names.pop(0)
-        constant = lmfit.Parameter(name, value=val, vary=True, min=0)
         if impurity:
-            constant.max=1.
-            cast(ImpureCRN, network).add_impurity(impurity, educts, products, constant)
+            rate.max = 1.
+            rate.name = f'p{free_nums.pop(0)}'
+        elif reverse:
+            num = free_nums.pop(0)
+            rate.name = f'kf{num}'
+            reactions[idx+1][-1].name = f'kb{num}'
         else:
-            network.add_reaction(educts, products, constant)
+            rate.name = f'k{free_nums.pop(0)}'
 
-    return network
+    # instantiate appropriate CRN class
+    cls = ImpureCRN if any(impurity for *_, impurity, __, ___ in reactions) else CRN
+    crn = cls(species=species)
 
-def from_kinDA(path: str, species: Optional[List[str]] = None): # pylint: disable=invalid-name
+    # add reactions and side reactions
+    for educts, products, impurity, _, rate in reactions:
+        if impurity:
+            rate.max=1.
+            cast(ImpureCRN, crn).add_impurity(impurity, educts, products, rate)
+        else:
+            crn.add_reaction(educts, products, rate)
+    return crn
+
+def from_kinDA(path: str, species: Optional[List[str]] = None) -> CRN: # pylint: disable=invalid-name
     """Construct a CRN from a kinDA csv file.
 
     See https://github.com/DNA-and-Natural-Algorithms-Group/KinDA.
@@ -595,7 +557,7 @@ def from_kinDA(path: str, species: Optional[List[str]] = None): # pylint: disabl
         idx = 0 # reaction index
         while len(row := next(reader)) == 5:
             reaction, k_forward, _, k_backward = row[:4]
-            educts, products, _ = _parse_reaction(reaction)
+            educts, products, *_ = _parse_reaction(reaction)[0]
 
             # skip reactions that do not convert species
             if educts == products:
@@ -620,3 +582,95 @@ def from_kinDA(path: str, species: Optional[List[str]] = None): # pylint: disabl
 
             network.add_reaction(educts, products, constant)
         return network
+
+def _parse_line(string: str, context: Dict[str, lmfit.Parameter]
+               ) -> List[Tuple[Reactants, Reactants, Optional[str], bool, lmfit.Parameter]]:
+    """
+    LINE |- [REACTION [; RATEDEFS]] [# COMMENT]
+    """
+    inp = string.partition('#')[0].strip()
+    if not inp.strip():
+        return []
+    reaction_string, rate_sep, rate_string = inp.partition(';')
+    reactions = _parse_reaction(reaction_string.strip())
+    rates = _parse_ratedefs(rate_string, context) if rate_sep else []
+
+    if len(rates) > len(reactions):
+        raise ValueError("Too many rate constants given.")
+    while len(rates) < len(reactions):
+        name = f'_k_{len(context)+1}'
+        param = lmfit.Parameter(name, value=1., min=0.)
+        context[name] = param
+        rates.append(param)
+
+    return [(educts, products, impurity, reverse, rate)
+            for (educts, products, impurity, reverse), rate in zip(reactions, rates)]
+
+def _parse_reaction(string: str) -> List[Tuple[Reactants, Reactants, Optional[str], bool]]:
+    """
+    REACTION |- REACTANTS -> REACTANTS
+    REACTION |- REACTANTS <=> REACTANTS
+    """
+    if '->' in string:
+        educt_string, _, product_string = string.partition('->')
+        educts, impurity = _parse_reactants(educt_string)
+        products, forbidden_impurity = _parse_reactants(product_string)
+        if forbidden_impurity:
+            raise ValueError("Only educts can be impure.")
+        return [(educts, products, impurity, False)]
+    if '<=>' in string:
+        educt_string, _, product_string = string.partition('<=>')
+        educts, impure_educts = _parse_reactants(educt_string)
+        products, impure_products = _parse_reactants(product_string)
+        if impure_educts or impure_products:
+            raise ValueError("Only irreversible reactions can involve impurities.")
+        return [(educts, products, None, True), (products, educts, None, True)]
+    raise ValueError("Missing '->' or '<=> in reaction string.'")
+
+def _parse_reactants(string: str) -> Tuple[Reactants, Optional[str]]:
+    """
+    REACTANTS |- [[STOICHIOMETRY [*]] SPECIES]*
+    """
+    reactants: Dict[str, int] = {}
+    pattern = re.compile(r' *([0-9]*) *\*? *([^\s+0-9][^\s+]*) *(\[impure\])? *')
+    impurity: Optional[str] = None
+    for expr in string.split(' +'):
+        match = pattern.fullmatch(expr)
+        if not match:
+            raise ValueError(f"Syntax error in reactant: '{expr.strip()}'.")
+        name = match.group(2)
+        stoich = int(match.group(1)) if match.group(1) else 1
+        reactants[name] = reactants.get(name, 0) + stoich
+        if match.group(3):
+            if impurity:
+                raise ValueError("Only one impurity per reaction can be given.")
+            impurity = name
+    return tuple(sorted(reactants.items())), impurity
+
+def _parse_ratedefs(string: str, context: Dict[str, lmfit.Parameter]) -> List[lmfit.Parameter]:
+    """
+    RATEDEFS |- [RATEDEF]*
+    """
+    return [_parse_ratedef(rate_string, context) for rate_string in string.split(',')]
+
+def _parse_ratedef(string: str, context: Dict[str, lmfit.Parameter]) -> lmfit.Parameter:
+    """
+    RATEDEF |- VALUE
+    RATEDEF |- NAME [= VALUE]
+    """
+    if '=' in string:
+        name, _, val = string.partition('=')
+        if name.startswith('_'):
+            raise ValueError(f"Rate constant not allowed to start with underscore: {name}.")
+        return lmfit.Parameter(name.strip(), value=float(val.strip()), min=0.)
+    try:
+        value = float(string.strip())
+        name = f'_k_{len(context)+1}'
+        param = lmfit.Parameter(name, value=value, min=0.)
+        context[name] = param
+        return param
+    except ValueError:
+        name = string.strip()
+        if name.startswith('_'):
+            raise ValueError(f"Rate constant not allowed to start with underscore: {name}.") # pylint: disable=raise-missing-from
+        return lmfit.Parameter(name, value=1., min=0.)
