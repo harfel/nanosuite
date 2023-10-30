@@ -390,7 +390,7 @@ class ImpureCRN(CRN):
                     <td style="text-align: right">{(res:=render(impurity, side_reaction))[0]}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{res[1]}</td>
-                    <td style="text-align: left">{res[2].name} = {res[2].value:.2g}</td>
+                    <td style="text-align: left">{res[2]} = {self.params[res[2]].value:.2g}</td>
                 </tr>'''
                 for impurity, side_reaction in self.side_reactions.items()
             )

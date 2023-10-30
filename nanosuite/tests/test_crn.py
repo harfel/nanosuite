@@ -13,6 +13,32 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
+def test_repr_html():
+    test_crn = crn.from_string("""
+        A + B -> C; k1=1.1
+        C + D -> E + B; k2=1.2
+        A [impure] + D -> E; p=0.0
+    """)
+    rep = ''.join(line.strip() for line in test_crn._repr_html_().split('\n'))
+    expected = '''<table><tr>
+            <td style="text-align: right">A + B</td>
+            <td style="text-align: center">&LongRightArrow;</td>
+            <td style="text-align: left">C</td>
+            <td style="text-align: left">k1 = 1.1</td>
+        </tr>
+        <tr>
+            <td style="text-align: right">C + D</td>
+            <td style="text-align: center">&LongRightArrow;</td>
+            <td style="text-align: left">B + E</td>
+            <td style="text-align: left">k2 = 1.2</td>
+        </tr><tr>
+            <td style="text-align: right">A [impure] + D</td>
+            <td style="text-align: center">&LongRightArrow;</td>
+            <td style="text-align: left">E</td>
+            <td style="text-align: left">p = 0</td>
+        </tr></table>'''
+    assert rep == ''.join(line.strip() for line in expected.split('\n'))
+
 def test_from_string_irreversible():
     test_crn = crn.from_string("""
         A + B -> C
