@@ -9,7 +9,8 @@ import lmfit # type: ignore
 
 
 class Assay:
-    # TODO: API to activate/deactivate wells
+    # FIXME: API to activate/deactivate wells
+    # FIXME: Convenient access to avg and std
     """Access to MARS data.
 
     Assay instances have the following attributes:
