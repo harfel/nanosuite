@@ -1,12 +1,12 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import xarray as xr
 import lmfit # type: ignore
-from openpyxl import load_workbook
+
 
 class Assay:
     # TODO: API to activate/deactivate wells
@@ -36,62 +36,63 @@ class Assay:
         path: str
               file path
         """
-        # TODO: support reading transposed raw data
         # TODO: support slices instead of lists in groups
         deactivated_info_cell = 11, 1
-        attr_first_row = 1
-        attr_last_row = 9
-        time_row = 14
-        sample_first_row = 15
-        well_col = 0
-        content_col = 1
+        info_vals = ["user", "path", "test ID", "test name",
+                     "date", "ID1", "ID2", "ID3"]
 
         self.path = path
-
         groups = groups or {}
 
-        groups_reverse = {
-            sample: group
-            for group, samples in groups.items()
-            for sample in samples
-        }
+        df_groups = pd.DataFrame(
+            [(k, val) for k, vals in groups.items() for val in vals],
+            columns=['group', 'sample'])
 
-        workbook = load_workbook(self.path)
-        worksheet = workbook["Table All Cycles"]
+        # Create header df and extract data
+        df_total = pd.read_excel(self.path, header=None)
+        df_header = df_total.iloc[:deactivated_info_cell[0], :1]
 
-        sample_last_row = worksheet.max_row
-
-        # read deactivated wells from header info
-        deactivated_cells = worksheet.cell(*deactivated_info_cell).value
+        # extract info from headers, into dictionary
+        attributes = {}
+        n_inf = 0
+        for inf in info_vals:
+            attributes[inf] = str(df_header.iloc[n_inf]).split(": ")[1].split("\n")[0]
+            n_inf += 1
         self.deactivated = [
-            well.strip()
-            for well in cast(str, deactivated_cells) .split(':')[-1].split(';')
-        ] if deactivated_cells else []
+            cell.strip()
+            for cell in
+            df_header.iloc[10, 0].rsplit(': ', maxsplit=1)[-1].split('; ')
+        ]
+        attributes["deactivated_cells"] = ', '.join(self.deactivated)
 
-        times = np.array([cell.value
-                         for cell in np.array(worksheet[time_row][2:])])
+        # Create main df and eval if it needs to be transposed
+        df_main = df_total.iloc[len(df_header)+1:,]
 
-        content = pd.MultiIndex.from_tuples([
-            (groups_reverse.get(cast(str, row[content_col].value), 'Unknown'),
-             row[content_col].value,
-             row[well_col].value)
-            for idx, row in enumerate(
-                worksheet.iter_rows(min_row=sample_first_row,
-                                    max_row=sample_last_row)
-            )
-        ], names=("group", "sample", "well"))
+        if isinstance(df_main.iloc[1, 2], str):
+            df_main = df_main.T
 
-        self.full_plate = xr.DataArray(
-            [[cell.value for cell in worksheet[y][2:]]
-             for y in range(sample_first_row, sample_last_row+1)],
-            [("content", content), ("time", times)],
+        df_main.columns = pd.Index(df_main.iloc[0])
+        df_main = df_main[1:]
+        df_main.index = pd.Index(np.arange(1, len(df_main) + 1))
+
+        # extract coordinates from dataframe
+        times = df_main.iloc[:1, 2:].values.flatten().astype(float)
+        main_array = df_main.iloc[1:, 2:].values
+
+
+        df_content = df_main[["Content", "Well"]][1:]
+        df_content.columns = pd.Index(["sample", "well"])
+        if df_groups.empty:
+            df_content["group"] = 'Unknown'
+        else:
+            df_content = df_content.merge(df_groups, on='sample')
+        df_multicontent = pd.MultiIndex.from_frame(df_content)
+
+        # from dataframe to xarray
+        self.full_plate = xr.DataArray(main_array,
+            [("content", df_multicontent), ("time", times)],
             name="RFU",
-            attrs=dict(
-                cast(str, cell[0].value).partition(': ')[::2]
-                for cell in worksheet.iter_rows(min_row=attr_first_row,
-                                                max_row=attr_last_row)
-            ),
-        ).astype(float)
+            attrs=attributes,).astype(float)
 
         mask = ~self.full_plate.well.isin(self.deactivated)
         self.plate = self.full_plate[mask]
