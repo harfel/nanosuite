@@ -13,7 +13,6 @@ setup(name='Nanosuite',
       url='http://harfel.teerun.de/',
       packages=['nanosuite'],
       install_requires=[
-        "openpyxl",
         "numpy",
         "pandas",
         "xarray",
