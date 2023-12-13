@@ -9,7 +9,6 @@ import lmfit # type: ignore
 
 
 class Assay:
-    # FIXME: API to activate/deactivate wells
     # FIXME: Convenient access to avg and std
     """Access to MARS data.
 
@@ -26,8 +25,8 @@ class Assay:
     full_plate: 2D xarray DataArray
         Fluorescence values of all wells and time points.
 
-    deactivated: list of well indices
-        Wells that had been blanked by the user.
+    active_wells: 1D xarray DataArray
+        Wells that have not been blanked by the user.
     """
     def __init__(self, path: str, groups: Optional[Dict[str, List[str]]] = None):
         """Plate reader data as saved by MARS.
@@ -59,12 +58,12 @@ class Assay:
         for inf in info_vals:
             attributes[inf] = str(df_header.iloc[n_inf]).split(": ")[1].split("\n")[0]
             n_inf += 1
-        self.deactivated = [
+        deactivated = [
             cell.strip()
             for cell in
             df_header.iloc[10, 0].rsplit(': ', maxsplit=1)[-1].split('; ')
         ]
-        attributes["deactivated_cells"] = ', '.join(self.deactivated)
+        attributes["deactivated_cells"] = ', '.join(deactivated)
 
         # Create main df and eval if it needs to be transposed
         df_main = df_total.iloc[len(df_header)+1:,]
@@ -95,14 +94,36 @@ class Assay:
             name="RFU",
             attrs=attributes,).astype(float)
 
-        mask = ~self.full_plate.well.isin(self.deactivated)
-        self.plate = self.full_plate[mask]
+        self.active_wells = ~self.full_plate.well.isin(deactivated)
+        self.plate = self.full_plate[self.active_wells]
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
 
     def _repr_html_(self) -> str:
         return self.plate._repr_html_() # pylint: disable=protected-access
+
+    def deactivate(self, wells: str|list[str]) -> None:
+        """Deactivate a well or list of wells
+
+        Activating and deactivating wells will set a new Assay.plate --
+        invalidating any reference to the previous plate attribute.
+        """
+        if isinstance(wells, str):
+            wells = [wells]
+        self.active_wells = ~self.active_wells.well.isin(wells)
+        self.plate = self.full_plate[self.active_wells]
+
+    def activate(self, wells: str|list[str]) -> None:
+        """Activate a well or list of wells
+
+        Activating and deactivating wells will set a new Assay.plate --
+        invalidating any reference to the previous plate attribute.
+        """
+        if isinstance(wells, str):
+            wells = [wells]
+        self.active_wells = ~self.active_wells.well.isin(wells)
+        self.plate = self.full_plate[self.active_wells]
 
     @staticmethod
     def _default_error(_):
