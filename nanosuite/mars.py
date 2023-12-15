@@ -70,7 +70,7 @@ class Assay:
         deactivated = [
             cell.strip()
             for cell in
-            df_header.iloc[10, 0].rsplit(': ', maxsplit=1)[-1].split('; ')
+            str(df_header.iloc[10, 0]).rsplit(': ', maxsplit=1)[-1].split('; ')
         ]
         attributes["deactivated_cells"] = ', '.join(deactivated)
 
