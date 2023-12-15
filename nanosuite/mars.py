@@ -126,9 +126,10 @@ class Assay:
         """
         if isinstance(wells, str):
             wells = [wells]
-        self.active_wells = ~self.active_wells.well.isin(wells)
+        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), False)
         self.plate = self.full_plate[self.active_wells]
-        # FIXME: update self.plate.attributes['deactivated_cells']
+        self.plate.attrs['deactivated_cells'] = ', '.join(
+            self.full_plate[~self.active_wells].well.values)
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -138,9 +139,10 @@ class Assay:
         """
         if isinstance(wells, str):
             wells = [wells]
-        self.active_wells = ~self.active_wells.well.isin(wells)
+        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), True)
         self.plate = self.full_plate[self.active_wells]
-        # FIXME: update self.plate.attributes['deactivated_cells']
+        self.plate.attrs['deactivated_cells'] = ', '.join(
+            self.full_plate[~self.active_wells].well.values)
 
     def mean(self) -> xr.DataArray:
         """Return sample means

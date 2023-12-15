@@ -21,7 +21,7 @@ class MockAssay(Assay):
                                        {'content': pd.MultiIndex.from_tuples(
                                             content, names=["sample", "well"]
                                         ), 'time': times})
-
+        self.full_plate.attrs['deactivated_cells'] = ''
         self.active_wells = ~self.full_plate.well.isin([])
         self.plate = self.full_plate[self.active_wells]
 
@@ -31,9 +31,11 @@ def test_deactivate():
 
     assay.deactivate(["A01", "B03"])
     assert len(assay.plate.content) == len(assay.full_plate.content) - 2
+    assert assay.plate.attrs['deactivated_cells'] == "A01, B03"
 
     assay.activate("B03")
     assert len(assay.plate.content) == len(assay.full_plate.content) - 1
+    assert assay.plate.attrs['deactivated_cells'] == "A01"
 
 def test_avg():
     assay = MockAssay([[0, 1, 2, 3, 4],
