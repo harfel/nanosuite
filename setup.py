@@ -14,6 +14,7 @@ setup(name='Nanosuite',
       packages=['nanosuite'],
       install_requires=[
         "numpy",
+        "openpyxl",
         "pandas",
         "xarray",
         "scipy",
