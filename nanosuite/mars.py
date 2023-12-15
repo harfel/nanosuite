@@ -1,15 +1,24 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Dict, List, Optional, Tuple
+from typing import cast, Callable, Iterable, Iterator, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
 import lmfit # type: ignore
-from openpyxl import load_workbook
+
+
+def _unique(it: Iterable) -> Iterator:
+    """Iteration filter that drops adjacent repeated elements"""
+    last = None
+    for current in it:
+        if current == last:
+            continue
+        last = current
+        yield current
+
 
 class Assay:
-    # TODO: API to activate/deactivate wells
     """Access to MARS data.
 
     Assay instances have the following attributes:
@@ -25,76 +34,83 @@ class Assay:
     full_plate: 2D xarray DataArray
         Fluorescence values of all wells and time points.
 
-    deactivated: list of well indices
-        Wells that had been blanked by the user.
+    active_wells: 1D xarray DataArray
+        Wells that have not been blanked by the user.
     """
-    def __init__(self, path: str, groups: Optional[Dict[str, List[str]]] = None):
+    def __init__(self, path: str, groups: Optional[dict[str, list[str]|slice]] = None):
         """Plate reader data as saved by MARS.
 
         Parameters
         ----------
         path: str
-              file path
+            file path
+
+        groups: dict
+            mapping of group names to a list or slice of sample names
+            e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
-        # TODO: support reading transposed raw data
-        # TODO: support slices instead of lists in groups
         deactivated_info_cell = 11, 1
-        attr_first_row = 1
-        attr_last_row = 9
-        time_row = 14
-        sample_first_row = 15
-        well_col = 0
-        content_col = 1
+        info_vals = ["user", "path", "test ID", "test name",
+                     "date", "ID1", "ID2", "ID3"]
 
         self.path = path
-
         groups = groups or {}
 
-        groups_reverse = {
-            sample: group
-            for group, samples in groups.items()
-            for sample in samples
-        }
+        # Create header df and extract data
+        df_total = pd.read_excel(self.path, header=None)
+        df_header = df_total.iloc[:deactivated_info_cell[0], :1]
 
-        workbook = load_workbook(self.path)
-        worksheet = workbook["Table All Cycles"]
+        # extract info from headers, into dictionary
+        attributes = {}
+        n_inf = 0
+        for inf in info_vals:
+            attributes[inf] = str(df_header.iloc[n_inf]).split(": ")[1].split("\n")[0]
+            n_inf += 1
+        deactivated = [
+            cell.strip()
+            for cell in
+            str(df_header.iloc[10, 0]).rsplit(': ', maxsplit=1)[-1].split('; ')
+        ]
+        attributes["deactivated_cells"] = ', '.join(deactivated)
 
-        sample_last_row = worksheet.max_row
+        # Create main df and eval if it needs to be transposed
+        df_main = df_total.iloc[len(df_header)+1:,]
 
-        # read deactivated wells from header info
-        deactivated_cells = worksheet.cell(*deactivated_info_cell).value
-        self.deactivated = [
-            well.strip()
-            for well in cast(str, deactivated_cells) .split(':')[-1].split(';')
-        ] if deactivated_cells else []
+        if isinstance(df_main.iloc[1, 2], str):
+            df_main = df_main.T
 
-        times = np.array([cell.value
-                         for cell in np.array(worksheet[time_row][2:])])
+        df_main.columns = pd.Index(df_main.iloc[0])
+        df_main = df_main[1:]
+        df_main.index = pd.Index(np.arange(1, len(df_main) + 1))
 
-        content = pd.MultiIndex.from_tuples([
-            (groups_reverse.get(cast(str, row[content_col].value), 'Unknown'),
-             row[content_col].value,
-             row[well_col].value)
-            for idx, row in enumerate(
-                worksheet.iter_rows(min_row=sample_first_row,
-                                    max_row=sample_last_row)
-            )
-        ], names=("group", "sample", "well"))
+        # extract coordinates from dataframe
+        times = df_main.iloc[:1, 2:].values.flatten().astype(float)
+        main_array = df_main.iloc[1:, 2:].values
 
-        self.full_plate = xr.DataArray(
-            [[cell.value for cell in worksheet[y][2:]]
-             for y in range(sample_first_row, sample_last_row+1)],
-            [("content", content), ("time", times)],
+        samples = df_main['Content'][1:]
+
+        df_groups = pd.DataFrame(
+            [(k, val) for k, vals in groups.items() for val in
+             cast(Iterable, samples[samples.between(vals.start, vals.stop)].unique()
+                            if isinstance(vals, slice) else vals)],
+            columns=['group', 'sample'])
+
+        df_content = df_main[["Content", "Well"]][1:]
+        df_content.columns = pd.Index(["sample", "well"])
+        if df_groups.empty:
+            df_content["group"] = 'Unknown'
+        else:
+            df_content = df_content.merge(df_groups, on='sample')
+        df_multicontent = pd.MultiIndex.from_frame(df_content)
+
+        # from dataframe to xarray
+        self.full_plate = xr.DataArray(main_array,
+            [("content", df_multicontent), ("time", times)],
             name="RFU",
-            attrs=dict(
-                cast(str, cell[0].value).partition(': ')[::2]
-                for cell in worksheet.iter_rows(min_row=attr_first_row,
-                                                max_row=attr_last_row)
-            ),
-        ).astype(float)
+            attrs=attributes,).astype(float)
 
-        mask = ~self.full_plate.well.isin(self.deactivated)
-        self.plate = self.full_plate[mask]
+        self.active_wells = ~self.full_plate.well.isin(deactivated)
+        self.plate = self.full_plate[self.active_wells]
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
@@ -102,9 +118,67 @@ class Assay:
     def _repr_html_(self) -> str:
         return self.plate._repr_html_() # pylint: disable=protected-access
 
-    @staticmethod
-    def _default_error(_):
-        return 1
+    def deactivate(self, wells: str|list[str]) -> None:
+        """Deactivate a well or list of wells
+
+        Activating and deactivating wells will set a new Assay.plate --
+        invalidating any reference to the previous plate attribute.
+        """
+        if isinstance(wells, str):
+            wells = [wells]
+        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), False)
+        self.plate = self.full_plate[self.active_wells]
+        self.plate.attrs['deactivated_cells'] = ', '.join(
+            self.full_plate[~self.active_wells].well.values)
+
+    def activate(self, wells: str|list[str]) -> None:
+        """Activate a well or list of wells
+
+        Activating and deactivating wells will set a new Assay.plate --
+        invalidating any reference to the previous plate attribute.
+        """
+        if isinstance(wells, str):
+            wells = [wells]
+        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), True)
+        self.plate = self.full_plate[self.active_wells]
+        self.plate.attrs['deactivated_cells'] = ', '.join(
+            self.full_plate[~self.active_wells].well.values)
+
+    def mean(self) -> xr.DataArray:
+        """Return sample means
+
+        Returns
+        -------
+        DataArray of average fluorescence of all active wells that belong to
+        the same sample.
+        """
+        avg = self.plate.groupby('sample').mean(dim='content')
+        # We need to reorder the result to match the original content index.
+        # This is because of https://github.com/pydata/xarray/issues/757
+        samples = list(_unique(self.plate.sample.values))
+        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
+        return avg.sortby(original_order)
+
+    def std(self, ddof: int = 0) -> xr.DataArray:
+        """Return sample standard deviation
+
+        Parameters
+        ----------
+        ddof: optional int (default = 0)
+            Difference in number of degrees of freedom. Return value is
+            calculated as 1/(N-ddof) sum_{i=1}^N(x_i - <x>) where N is the
+            number of samples.
+
+        Returns
+        -------
+        DataArray of fluorescence standard deviation of all active wells that
+        belong to the same sample.
+        """
+        avg = self.plate.groupby('sample').std(dim='content', ddof=ddof)
+        # Same situation as in Array.mean
+        samples = list(_unique(self.plate.sample.values))
+        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
+        return avg.sortby(original_order)
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
@@ -112,7 +186,7 @@ class Assay:
         neg_rfu: Optional[xr.DataArray]=None, *,
         method: str='direct',
         error: Optional[Callable[[float], float]]=None,
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
         Parameters
@@ -149,7 +223,7 @@ class Assay:
     def calibrate_relaxation(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         error: Optional[Callable[[float], float]]=None,
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
         Parameters
@@ -241,7 +315,7 @@ class Assay:
     def calibrate_direct(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         pos_rfu=None, neg_rfu=None
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
 
         Transforms are based on the linear relations
