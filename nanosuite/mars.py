@@ -1,15 +1,24 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import xarray as xr
 import lmfit # type: ignore
 
 
+def _unique(it: Iterable) -> Iterator:
+    """Iteration filter that drops adjacent repeated elements"""
+    last = None
+    for current in it:
+        if current == last:
+            continue
+        last = current
+        yield current
+
+
 class Assay:
-    # FIXME: Convenient access to avg and std
     """Access to MARS data.
 
     Assay instances have the following attributes:
@@ -125,9 +134,41 @@ class Assay:
         self.active_wells = ~self.active_wells.well.isin(wells)
         self.plate = self.full_plate[self.active_wells]
 
-    @staticmethod
-    def _default_error(_):
-        return 1
+    def mean(self) -> xr.DataArray:
+        """Return sample means
+
+        Returns
+        -------
+        DataArray of average fluorescence of all active wells that belong to
+        the same sample.
+        """
+        avg = self.plate.groupby('sample').mean(dim='content')
+        # We need to reorder the result to match the original content index.
+        # This is because of https://github.com/pydata/xarray/issues/757
+        samples = list(_unique(self.plate.sample.values))
+        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
+        return avg.sortby(original_order)
+
+    def std(self, ddof: int = 0) -> xr.DataArray:
+        """Return sample standard deviation
+
+        Parameters
+        ----------
+        ddof: optional int (default = 0)
+            Difference in number of degrees of freedom. Return value is
+            calculated as 1/(N-ddof) sum_{i=1}^N(x_i - <x>) where N is the
+            number of samples.
+
+        Returns
+        -------
+        DataArray of fluorescence standard deviation of all active wells that
+        belong to the same sample.
+        """
+        avg = self.plate.groupby('sample').std(dim='content', ddof=ddof)
+        # Same situation as in Array.mean
+        samples = list(_unique(self.plate.sample.values))
+        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
+        return avg.sortby(original_order)
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
