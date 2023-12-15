@@ -1,7 +1,7 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import cast, Callable, Iterable, Iterator, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -37,25 +37,24 @@ class Assay:
     active_wells: 1D xarray DataArray
         Wells that have not been blanked by the user.
     """
-    def __init__(self, path: str, groups: Optional[Dict[str, List[str]]] = None):
+    def __init__(self, path: str, groups: Optional[dict[str, list[str]|slice]] = None):
         """Plate reader data as saved by MARS.
 
         Parameters
         ----------
         path: str
-              file path
+            file path
+
+        groups: dict
+            mapping of group names to a list or slice of sample names
+            e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
-        # TODO: support slices instead of lists in groups
         deactivated_info_cell = 11, 1
         info_vals = ["user", "path", "test ID", "test name",
                      "date", "ID1", "ID2", "ID3"]
 
         self.path = path
         groups = groups or {}
-
-        df_groups = pd.DataFrame(
-            [(k, val) for k, vals in groups.items() for val in vals],
-            columns=['group', 'sample'])
 
         # Create header df and extract data
         df_total = pd.read_excel(self.path, header=None)
@@ -88,6 +87,13 @@ class Assay:
         times = df_main.iloc[:1, 2:].values.flatten().astype(float)
         main_array = df_main.iloc[1:, 2:].values
 
+        samples = df_main['Content'][1:]
+
+        df_groups = pd.DataFrame(
+            [(k, val) for k, vals in groups.items() for val in
+             cast(Iterable, samples[samples.between(vals.start, vals.stop)].unique()
+                            if isinstance(vals, slice) else vals)],
+            columns=['group', 'sample'])
 
         df_content = df_main[["Content", "Well"]][1:]
         df_content.columns = pd.Index(["sample", "well"])
@@ -122,6 +128,7 @@ class Assay:
             wells = [wells]
         self.active_wells = ~self.active_wells.well.isin(wells)
         self.plate = self.full_plate[self.active_wells]
+        # FIXME: update self.plate.attributes['deactivated_cells']
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -133,6 +140,7 @@ class Assay:
             wells = [wells]
         self.active_wells = ~self.active_wells.well.isin(wells)
         self.plate = self.full_plate[self.active_wells]
+        # FIXME: update self.plate.attributes['deactivated_cells']
 
     def mean(self) -> xr.DataArray:
         """Return sample means
@@ -176,7 +184,7 @@ class Assay:
         neg_rfu: Optional[xr.DataArray]=None, *,
         method: str='direct',
         error: Optional[Callable[[float], float]]=None,
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
         Parameters
@@ -213,7 +221,7 @@ class Assay:
     def calibrate_relaxation(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         error: Optional[Callable[[float], float]]=None,
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
         Parameters
@@ -305,7 +313,7 @@ class Assay:
     def calibrate_direct(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         pos_rfu=None, neg_rfu=None
-    ) -> Tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
 
         Transforms are based on the linear relations
