@@ -91,7 +91,8 @@ class Assay:
 
         df_groups = pd.DataFrame(
             [(k, val) for k, vals in groups.items() for val in
-             cast(Iterable, samples[samples.between(vals.start, vals.stop)].unique()
+             cast(Iterable, samples.loc[samples[samples==vals.start].index[0]
+                                        :samples[samples==vals.stop].index[-1]].unique()
                             if isinstance(vals, slice) else vals)],
             columns=['group', 'sample'])
 
