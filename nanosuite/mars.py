@@ -153,12 +153,10 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        avg = self.plate.groupby('sample').mean(dim='content')
-        # We need to reorder the result to match the original content index.
-        # This is because of https://github.com/pydata/xarray/issues/757
-        samples = list(_unique(self.plate.sample.values))
-        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
-        return avg.sortby(original_order)
+        return xr.DataArray(self.plate.groupby('sample').mean(dim='content', keepdims=True).data,
+                            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+                             'time': self.plate.time},
+                            attrs=self.plate.attrs, name=self.plate.name)
 
     def std(self, ddof: int = 0) -> xr.DataArray:
         """Return sample standard deviation
@@ -175,11 +173,11 @@ class Assay:
         DataArray of fluorescence standard deviation of all active wells that
         belong to the same sample.
         """
-        avg = self.plate.groupby('sample').std(dim='content', ddof=ddof)
-        # Same situation as in Array.mean
-        samples = list(_unique(self.plate.sample.values))
-        original_order = xr.DataArray(range(len(avg)), {'sample': samples})
-        return avg.sortby(original_order)
+        return xr.DataArray(self.plate.groupby('sample')
+                                      .std(dim='content', ddof=ddof, keepdims=True).data,
+                            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+                             'time': self.plate.time},
+                            attrs=self.plate.attrs, name=self.plate.name)
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
@@ -369,3 +367,14 @@ class Assay:
             rfu.name = "RFU"
             return rfu.transpose()
         return from_rfu, to_rfu
+
+
+if __name__ == '__main__':
+    assay_16_02_02 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_02_RUC.xlsx', groups={
+        "Carrier_144": slice("Sample X1", "Sample X6"),
+        "Carrier_141": slice("Sample X7", "Sample X12"),
+        "Carrier 138": slice("Sample X13", "Sample X18"),
+        "Control": ["Sample X19", "Sample X20"]
+    })
+
+    assay_16_02_06 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_06_RUC.xlsx')

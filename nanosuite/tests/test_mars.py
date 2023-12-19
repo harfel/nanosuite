@@ -6,7 +6,7 @@ from nanosuite.mars import Assay
 
 
 class MockAssay(Assay):
-    path: str = 'N/A'
+    path = 'N/A'
 
     def __init__(self, data: Optional[xr.DataArray] = None, samples: int = 1, repeats: int = 1):    # pylint: disable=super-init-not-called
         if data is None:
@@ -15,11 +15,11 @@ class MockAssay(Assay):
         else:
             times = np.linspace(0, 100, len(data[0]))
             samples = len(data)//repeats
-        content = [(f'Sample X{idx+1}', f'{chr(65+idx)}{rep+1:02}')
+        content = [('Unknown', f'Sample X{idx+1}', f'{chr(65+idx)}{rep+1:02}')
                    for idx in range(samples) for rep in range(repeats)]
         self.full_plate = xr.DataArray(data,
                                        {'content': pd.MultiIndex.from_tuples(
-                                            content, names=["sample", "well"]
+                                            content, names=["group", "sample", "well"]
                                         ), 'time': times})
         self.full_plate.attrs['deactivated_cells'] = ''
         self.active_wells = ~self.full_plate.well.isin([])
