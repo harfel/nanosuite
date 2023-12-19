@@ -1,0 +1,24 @@
+# Development environment
+#
+# -------------------------------------
+# DO NOT PUT PACKAGE DEPENDENCIES HERE!
+# -------------------------------------
+#
+# This file collects utilities for development such as pytest and mypy. It is
+# not required for installation of nanosuite as a package. Package dependencies
+# go instead into setup.py.
+#
+# Run `pip install -r requirements.txt` to install
+
+
+# Core development workflow
+
+mypy
+pytest
+pylint
+pandas-stubs
+
+# Optional packages:
+
+# ipykernel
+# ipympl 
