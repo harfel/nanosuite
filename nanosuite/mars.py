@@ -49,6 +49,8 @@ class Assay:
             mapping of group names to a list or slice of sample names
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
+        # FIXME: groups should be allowed to be sparse
+        # i.e. samples that are not amoung the values of groups should default to "Unknown"
         deactivated_info_cell = 11, 1
         info_vals = ["user", "path", "test ID", "test name",
                      "date", "ID1", "ID2", "ID3"]
@@ -253,8 +255,8 @@ class Assay:
         slowly equilibrates over time.
         """
         # TODO: report fit statistics
-        pos_rfu = str(pos_conc.sample.data)
-        neg_rfu = str(neg_conc.sample.data)
+        pos_rfu = pos_conc.sample.data
+        neg_rfu = neg_conc.sample.data
         error = error if error is not None else lambda rfu: 1.
 
         controls = self.plate[self.plate.sample.isin([pos_rfu, neg_rfu])]
@@ -278,16 +280,13 @@ class Assay:
                 params['P0'], params['P1'], params['Pinf']
             )
             return np.array([
-                {
-                    pos_rfu: positive,
-                    neg_rfu: negative,
-                }[str(sample.data)]
-                for sample in controls.sample
+                positive if sample in pos_conc.sample else negative
+                for sample in controls.sample.data
             ])
 
         def residuals_for(data):
             def residuals(params):
-                model = well_model(data.coords['time'], params)
+                model = well_model(data.time, params)
                 return (data-model)/error(data)
             return residuals
 
@@ -352,16 +351,25 @@ class Assay:
         fromRFU(rfu: xr.DataArray) -> xr.DataArray
         toRFU(rfu: xr.DataArray) -> xr.DataArray
         """
+        if len(pos_conc.sample) > 1:
+            assert not any(pos_conc.std(axis=pos_conc.get_axis_num('sample')))
+        if len(neg_conc.sample) > 1:
+            assert not any(neg_conc.std(axis=neg_conc.get_axis_num('sample')))
+
         pos_rfu = (
             pos_rfu
             if pos_rfu is not None
-            else self.plate.sel(sample=pos_conc.sample).mean(axis=0)
+            else self.plate[self.plate.sample.isin(pos_conc.sample)].mean(axis=0)
         )
         neg_rfu = (
             neg_rfu
             if neg_rfu is not None
-            else self.plate.sel(sample=neg_conc.sample).mean(axis=0)
+            else self.plate[self.plate.sample.isin(neg_conc.sample)].mean(axis=0)
         )
+
+        pos_conc = pos_conc.mean(axis=pos_conc.get_axis_num('sample'))
+        neg_conc = neg_conc.mean(axis=neg_conc.get_axis_num('sample'))
+
         def from_rfu(rfu):
             return neg_conc + (pos_conc-neg_conc) * (rfu-neg_rfu)/(pos_rfu-neg_rfu)
         def to_rfu(conc):
