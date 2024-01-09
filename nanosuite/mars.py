@@ -1,21 +1,11 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Iterable, Iterator, Optional
+from typing import cast, Callable, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
 import lmfit # type: ignore
-
-
-def _unique(it: Iterable) -> Iterator:
-    """Iteration filter that drops adjacent repeated elements"""
-    last = None
-    for current in it:
-        if current == last:
-            continue
-        last = current
-        yield current
 
 
 class Assay:
@@ -49,8 +39,6 @@ class Assay:
             mapping of group names to a list or slice of sample names
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
-        # FIXME: groups should be allowed to be sparse
-        # i.e. samples that are not amoung the values of groups should default to "Unknown"
         deactivated_info_cell = 11, 1
         info_vals = ["user", "path", "test ID", "test name",
                      "date", "ID1", "ID2", "ID3"]
@@ -91,19 +79,18 @@ class Assay:
 
         samples = df_main['Content'][1:]
 
-        df_groups = pd.DataFrame(
-            [(k, val) for k, vals in groups.items() for val in
-             cast(Iterable, samples.loc[samples[samples==vals.start].index[0]
-                                        :samples[samples==vals.stop].index[-1]].unique()
-                            if isinstance(vals, slice) else vals)],
-            columns=['group', 'sample'])
-
-        df_content = df_main[["Content", "Well"]][1:]
-        df_content.columns = pd.Index(["sample", "well"])
-        if df_groups.empty:
-            df_content["group"] = 'Unknown'
-        else:
-            df_content = df_content.merge(df_groups, on='sample')
+        df_content = df_main[['Content', 'Well']][1:]
+        df_content['group'] = "Unknown"
+        df_content.columns = pd.Index(['sample', 'well', 'group'])
+        df_content = df_content.reindex(columns=['group', 'sample', 'well'])
+        # set df_content['group'] from groups dict
+        for group, group_samples in groups.items():
+            if isinstance(group_samples, slice):
+                start = samples[samples==group_samples.start].index[0]
+                end = samples[samples==group_samples.stop].index[-1]
+                group_samples = cast(list, samples.loc[start:end].unique())
+            for sample in group_samples:
+                df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
         # from dataframe to xarray
@@ -380,14 +367,3 @@ class Assay:
             rfu.name = "RFU"
             return rfu.transpose()
         return from_rfu, to_rfu
-
-
-if __name__ == '__main__':
-    assay_16_02_02 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_02_RUC.xlsx', groups={
-        "Carrier_144": slice("Sample X1", "Sample X6"),
-        "Carrier_141": slice("Sample X7", "Sample X12"),
-        "Carrier 138": slice("Sample X13", "Sample X18"),
-        "Control": ["Sample X19", "Sample X20"]
-    })
-
-    assay_16_02_06 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_06_RUC.xlsx')
