@@ -1,8 +1,11 @@
+"""Unit tests for crn
+"""
 import math
 from nanosuite import crn
 
 
 def test_params_add():
+    """Ensure that parameters can be added to CRN.params"""
     test_crn = crn.from_string("""
         A + B -> C; k_f
         C -> A + B; k_b
@@ -14,12 +17,13 @@ def test_params_add():
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
 def test_repr_html():
+    """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
         A + B -> C; k1=1.1
         C + D -> E + B; k2=1.2
         A [impure] + D -> E; p=0.0
     """)
-    rep = ''.join(line.strip() for line in test_crn._repr_html_().split('\n'))
+    rep = ''.join(line.strip() for line in test_crn._repr_html_().split('\n')) # pylint: disable=protected-access
     expected = '''<table><tr>
             <td style="text-align: right">A + B</td>
             <td style="text-align: center">&LongRightArrow;</td>
@@ -40,6 +44,7 @@ def test_repr_html():
     assert rep == ''.join(line.strip() for line in expected.split('\n'))
 
 def test_from_string_irreversible():
+    """Ensure correct parsing of irreversible reactions"""
     test_crn = crn.from_string("""
         A + B -> C
         C + D -> E
@@ -47,24 +52,28 @@ def test_from_string_irreversible():
     assert len(test_crn.reactions) == 2
 
 def test_from_string_rate():
+    """Ensure correct parsing of reaction rates"""
     test_crn = crn.from_string("""
         A + B -> C; k = 10
     """)
     assert test_crn.params['k'].value == 10
 
 def test_from_string_rate_name():
+    """Ensure correct parsing of rate constant names"""
     test_crn = crn.from_string("""
         A + B -> C; k
     """)
     assert test_crn.params['k'] == 1
 
 def test_from_string_rate_value():
+    """Ensure correct parsing of rate constant values"""
     test_crn = crn.from_string("""
         A + B -> C; 10
     """)
     assert test_crn.params['k1'] == 10
 
 def test_from_string_reversible():
+    """Ensure correct parsing of reversible reactions"""
     test_crn = crn.from_string("""
         A + B <=> C
     """)
@@ -73,12 +82,14 @@ def test_from_string_reversible():
     assert 'kb1' in test_crn.params
 
 def test_from_string_impure():
+    """Ensure correct parsing of impure reactions"""
     test_crn = crn.from_string("""
         A [impure] + B -> C
     """)
     assert len(test_crn.side_reactions) == 1
 
 def test_from_string_impure_fraction():
+    """Ensure correct parsing of impure reactant fractions"""
     test_crn = crn.from_string("""
         A [impure] + B -> C;    p=0.05
     """)
