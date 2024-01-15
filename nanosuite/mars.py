@@ -153,10 +153,13 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        return xr.DataArray(self.plate.groupby('sample').mean(dim='content', keepdims=True).data,
-                            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                             'time': self.plate.time},
-                            attrs=self.plate.attrs, name=self.plate.name)
+        samples = pd.Series(self.plate.sample.data).unique()
+        return xr.DataArray(
+            [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
+            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+             'time': self.plate.time},
+            attrs=self.plate.attrs, name=self.plate.name
+        )
 
     def std(self, ddof: int = 0) -> xr.DataArray:
         """Return sample standard deviation
@@ -173,11 +176,13 @@ class Assay:
         DataArray of fluorescence standard deviation of all active wells that
         belong to the same sample.
         """
-        return xr.DataArray(self.plate.groupby('sample')
-                                      .std(dim='content', ddof=ddof, keepdims=True).data,
-                            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                             'time': self.plate.time},
-                            attrs=self.plate.attrs, name=self.plate.name)
+        samples = pd.Series(self.plate.sample.data).unique()
+        return xr.DataArray(
+            [self.plate.sel(sample=sample).std(dim='content', ddof=ddof).data for sample in samples],
+            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+             'time': self.plate.time},
+            attrs=self.plate.attrs, name=self.plate.name
+        )
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,

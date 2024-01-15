@@ -1,3 +1,4 @@
+import os
 from typing import Optional
 import xarray as xr
 import numpy as np
@@ -57,3 +58,9 @@ def test_avg_sorting():
     assay = MockAssay(samples=15, repeats=3)
     avg = assay.mean()
     assert (avg.sample == [f'Sample X{idx}' for idx in range(1, 16)]).all()
+
+def test_avg_2():
+    assay = Assay(os.path.join(os.path.dirname(__file__), '../examples/edc_RFU.xlsx'))
+    for sample in pd.Series(assay.plate.sample.data).unique():
+        assert (assay.mean().sel(sample=sample)
+                == assay.plate.sel(sample=sample).mean(axis=0)).all()
