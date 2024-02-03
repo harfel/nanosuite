@@ -1,0 +1,2 @@
+include nanosuite/examples/*.ipynb
+include nanosuite/examples/*.xlsx

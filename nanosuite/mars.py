@@ -1,21 +1,11 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Iterable, Iterator, Optional
+from typing import cast, Callable, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
 import lmfit # type: ignore
-
-
-def _unique(it: Iterable) -> Iterator:
-    """Iteration filter that drops adjacent repeated elements"""
-    last = None
-    for current in it:
-        if current == last:
-            continue
-        last = current
-        yield current
 
 
 class Assay:
@@ -89,19 +79,18 @@ class Assay:
 
         samples = df_main['Content'][1:]
 
-        df_groups = pd.DataFrame(
-            [(k, val) for k, vals in groups.items() for val in
-             cast(Iterable, samples.loc[samples[samples==vals.start].index[0]
-                                        :samples[samples==vals.stop].index[-1]].unique()
-                            if isinstance(vals, slice) else vals)],
-            columns=['group', 'sample'])
-
-        df_content = df_main[["Content", "Well"]][1:]
-        df_content.columns = pd.Index(["sample", "well"])
-        if df_groups.empty:
-            df_content["group"] = 'Unknown'
-        else:
-            df_content = df_content.merge(df_groups, on='sample')
+        df_content = df_main[['Content', 'Well']][1:]
+        df_content['group'] = "Unknown"
+        df_content.columns = pd.Index(['sample', 'well', 'group'])
+        df_content = df_content.reindex(columns=['group', 'sample', 'well'])
+        # set df_content['group'] from groups dict
+        for group, group_samples in groups.items():
+            if isinstance(group_samples, slice):
+                start = samples[samples==group_samples.start].index[0]
+                end = samples[samples==group_samples.stop].index[-1]
+                group_samples = cast(list, samples.loc[start:end].unique())
+            for sample in group_samples:
+                df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
         # from dataframe to xarray
@@ -178,7 +167,8 @@ class Assay:
         """
         samples = pd.Series(self.plate.sample.data).unique()
         return xr.DataArray(
-            [self.plate.sel(sample=sample).std(dim='content', ddof=ddof).data for sample in samples],
+            [self.plate.sel(sample=sample).std(dim='content', ddof=ddof).data
+             for sample in samples],
             {'content': self.plate.indexes['content'].droplevel('well').unique(),
              'time': self.plate.time},
             attrs=self.plate.attrs, name=self.plate.name
@@ -253,8 +243,8 @@ class Assay:
         slowly equilibrates over time.
         """
         # TODO: report fit statistics
-        pos_rfu = str(pos_conc.sample.data)
-        neg_rfu = str(neg_conc.sample.data)
+        pos_rfu = pos_conc.sample.data
+        neg_rfu = neg_conc.sample.data
         error = error if error is not None else lambda rfu: 1.
 
         controls = self.plate[self.plate.sample.isin([pos_rfu, neg_rfu])]
@@ -278,16 +268,13 @@ class Assay:
                 params['P0'], params['P1'], params['Pinf']
             )
             return np.array([
-                {
-                    pos_rfu: positive,
-                    neg_rfu: negative,
-                }[str(sample.data)]
-                for sample in controls.sample
+                positive if sample in pos_conc.sample else negative
+                for sample in controls.sample.data
             ])
 
         def residuals_for(data):
             def residuals(params):
-                model = well_model(data.coords['time'], params)
+                model = well_model(data.time, params)
                 return (data-model)/error(data)
             return residuals
 
@@ -352,16 +339,25 @@ class Assay:
         fromRFU(rfu: xr.DataArray) -> xr.DataArray
         toRFU(rfu: xr.DataArray) -> xr.DataArray
         """
+        if len(pos_conc.sample) > 1:
+            assert not any(pos_conc.std(axis=pos_conc.get_axis_num('sample')))
+        if len(neg_conc.sample) > 1:
+            assert not any(neg_conc.std(axis=neg_conc.get_axis_num('sample')))
+
         pos_rfu = (
             pos_rfu
             if pos_rfu is not None
-            else self.plate.sel(sample=pos_conc.sample).mean(axis=0)
+            else self.plate[self.plate.sample.isin(pos_conc.sample)].mean(axis=0)
         )
         neg_rfu = (
             neg_rfu
             if neg_rfu is not None
-            else self.plate.sel(sample=neg_conc.sample).mean(axis=0)
+            else self.plate[self.plate.sample.isin(neg_conc.sample)].mean(axis=0)
         )
+
+        pos_conc = pos_conc.mean(axis=pos_conc.get_axis_num('sample'))
+        neg_conc = neg_conc.mean(axis=neg_conc.get_axis_num('sample'))
+
         def from_rfu(rfu):
             return neg_conc + (pos_conc-neg_conc) * (rfu-neg_rfu)/(pos_rfu-neg_rfu)
         def to_rfu(conc):
@@ -372,14 +368,3 @@ class Assay:
             rfu.name = "RFU"
             return rfu.transpose()
         return from_rfu, to_rfu
-
-
-if __name__ == '__main__':
-    assay_16_02_02 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_02_RUC.xlsx', groups={
-        "Carrier_144": slice("Sample X1", "Sample X6"),
-        "Carrier_141": slice("Sample X7", "Sample X12"),
-        "Carrier 138": slice("Sample X13", "Sample X18"),
-        "Control": ["Sample X19", "Sample X20"]
-    })
-
-    assay_16_02_06 = Assay('../16_02-new/Raw_RUC_Data/EMM_16_02_06_RUC.xlsx')
