@@ -39,32 +39,26 @@ class Assay:
             mapping of group names to a list or slice of sample names
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
-        deactivated_info_cell = 11, 1
-        info_vals = ["user", "path", "test ID", "test name",
-                     "date", "ID1", "ID2", "ID3"]
-
         self.path = path
         groups = groups or {}
 
         # Create header df and extract data
         df_total = pd.read_excel(self.path, header=None)
-        df_header = df_total.iloc[:deactivated_info_cell[0], :1]
+        content_start = df_total[df_total[0]=='Well'].index[0]
+        df_header = df_total.iloc[:content_start, :1]
 
         # extract info from headers, into dictionary
         attributes = {}
-        n_inf = 0
-        for inf in info_vals:
-            attributes[inf] = str(df_header.iloc[n_inf]).split(": ")[1].split("\n")[0]
-            n_inf += 1
-        deactivated = [
-            cell.strip()
-            for cell in
-            str(df_header.iloc[10, 0]).rsplit(': ', maxsplit=1)[-1].split('; ')
-        ]
-        attributes["deactivated_cells"] = ', '.join(deactivated)
+        for field in df_header[0]:
+                key, sep, val = field.partition(': ')
+                if not sep:
+                    break
+                attributes[key] = val
+        deactivated = (attributes['deactivated_cells'].split(', ')
+                       if 'deactivated_cells' in attributes else [])
 
         # Create main df and eval if it needs to be transposed
-        df_main = df_total.iloc[len(df_header)+1:,]
+        df_main = df_total.iloc[len(df_header):,]
 
         if isinstance(df_main.iloc[1, 2], str):
             df_main = df_main.T
@@ -95,7 +89,7 @@ class Assay:
 
         # from dataframe to xarray
         self.full_plate = xr.DataArray(main_array,
-            [("content", df_multicontent), ("time", times)],
+            {"content": df_multicontent, "time": times},
             name="RFU",
             attrs=attributes,).astype(float)
 
