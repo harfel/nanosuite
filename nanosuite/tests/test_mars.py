@@ -26,4 +26,4 @@ def test_avg():
 
 def test_varying_header_fields():
     """Ensure correct handling of different header field formatting"""
-    assay = Assay(os.path.join(os.path.dirname(__file__), './data/testdata_001_RUC.xlsx'))
+    Assay(os.path.join(os.path.dirname(__file__), './data/testdata_001_RUC.xlsx'))

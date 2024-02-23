@@ -50,10 +50,10 @@ class Assay:
         # extract info from headers, into dictionary
         attributes = {}
         for field in df_header[0]:
-                key, sep, val = field.partition(': ')
-                if not sep:
-                    break
-                attributes[key] = val
+            key, sep, val = field.partition(': ')
+            if not sep:
+                break
+            attributes[key] = val
         deactivated = (attributes['deactivated_cells'].split(', ')
                        if 'deactivated_cells' in attributes else [])
 
