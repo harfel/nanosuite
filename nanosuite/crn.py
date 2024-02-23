@@ -280,10 +280,14 @@ class CRN:
         ----------
         data: xarray.DataArray with rfu over time
         initial: xarray.DataArray with concentrations of species
-        conversion: a function that converts concentrations to RFU values
+        conversion: optional function that converts concentrations to RFU values
             The conversion must accept DataArrays of concentrations
             over time and must return a DataArray of RFU values over
             time. Can be obtained from mars.Assay.calibrate.
+        error: optional xr.DataArray with rfu over time or float (default 1.)
+            Standard deviations of measured data
+        t0:  optional lmfit.Parameter
+            Time at which the reaction started.
         options:
             Any remaining keyword arguments are pass to
             lmfit.minimize
