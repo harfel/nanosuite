@@ -23,3 +23,7 @@ def test_avg():
     for sample in pd.Series(assay.plate.sample.data).unique():
         assert (assay.mean().sel(sample=sample)
                 == assay.plate.sel(sample=sample).mean(axis=0)).all()
+
+def test_varying_header_fields():
+    """Ensure correct handling of different header field formatting"""
+    assay = Assay(os.path.join(os.path.dirname(__file__), './data/testdata_001_RUC.xlsx'))
