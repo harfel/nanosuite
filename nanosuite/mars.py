@@ -5,6 +5,7 @@ from typing import cast, Callable, Optional
 import numpy as np
 import pandas as pd
 import xarray as xr
+import scipy # type: ignore
 import lmfit # type: ignore
 
 
@@ -362,3 +363,19 @@ class Assay:
             rfu.name = "RFU"
             return rfu.transpose()
         return from_rfu, to_rfu
+
+    def compute_power_variance_model(self) -> Callable[[float], float]:
+        """Compute power variance model 
+
+        Fit a linear regression against the log transformed sample variance over
+        log transformed means. Based in the regression parameters A,B, return a
+        function that calculates $A*Y^B$ for some provided fluorescence Y.
+        """
+        breakpoint()
+        x = np.log(self.mean()).data.flatten()
+        y = np.log(self.std()**2).data.flatten()
+        regresult = scipy.stats.linregress(x, y)
+        def power_variance(Y: float) -> float:
+            """Return power variance var(Y) = A*Y^B"""
+            return (regresult.intercept * Y**regresult.slope)
+        return power_variance
