@@ -17,6 +17,11 @@ def test_deactivate():
     assert len(assay.plate.content) == len(assay.full_plate.content) - 1
     assert assay.plate.attrs['deactivated_cells'] == "C10"
 
+def test_import_reactivated():
+    """Ensure that deactivated wells are properly imported from Excel"""
+    assay = Assay(os.path.join(os.path.dirname(__file__), '../examples/edc_RFU.xlsx'))
+    assert not all(assay.active_wells)
+
 def test_avg():
     """Ensure correct average calculation"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../examples/edc_RFU.xlsx'))
