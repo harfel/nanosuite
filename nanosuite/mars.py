@@ -51,12 +51,18 @@ class Assay:
         # extract info from headers, into dictionary
         attributes = {}
         for field in df_header[0]:
-            key, sep, val = field.partition(': ')
-            if not sep:
+            if isinstance(field, float):
                 break
-            attributes[key] = val
-        deactivated = (attributes['deactivated_cells'].split(', ')
-                       if 'deactivated_cells' in attributes else [])
+            try:
+                ridx = field.rindex(': ')
+                key = field[:ridx].strip()
+                val = field[ridx+2:].strip()
+                attributes[key] = val
+            except ValueError:
+                continue
+
+        deactivated = attributes.pop('Grey fields contain deactivated wells:   /   Disabled by user', '').split('; ')
+        attributes['deactivated_cells'] = ', '.join(deactivated)
 
         # Create main df and eval if it needs to be transposed
         df_main = df_total.iloc[len(df_header):,]
