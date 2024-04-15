@@ -209,14 +209,14 @@ class Assay:
                 warnings.warn("Argument error is ignored with method 'direct'.")
             return self.calibrate_direct(pos_conc, neg_conc, pos_rfu, neg_rfu)
         if method == 'relaxation':
-            if pos_rfu or neg_rfu:
-                warnings.warn("Arguments pos_rfu and neg_rfu are ignored with method 'relaxation'.")
-            return self.calibrate_relaxation(pos_conc, neg_conc, error=error)
+            return self.calibrate_relaxation(pos_conc, neg_conc, pos_rfu, neg_rfu, error=error)
         raise ValueError(f"""Unsupported calibration method: '{method}'
         Needs to be one of: direct [default], relaxation""")
 
     def calibrate_relaxation(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
+        pos_rfu: Optional[xr.DataArray]=None,
+        neg_rfu: Optional[xr.DataArray]=None, *,
         error: Optional[Callable[[float], float]]=None,
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
@@ -244,11 +244,20 @@ class Assay:
         slowly equilibrates over time.
         """
         # TODO: report fit statistics
-        pos_rfu = pos_conc.sample.data
-        neg_rfu = neg_conc.sample.data
+        pos_rfu = (
+            pos_rfu
+            if pos_rfu is not None
+            else self.plate[self.plate.sample.isin(pos_conc.sample)].mean(axis=0)
+        )
+        neg_rfu = (
+            neg_rfu
+            if neg_rfu is not None
+            else self.plate[self.plate.sample.isin(neg_conc.sample)].mean(axis=0)
+        )
         error = error if error is not None else lambda rfu: 1.
 
-        controls = self.plate[self.plate.sample.isin([pos_rfu, neg_rfu])]
+        controls = self.plate[self.plate.sample.isin(pos_rfu.sample)
+                              | self.plate.sample.isin(neg_rfu.sample)]
 
         def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
             if r_1 == r_2:
@@ -377,10 +386,9 @@ class Assay:
         log transformed means. Based in the regression parameters A,B, return a
         function that calculates $A*Y^B$ for some provided fluorescence Y.
         """
-        breakpoint()
         x = np.log(self.mean()).data.flatten()
         y = np.log(self.std()**2).data.flatten()
-        regresult = scipy.stats.linregress(x, y)
+        regresult = scipy.stats.linregress(x, y) # FIXME: what if regresult.intercept is negative?
         def power_variance(Y: float) -> float:
             """Return power variance var(Y) = A*Y^B"""
             return (regresult.intercept * Y**regresult.slope)
