@@ -81,16 +81,55 @@ def test_from_string_reversible():
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
-def test_from_string_impure():
-    """Ensure correct parsing of impure reactions"""
+def test_instantaneous():
     test_crn = crn.from_string("""
-        A [impure] + B -> C
+       A -> Z;  k=inf
     """)
-    assert len(test_crn.side_reactions) == 1
+    raise RuntimeError("FIXME: write test")
 
-def test_from_string_impure_fraction():
-    """Ensure correct parsing of impure reactant fractions"""
+def test_impurity_1():
     test_crn = crn.from_string("""
-        A [impure] + B -> C;    p=0.05
+       A contains impure
+
+       A -> X
+       A [impure] -> Y;  k=0.1
     """)
-    assert test_crn.params['p'].value == 0.05
+    raise RuntimeError("FIXME: write test")
+
+def test_impurity_2():
+    test_crn = crn.from_string("""
+       A contains impure with p = 0.5
+
+       A [impure] -> X
+    """)
+    raise RuntimeError("FIXME: write test")
+
+def test_impurity_3():
+    test_crn = crn.from_string("""
+       A contains impure with p=0.5 rest pure
+
+       A -> X
+       A [impure] -> Y;  k=0.1
+    """)
+    raise RuntimeError("FIXME: write test")
+
+def test_impurity_4():
+    test_crn = crn.from_string("""
+       A contains imp1 with p=0.25,
+         contains imp2 with p=0.25
+       A [imp1] -> X;  k=inf
+       A [imp1] -> Y;  k=inf
+       A [imp2] -> Z;  k=inf
+    """)
+    raise RuntimeError("FIXME: write test")
+
+def test_impurity_5():
+    test_crn = crn.from_string("""
+       A contains imp1 with p=0.25, 
+         contains imp2 with p=0.25
+       A [imp1] -> X;  k=inf
+       A [imp1] -> Y;  k=0.1
+       A [imp2] -> Z;  k=inf
+    """)
+    raise RuntimeError("FIXME: write test")
+
