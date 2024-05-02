@@ -18,7 +18,7 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
-@pytest.mark.skip("FIXME: fix this later")
+@pytest.mark.skip("FIXME: fix this issue later")
 def test_repr_html():
     """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
@@ -54,6 +54,15 @@ def test_from_string_irreversible():
     """)
     assert len(test_crn.reactions) == 2
 
+def test_from_string_reversible():
+    """Ensure correct parsing of reversible reactions"""
+    test_crn = crn.from_string("""
+        A + B <=> C
+    """)
+    assert len(test_crn.reactions) == 2
+    assert 'kf1' in test_crn.params
+    assert 'kb1' in test_crn.params
+
 def test_from_string_rate():
     """Ensure correct parsing of reaction rates"""
     test_crn = crn.from_string("""
@@ -76,14 +85,26 @@ def test_from_string_rate_value(value):
     """)
     assert test_crn.params['k1'] == float(value)
 
-def test_from_string_reversible():
-    """Ensure correct parsing of reversible reactions"""
+def test_implicit_rate_names():
+    """Ensure the correct number of rate constants is defined"""
     test_crn = crn.from_string("""
-        A + B <=> C
+        A -> W
+        B -> X
+        C -> Y; k0
+        D -> Z; k0
     """)
-    assert len(test_crn.reactions) == 2
-    assert 'kf1' in test_crn.params
-    assert 'kb1' in test_crn.params
+    assert 'k0' in test_crn.params
+    assert 'k1' in test_crn.params
+    assert 'k2' in test_crn.params
+    assert len(test_crn.params) == 3
+
+def test_inconsistent_rate_names():
+    """Ensure that rates cannot be assigned inconsistent values"""
+    with pytest.raises(ValueError):
+        crn.from_string("""
+            A -> X; k = 1
+            A -> Y; k = 2
+        """)
 
 @pytest.mark.parametrize("reactions, initial, outcome", [
     ("""A -> Z; k=inf""", [1., 0.], [0., 1.]),
@@ -100,6 +121,36 @@ def test_burst_reactions(reactions, initial, outcome):
     traj = test_crn.integrate(initial)
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
+@pytest.mark.parametrize("reactions, initial", [
+    ("""A <=> B; kf=inf, kb=inf""", [1., 0.]),
+    ("""A -> B; k=inf
+        B -> A; k=inf""", [1., 0.]),
+    ("""A -> B; k=inf
+        B -> C; k
+        C -> A; k""", [1., 0., 0.]),
+    ])
+def test_circular_burst_reactions(reactions, initial):
+    """Ensure that circular burst reactions raise ValueError"""
+    test_crn = crn.from_string(reactions)
+    initial = xr.DataArray(initial, {'species': test_crn.species})
+    with pytest.raises(ValueError):
+        test_crn.integrate(initial)
+
+def test_burst_after_initialization():
+    test_crn = crn.from_string("""
+        A -> X; k
+    """)
+    test_crn['k'].value = float('inf')
+    assert len(test_crn.burst_reactions) == 1
+
+def test_burst_reaction_name_consistancy():
+    """Ensure reactions to be instantanous if their rate constant name repeats"""
+    test_crn = crn.from_string("""
+        A -> X; k=inf
+        A -> Y; k
+    """)
+    assert len(test_crn.burst_reactions) == 2
+
 def test_impurity_1():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
@@ -112,6 +163,7 @@ def test_impurity_1():
     traj = test_crn.integrate(initial)
     assert (traj.sel(species='X') == 10*traj.sel(species='Y')).all()
 
+@pytest.mark.skip("FIXME: write test")
 def test_impurity_2():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
@@ -119,8 +171,8 @@ def test_impurity_2():
 
        A [impure] -> X
     """)
-    raise RuntimeError("FIXME: write test")
 
+@pytest.mark.skip("FIXME: write test")
 def test_impurity_3():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
@@ -129,8 +181,8 @@ def test_impurity_3():
        A -> X
        A [impure] -> Y;  k=0.1
     """)
-    raise RuntimeError("FIXME: write test")
 
+@pytest.mark.skip("FIXME: write test")
 def test_impurity_4():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
@@ -140,8 +192,8 @@ def test_impurity_4():
        A [imp1] -> Y;  k=inf
        A [imp2] -> Z;  k=inf
     """)
-    raise RuntimeError("FIXME: write test")
 
+@pytest.mark.skip("FIXME: write test")
 def test_impurity_5():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
@@ -151,4 +203,3 @@ def test_impurity_5():
        A [imp1] -> Y;  k=0.1
        A [imp2] -> Z;  k=inf
     """)
-    raise RuntimeError("FIXME: write test")

@@ -1,6 +1,5 @@
 """Chemical reaction networks
 """
-import re
 from copy import deepcopy
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 import xarray as xr
@@ -48,7 +47,6 @@ class CRN:
     species: pd.Index
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], str]
-    burst_reactions: Dict[Tuple[Reactants, Reactants], str]
     params: lmfit.Parameters
 
     def __init__(self,
@@ -68,7 +66,6 @@ class CRN:
         self.species = pd.Index(species or [])
         self.complexes = []
         self.reactions = {}
-        self.burst_reactions = {}
         self.params = lmfit.Parameters()
         for reaction in reactions or []:
             self.add_reaction(*reaction)
@@ -115,6 +112,15 @@ class CRN:
             for name in self.species
         ])
 
+    @property
+    def burst_reactions(self) -> Dict[Tuple[Reactants, Reactants], str]:
+        """Return subset of reactions with infinite rate constant"""
+        return {
+            reaction: rate
+            for reaction, rate in self.reactions.items()
+            if self.params[rate].value == float('inf')
+        }
+
     def get_complex_adjacency(self, burst: bool=False) -> np.ndarray:
         """Augmented complex graph adjacency matrix.
 
@@ -126,10 +132,16 @@ class CRN:
         A 2D numpy array denoting reaction rate constants among reaction
         complexes.
         """
-        reactions = self.burst_reactions if burst else self.reactions
+        def get_rate_constant(educts, products):
+            value = (self.params[name]
+                     if (name := self.reactions.get((educts, products), ''))
+                     else 0.)
+            if burst:
+                return 1 if value == float('inf') else 0.
+            return 0 if value == float('inf') else value
         return np.array([
             [
-                self.params[name] if (name := reactions.get((educts, products), '')) else 0.
+                get_rate_constant(educts, products)
                 for educts in self.complexes
             ]
             for products in self.complexes
@@ -167,10 +179,7 @@ class CRN:
             if compl not in self.complexes:
                 self.complexes.append(compl)
 
-        if rate.value == float('inf'):
-            self.burst_reactions[educts, products] = rate.name
-        else:
-            self.reactions[educts, products] = rate.name
+        self.reactions[educts, products] = rate.name
 
         if rate.name not in self.params:
             self.params.add(rate)
@@ -217,7 +226,7 @@ class CRN:
 
         def kinetics(_, state):
             # Z.T @ log(state) with convention 0*inf = 0
-            with np.errstate(invalid='ignore'):
+            with np.errstate(divide='ignore', invalid='ignore'):
                 tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
                 tmp = np.nansum(Z*tmp, axis=0)
             return -Z @ L @ np.exp(tmp)
@@ -255,7 +264,7 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        if self.burst_reactions:
+        if any(param.value==float('inf') for param in self.params.values()):
             initial_condition = self.perform_burst_reactions(self.state(initial_condition))
         t_eval = t_eval if t_eval is not None else pd.Index(np.linspace(0, 100, 101), name="time")
         kinetics = self.rate_law()
@@ -276,7 +285,7 @@ class CRN:
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
 
-        The given state state is exposed to self.burst_reactions and species
+        The given state state is exposed to burst_reactions and species
         are redistributed according to mass action kinetic proportions until
         an equilibrium is reached. Burst reactions must not be reversible or
         circular.
@@ -297,7 +306,8 @@ class CRN:
 
         iterations = 10*len(self.burst_reactions)
         for _ in range(iterations):
-            rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
             fraction = min(x/y for x, y in zip(state, rates) if y>0).values if rates.any() else 0
             state -= fraction*rates
             if fraction < 1e-10:
@@ -516,29 +526,8 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     """
     crn_def = crn_parser.parse(string)
 
-    # replace rate name placeholders with descriptive variable names
-    pattern = re.compile(r'\d+')
-    bound_nums = [int(match) for *_, param in crn_def.reactions
-                  for match in pattern.findall(param.name)
-                  if not param.name.startswith('_')]
-    free_nums = [idx for idx, (*_, rate) in enumerate(crn_def.reactions, 1)
-                 if idx not in bound_nums]
-    for idx, reaction in enumerate(crn_def.reactions):
-        if isinstance(reaction, crn_parser.Reaction):
-            if not reaction.rate.name.startswith('_'):
-                continue
-            reaction.rate.name = f'k{free_nums.pop(0)}'
-        else:
-            if not reaction.forward.name.startswith('_'):
-                continue
-            num = free_nums.pop(0)
-            reaction.forward.name = f'kf{num}'
-            reaction.backward.name = f'kb{num}'
-
-    # instantiate appropriate CRN class
+    # create CRN from definition
     crn = CRN(species=species)
-
-    # add reactions
     for reaction in crn_def.reactions:
         if isinstance(reaction, crn_parser.Reaction):
             crn.add_reaction(*reaction)

@@ -43,6 +43,7 @@
     explicit name is given for the rest, 'pure' is assumed.
 """
 import sys
+import re
 from collections import namedtuple
 import lmfit # type: ignore
 from ply import lex # type: ignore
@@ -96,7 +97,7 @@ def t_newline(t):
 
 def t_error(t):
     """Handle syntax errors on the lexer level"""
-    start = example.rfind('\n', 0, t.lexpos) + 1
+    start = example.rfind('\n', 0, t.lexpos) + 1 # FIXME: do not use example!
     col = t.lexpos - start + 1
     sys.stderr.write(f"Syntax error: '{t.value[0]}' in line {t.lineno}\n")
     sys.stderr.write(example[start: example.find('\n', t.lexpos)+1])
@@ -143,17 +144,18 @@ def p_reaction(p):
     """
     if len(p) == 4 and p[2] == t_RIGHT_ARROW:
         name = f'_k_{len(p.parser.context)+1}'
-        p[0] = Reaction(educts=p[1], products=p[3], rate=lmfit.Parameter(name, value=1., min=0.))
+        p.parser.context[name] = VarDef(name, None)
+        p[0] = Reaction(educts=p[1], products=p[3], rate=name)
     elif len(p) == 6:
         p[0] = Reaction(educts=p[1], products=p[3], rate=p[5])
     elif len(p) == 4 and p[2] == t_DOUBLE_ARROW:
-        name = f'_k_{len(p.parser.context)+1}'
-        p[0] = BalancedReaction(educts=p[1], products=p[3],
-                                forward=lmfit.Parameter(name, value=1., min=0.),
-                                backward=lmfit.Parameter(name, value=1., min=0.))
+        fname = f'_k_{len(p.parser.context)+1}'
+        bname = f'_k_{len(p.parser.context)+2}'
+        p.parser.context[fname] = VarDef(fname, None)
+        p.parser.context[bname] = VarDef(bname, None)
+        p[0] = BalancedReaction(educts=p[1], products=p[3], forward=fname, backward=bname)
     else:
-        p[0] = BalancedReaction(educts=p[1], products=p[3],
-                                forward=p[5],backward=p[7])
+        p[0] = BalancedReaction(educts=p[1], products=p[3], forward=p[5], backward=p[7])
 
 def p_reactants(p):
     """reactants : species
@@ -198,15 +200,20 @@ def p_var_def(p):
     if len(p) == 4:
         if p[1].startswith('_'):
             raise ValueError(f"Rate constant not allowed to start with underscore: {p[1]}.")
-        p[0] = lmfit.Parameter(p[1], value=p[3], min=0.)
+        if p[1] in p.parser.context and p.parser.context[p[1]].value != p[3]:
+            raise ValueError("Inconsistent values for rate constant {p[1]}.")
+        p.parser.context[p[1]] = VarDef(p[1], p[3])
+        p[0] = p[1]
     elif isinstance(p[1], (int, float)):
         name = f'_k_{len(p.parser.context)+1}'
-        p[0] = lmfit.Parameter(name, value=p[1], min=0.)
-        p.parser.context[name] = p[0]
+        p.parser.context[name] = VarDef(name, p[1])
+        p[0] = name
     else:
         if p[1].startswith('_'):
             raise ValueError(f"Rate constant not allowed to start with underscore: {name}.")
-        p[0] = lmfit.Parameter(p[1], value=1., min=0.)
+        if p[1] not in p.parser.context:
+            p.parser.context[p[1]] = VarDef(p[1], None)
+        p[0] = p[1]
 
 def p_species_def(p):
     """species_def : LABEL subspecies_list
@@ -243,11 +250,12 @@ def p_fraction_def(p):
 
 def p_error(t):
     """Handle errors on the grammar level"""
-    start = example.rfind('\n', 0, t.lexpos) + 1
+    start = example.rfind('\n', 0, t.lexpos) + 1 # FIXME: do not use example!
     col = t.lexpos - start + 1
     sys.stderr.write(f"Syntax error: '{t.value}' in line {t.lineno}\n")
     sys.stderr.write(example[start: example.find('\n', t.lexpos)+1])
     sys.stderr.write(f"{(col-1)*' '}^\n")
+
 
 # AST objects
 
@@ -265,10 +273,47 @@ def parse(string: str) -> CrnDef:
     """Construct abstract CrnDef from string input"""
     parser = yacc()
     parser.context = {}
-    return parser.parse(string, lexer=lex.lex())
+    crn_def = parser.parse(string, lexer=lex.lex())
+
+    # replace rate name placeholders with descriptive variable names
+    pattern = re.compile(r'\d+')
+    bound_nums = [match for name, param in parser.context.items()
+                  for match in pattern.findall(name)
+                  if not name.startswith('_')]
+    free_nums = [idx_str for idx, _ in enumerate(parser.context, 1)
+                 if (idx_str:=str(idx)) not in bound_nums]
+    for idx, reaction in enumerate(crn_def.reactions):
+        if isinstance(reaction, Reaction):
+            if not reaction.rate.startswith('_'):
+                continue
+            parser.context[reaction.rate] = VarDef(f'k{free_nums.pop(0)}',
+                                                   parser.context[reaction.rate].value)
+        else:
+            if not reaction.forward.startswith('_'):
+                continue
+            num = free_nums.pop(0)
+            parser.context[reaction.forward] = VarDef(f'kf{num}',
+                                                      parser.context[reaction.forward].value)
+            parser.context[reaction.backward] = VarDef(f'kb{num}',
+                                                       parser.context[reaction.backward].value)
+
+    # set default parameter values
+    params = {
+        key: lmfit.Parameter(name, val or 1., min=0.)
+        for key, (name, val) in parser.context.items()
+    }
+
+    crn_def = CrnDef([
+        Reaction(rct.educts, rct.products, params[rct.rate])
+        if isinstance(rct, Reaction) else
+        BalancedReaction(rct.educts, rct.products,
+                         params[rct.forward], params[rct.backward])
+        for rct in crn_def.reactions
+    ], crn_def.species_defs)
+
+    return crn_def
 
 
-# Example Usage
 if __name__ == '__main__':
     example = """
         probe contains burst with p_burst = 0.1,
@@ -290,4 +335,4 @@ if __name__ == '__main__':
         probe [stagnating] + input <=> stagnation + output
     """
 
-    ast = parse(example)
+    parse(example)

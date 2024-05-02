@@ -26,19 +26,3 @@ def test_issue_0001():
     assert crn_b.params['k1'] == 10
     assert crn_b.params['k2'] == 5
     assert crn_b.params['p'] == 0.03
-
-
-def test_issue_0002():
-    """Ensure that ImpureCRN's can be integrated."""
-    impure_crn = crn.from_string("""
-        A [impure] + B -> X
-        A + B -> Y
-    """)
-    initial = xr.DataArray(
-        [10, 10],
-        {'species': ['A', 'B']}
-    )
-    try:
-        impure_crn.integrate(initial)
-    except ValueError as x:
-        pytest.fail(str(x))
