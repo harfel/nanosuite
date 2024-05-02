@@ -1,14 +1,14 @@
 """Chemical reaction networks
 """
-import csv
 import re
 from copy import deepcopy
-from typing import cast, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 import xarray as xr
 import numpy as np
 import pandas as pd
 from scipy.integrate import solve_ivp # type: ignore
 import lmfit # type: ignore
+from . import crn_parser
 
 Reactants = Tuple[Tuple[str, int], ...]
 
@@ -48,6 +48,7 @@ class CRN:
     species: pd.Index
     complexes: List[Reactants]
     reactions: Dict[Tuple[Reactants, Reactants], str]
+    burst_reactions: Dict[Tuple[Reactants, Reactants], str]
     params: lmfit.Parameters
 
     def __init__(self,
@@ -67,6 +68,7 @@ class CRN:
         self.species = pd.Index(species or [])
         self.complexes = []
         self.reactions = {}
+        self.burst_reactions = {}
         self.params = lmfit.Parameters()
         for reaction in reactions or []:
             self.add_reaction(*reaction)
@@ -113,8 +115,7 @@ class CRN:
             for name in self.species
         ])
 
-    @property
-    def complex_adjacency(self) -> np.ndarray:
+    def get_complex_adjacency(self, burst: bool=False) -> np.ndarray:
         """Augmented complex graph adjacency matrix.
 
         See van der Schaft et al. (2011) SIAM J Appl Math 73(2):953-973
@@ -125,9 +126,10 @@ class CRN:
         A 2D numpy array denoting reaction rate constants among reaction
         complexes.
         """
+        reactions = self.burst_reactions if burst else self.reactions
         return np.array([
             [
-                self.params[name] if (name := self.reactions.get((educts, products), '')) else 0.
+                self.params[name] if (name := reactions.get((educts, products), '')) else 0.
                 for educts in self.complexes
             ]
             for products in self.complexes
@@ -165,7 +167,11 @@ class CRN:
             if compl not in self.complexes:
                 self.complexes.append(compl)
 
-        self.reactions[educts, products] = rate.name
+        if rate.value == float('inf'):
+            self.burst_reactions[educts, products] = rate.name
+        else:
+            self.reactions[educts, products] = rate.name
+
         if rate.name not in self.params:
             self.params.add(rate)
 
@@ -206,11 +212,11 @@ class CRN:
 
         # calculate graph Laplacian
         Z = self.complex_graph
-        D = np.diag(np.sum(self.complex_adjacency, axis=0))
-        L = D - self.complex_adjacency
+        A = self.get_complex_adjacency()
+        L = np.diag(np.sum(A, axis=0)) - A
 
         def kinetics(_, state):
-            # complex_graph.T @ log(state) with convention 0*inf = 0
+            # Z.T @ log(state) with convention 0*inf = 0
             with np.errstate(invalid='ignore'):
                 tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
                 tmp = np.nansum(Z*tmp, axis=0)
@@ -249,14 +255,14 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        initial_condition = self.state(initial_condition)
+        if self.burst_reactions:
+            initial_condition = self.perform_burst_reactions(self.state(initial_condition))
         t_eval = t_eval if t_eval is not None else pd.Index(np.linspace(0, 100, 101), name="time")
         kinetics = self.rate_law()
 
-        result = xr.DataArray(
-            np.zeros(initial_condition.shape+t_eval.shape),
-            [(dim, initial_condition.indexes[dim]) for dim in initial_condition.dims]+[t_eval]
-        )
+        result = xr.DataArray(np.zeros(initial_condition.shape+t_eval.shape),
+                              [(dim, initial_condition.indexes[dim])
+                               for dim in initial_condition.dims]+[t_eval])
         if len(initial_condition.dims) == 1:
             result[0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition,
                                    t_eval=t_eval, vectorized=True, **options).y
@@ -266,6 +272,39 @@ class CRN:
                 result[idx, 0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial,
                                             t_eval=t_eval, vectorized=True, **options).y
         return result
+
+    def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
+        """Perform burst reactions
+
+        The given state state is exposed to self.burst_reactions and species
+        are redistributed according to mass action kinetic proportions until
+        an equilibrium is reached. Burst reactions must not be reversible or
+        circular.
+
+        Parameters
+        ----------
+        state: xr.DataArray
+            species distribution before burst reactions
+
+        Returns
+        -------
+            xr.DataArray containing the redistributed species vector
+        """
+        # pylint: disable=invalid-name
+        Z = self.complex_graph
+        A = np.where(self.get_complex_adjacency(True), 1., 0)
+        L = np.diag(np.sum(A, axis=0)) - A
+
+        iterations = 10*len(self.burst_reactions)
+        for _ in range(iterations):
+            rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
+            fraction = min(x/y for x, y in zip(state, rates) if y>0).values if rates.any() else 0
+            state -= fraction*rates
+            if fraction < 1e-10:
+                break
+        else:
+            raise ValueError(f"Burst reactions did not converge within {iterations} steps.")
+        return state
 
     def fit(self,
             data: xr.DataArray,
@@ -313,8 +352,10 @@ class CRN:
 
     @staticmethod
     def _render_reactants(multiset):
+        def subspecies_name(species):
+            return species.name if not species.suffix else f'{species.name} [{species.suffix}]'
         return ' + '.join(
-            species if stoich == 1 else f'{stoich} {species}'
+            subspecies_name(species) if stoich == 1 else f'{stoich} {subspecies_name(species)}'
             for species, stoich in multiset
         )
 
@@ -460,28 +501,7 @@ class ImpureCRN(CRN):
 def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, ImpureCRN]:
     """Construct a chemical reaction network from a string representation.
 
-    The format of the string definition is as follows: each reaction is
-    specified on a single line. A hash character (#) anywhere in the
-    input marks the beginning of a comment that extends until the end of
-    the line.
-    Each line specifies an arreversible ('->') or reversible ('<=>')
-    reaction among educts and products. Educts and products use '+' to
-    separate individual chemical species names. Species names can be
-    preceeded by their stoichiometric factor.
-
-    Reactions can be followed by a semicolon (;) after which the
-    reaction rate constants are specified in the format name=value.
-    For reversible reactions, the forward and backward constant
-    specifications are separated by a comma. In both cases, both name
-    and value are optional. If no value is given, 1 is assumed.
-    If no name is given, a generic name that is not used in other
-    reactions is provided.
-
-    If any educt species name is followed by [impure], the function
-    returns an ImpureCRN instance and any respectively marked reaction
-    is taken to be an instantaneous side reaction.
-
-    See the class docstring for an example.
+    See nanosuite.crn_parser for a definition of the CRN specification language
 
     Parameters
     ----------
@@ -494,187 +514,36 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     -------
     A CRN instance with the given reactions.
     """
-    reactions: List[Tuple[Reactants, Reactants, Optional[str], bool, lmfit.Parameter]] = []
-    context: Dict[str, lmfit.Parameter] = {}
-    # parse reactions line by line
-    for line in string.split('\n'):
-        reactions.extend(_parse_line(line, context))
+    crn_def = crn_parser.parse(string)
 
     # replace rate name placeholders with descriptive variable names
     pattern = re.compile(r'\d+')
-    bound_nums = [int(match) for *_, param in reactions
+    bound_nums = [int(match) for *_, param in crn_def.reactions
                   for match in pattern.findall(param.name)
                   if not param.name.startswith('_')]
-    free_nums = [idx for idx, (*_, rate) in enumerate(reactions, 1)
+    free_nums = [idx for idx, (*_, rate) in enumerate(crn_def.reactions, 1)
                  if idx not in bound_nums]
-    reverse = 0
-    for idx, (educts, products, impurity, reverse, rate) in enumerate(reactions):
-        if not rate.name.startswith('_'):
-            continue
-        if impurity:
-            rate.max = 1.
-            rate.name = f'p{free_nums.pop(0)}'
-        elif reverse:
-            num = free_nums.pop(0)
-            rate.name = f'kf{num}'
-            reactions[idx+1][-1].name = f'kb{num}'
+    for idx, reaction in enumerate(crn_def.reactions):
+        if isinstance(reaction, crn_parser.Reaction):
+            if not reaction.rate.name.startswith('_'):
+                continue
+            reaction.rate.name = f'k{free_nums.pop(0)}'
         else:
-            rate.name = f'k{free_nums.pop(0)}'
+            if not reaction.forward.name.startswith('_'):
+                continue
+            num = free_nums.pop(0)
+            reaction.forward.name = f'kf{num}'
+            reaction.backward.name = f'kb{num}'
 
     # instantiate appropriate CRN class
-    cls = ImpureCRN if any(impurity for *_, impurity, __, ___ in reactions) else CRN
-    crn = cls(species=species)
+    crn = CRN(species=species)
 
-    # add reactions and side reactions
-    for educts, products, impurity, _, rate in reactions:
-        if impurity:
-            rate.max=1.
-            cast(ImpureCRN, crn).add_impurity(impurity, educts, products, rate)
+    # add reactions
+    for reaction in crn_def.reactions:
+        if isinstance(reaction, crn_parser.Reaction):
+            crn.add_reaction(*reaction)
         else:
-            crn.add_reaction(educts, products, rate)
+            crn.add_reaction(reaction.educts, reaction.products, reaction.forward)
+            crn.add_reaction(reaction.products, reaction.educts, reaction.backward)
+
     return crn
-
-def from_kinDA(path: str, species: Optional[List[str]] = None) -> CRN: # pylint: disable=invalid-name
-    """Construct a CRN from a kinDA csv file.
-
-    See https://github.com/DNA-and-Natural-Algorithms-Group/KinDA.
-
-    Parameters
-    ----------
-    A kinDA csv file.
-
-    Returns
-    -------
-    A CRN instance of the kinDA generated network.
-    """
-    network = CRN(species=species)
-    with open(path, encoding="utf-8") as csvfile:
-        reader = csv.reader(csvfile)
-
-        # skip to reaction rate data table
-        while (row := next(reader)) != ['# REACTION RATE DATA']:
-            pass
-        # and table header
-        assert next(reader)[0] == 'reaction'
-
-        # parse each reaction in the table
-        idx = 0 # reaction index
-        while len(row := next(reader)) == 5:
-            reaction, k_forward, _, k_backward = row[:4]
-            educts, products, *_ = _parse_reaction(reaction)[0]
-
-            # skip reactions that do not convert species
-            if educts == products:
-                continue
-
-            pattern = re.compile(r"\[Complex\(([^\)]*)\)\]")
-            educts = tuple(
-                (cast(re.Match, pattern.match(name)).group(1), stoich)
-                for name, stoich in educts
-            )
-            products = tuple(
-                (cast(re.Match, pattern.match(name)).group(1), stoich)
-                for name, stoich in products
-            )
-
-            k_plus = float(k_forward)
-            k_minus = float(k_backward)
-            k_effective = k_plus*k_minus/(k_plus+k_minus)
-
-            constant = lmfit.Parameter(f"k{idx}", value=k_effective, vary=True, min=0)
-            idx += 1
-
-            network.add_reaction(educts, products, constant)
-        return network
-
-def _parse_line(string: str, context: Dict[str, lmfit.Parameter]
-               ) -> List[Tuple[Reactants, Reactants, Optional[str], bool, lmfit.Parameter]]:
-    """
-    LINE |- [REACTION [; RATEDEFS]] [# COMMENT]
-    """
-    inp = string.partition('#')[0].strip()
-    if not inp.strip():
-        return []
-    reaction_string, rate_sep, rate_string = inp.partition(';')
-    reactions = _parse_reaction(reaction_string.strip())
-    rates = _parse_ratedefs(rate_string, context) if rate_sep else []
-
-    if len(rates) > len(reactions):
-        raise ValueError("Too many rate constants given.")
-    while len(rates) < len(reactions):
-        name = f'_k_{len(context)+1}'
-        param = lmfit.Parameter(name, value=1., min=0.)
-        context[name] = param
-        rates.append(param)
-
-    return [(educts, products, impurity, reverse, rate)
-            for (educts, products, impurity, reverse), rate in zip(reactions, rates)]
-
-def _parse_reaction(string: str) -> List[Tuple[Reactants, Reactants, Optional[str], bool]]:
-    """
-    REACTION |- REACTANTS -> REACTANTS
-    REACTION |- REACTANTS <=> REACTANTS
-    """
-    if '->' in string:
-        educt_string, _, product_string = string.partition('->')
-        educts, impurity = _parse_reactants(educt_string)
-        products, forbidden_impurity = _parse_reactants(product_string)
-        if forbidden_impurity:
-            raise ValueError("Only educts can be impure.")
-        return [(educts, products, impurity, False)]
-    if '<=>' in string:
-        educt_string, _, product_string = string.partition('<=>')
-        educts, impure_educts = _parse_reactants(educt_string)
-        products, impure_products = _parse_reactants(product_string)
-        if impure_educts or impure_products:
-            raise ValueError("Only irreversible reactions can involve impurities.")
-        return [(educts, products, None, True), (products, educts, None, True)]
-    raise ValueError("Missing '->' or '<=> in reaction string.'")
-
-def _parse_reactants(string: str) -> Tuple[Reactants, Optional[str]]:
-    """
-    REACTANTS |- [[STOICHIOMETRY [*]] SPECIES]*
-    """
-    reactants: Dict[str, int] = {}
-    pattern = re.compile(r' *([0-9]*) *\*? *([^\s+0-9][^\s+]*) *(\[impure\])? *')
-    impurity: Optional[str] = None
-    for expr in string.split(' +'):
-        match = pattern.fullmatch(expr)
-        if not match:
-            raise ValueError(f"Syntax error in reactant: '{expr.strip()}'.")
-        name = match.group(2)
-        stoich = int(match.group(1)) if match.group(1) else 1
-        reactants[name] = reactants.get(name, 0) + stoich
-        if match.group(3):
-            if impurity:
-                raise ValueError("Only one impurity per reaction can be given.")
-            impurity = name
-    return tuple(sorted(reactants.items())), impurity
-
-def _parse_ratedefs(string: str, context: Dict[str, lmfit.Parameter]) -> List[lmfit.Parameter]:
-    """
-    RATEDEFS |- [RATEDEF]*
-    """
-    return [_parse_ratedef(rate_string, context) for rate_string in string.split(',')]
-
-def _parse_ratedef(string: str, context: Dict[str, lmfit.Parameter]) -> lmfit.Parameter:
-    """
-    RATEDEF |- VALUE
-    RATEDEF |- NAME [= VALUE]
-    """
-    if '=' in string:
-        name, _, val = string.partition('=')
-        if name.startswith('_'):
-            raise ValueError(f"Rate constant not allowed to start with underscore: {name}.")
-        return lmfit.Parameter(name.strip(), value=float(val.strip()), min=0.)
-    try:
-        value = float(string.strip())
-        name = f'_k_{len(context)+1}'
-        param = lmfit.Parameter(name, value=value, min=0.)
-        context[name] = param
-        return param
-    except ValueError:
-        name = string.strip()
-        if name.startswith('_'):
-            raise ValueError(f"Rate constant not allowed to start with underscore: {name}.") # pylint: disable=raise-missing-from
-        return lmfit.Parameter(name, value=1., min=0.)
