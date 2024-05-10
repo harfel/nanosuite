@@ -2,6 +2,7 @@
 """
 from copy import deepcopy
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
+from itertools import chain
 import xarray as xr
 import numpy as np
 import pandas as pd
@@ -9,7 +10,7 @@ from scipy.integrate import solve_ivp # type: ignore
 import lmfit # type: ignore
 from . import crn_parser
 
-Reactants = Tuple[Tuple[str, int], ...]
+Reactants = Tuple[Tuple[str, int], ...] # TODO: support generic Tuple[Tuple[T, int], ...]
 
 class CRN:
     """Chemical reaction network
@@ -93,6 +94,15 @@ class CRN:
         )
 
     @property
+    def burst_reactions(self) -> Dict[Tuple[Reactants, Reactants], str]:
+        """Return subset of reactions with infinite rate constant"""
+        return {
+            reaction: rate
+            for reaction, rate in self.reactions.items()
+            if self.params[rate].value == float('inf')
+        }
+
+    @property
     def complex_graph(self) -> np.ndarray:
         """Complex graph of the reaction network.
 
@@ -111,15 +121,6 @@ class CRN:
             ]
             for name in self.species
         ])
-
-    @property
-    def burst_reactions(self) -> Dict[Tuple[Reactants, Reactants], str]:
-        """Return subset of reactions with infinite rate constant"""
-        return {
-            reaction: rate
-            for reaction, rate in self.reactions.items()
-            if self.params[rate].value == float('inf')
-        }
 
     def get_complex_adjacency(self, burst: bool=False) -> np.ndarray:
         """Augmented complex graph adjacency matrix.
@@ -190,21 +191,40 @@ class CRN:
     def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
         self.params[name] = value
 
-    def state(self, conc: xr.DataArray) -> xr.DataArray:
+    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /, **extra_conc
+              ) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
+
+        Create a state vector with the given species concentrations.
+        Species of the CRN that are ommitted in the input are set to 0.
+
+        >>> initial = crn.state(A=100, B=100)
 
         Parameters
         ----------
-        conc: an xarray.DataArray with coordinate "species"
+        conc: an xarray.DataArray with a coordinate "species"
+              or a dictionary from species labels to float
             giving species concentrations.
+        extra_conc:
+            named keyword arguemtns of additional concentrations.
 
         Returns
         -------
         A DataArray with the same contents as conc, but padded
         with 0's for any unspecified species.
         """
-        # TODO: accept different inputs, e.g. iterables, dicts, DataArrays
-        return conc.reindex({'species': self.species}, fill_value=0.)
+        if conc is None:
+            return xr.DataArray([extra_conc.get(species, 0.) for species in self.species],
+                                {'species': self.species})
+        if isinstance(conc, dict):
+            conc.update(**extra_conc)
+            return xr.DataArray([conc.get(species, 0.) for species in self.species],
+                                {'species': self.species})
+        species_coord = conc.dims[0]
+        return xr.DataArray([float(conc.loc[{species_coord: s}])
+                                 if s in conc.coords[species_coord] else 0.
+                                 for s in self.species],
+                                {species_coord: self.species})
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -264,8 +284,9 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
+        initial_condition = self.state(initial_condition)
         if any(param.value==float('inf') for param in self.params.values()):
-            initial_condition = self.perform_burst_reactions(self.state(initial_condition))
+            initial_condition = self.perform_burst_reactions(initial_condition)
         t_eval = t_eval if t_eval is not None else pd.Index(np.linspace(0, 100, 101), name="time")
         kinetics = self.rate_law()
 
@@ -362,153 +383,156 @@ class CRN:
 
     @staticmethod
     def _render_reactants(multiset):
-        def subspecies_name(species):
-            return species.name if not species.suffix else f'{species.name} [{species.suffix}]'
         return ' + '.join(
-            subspecies_name(species) if stoich == 1 else f'{stoich} {subspecies_name(species)}'
+            species if stoich == 1 else f'{stoich} {species}'
             for species, stoich in multiset
         )
 
 
-class ImpureCRN(CRN):
-    """Chemical reaction networks with instantaneous side reactions
+class PartitionedCRN(CRN):
+    """CRN with subspecies partitioning
 
-    This class models chemical reaction networks with impure side
-    reactions among an impure fraction of components. Any species in
-    the network can have one side reaction. A fraction of this species
-    will engage into the side reaction instantaneously at the beginning
-    of a simulation, consuming the impure fraction as much as possible.
+    This subclass allows for modelling of CRNs where certain species are a
+    mixture of subspecies. Consider for example a biomarker where 1% is a mutant,
+    the rest being wildtype. PartitionedCRN allows one to provide initial
+    states in biomarker concentrations, whicu are converted to subspecies
+    concentratrations before dynamics are simulated. Before reporting results
+    back to the user, overall species concentrations are updated from the
+    subspecies concentrations.
+
+    To declare subspecies compositions, PartitionedCRN offers the method
+    define_subspecies:
+
+    >>> reactions = from_string(
+    ...     "biomarker_mutant + probe -> biomarker_mutant + signal").reactions
+    >>> crn = PartitionedCRN(reactions)
+    >>> crn.define_subspecies("biomarker",
+    ...     subspecies={"mutant": 0.01}, rest="wildtype")
+
+    >>> initial = crn.state(biomarker=100)
+    >>> trajectory = crn.integrate(initial)
+    >>> total = trajecory.sel(species="biomarker")
+    >>> mutant = trajecory.sel(species="biomarker_mutant")
+    >>> wildtype = trajecory.sel(species="biomarker_wildtype")
+
+
+    Internally, the mapping from species space to subspecies space is
+    represented by matrix multiplications over the joint species-subspecies
+    space, refered to as split (S) and merge (M). If x denotes a species state
+    vector. y = S @ x is a vector in species-subspecies space where subspecies
+    concentrations are set from x according to the CRN's subspecies definitions.
+    Similarly, the merge matrix M sets the concentrations of species by adding
+    up all their subspecies concentrations.
     """
-    side_reactions: Dict[str, Tuple[Reactants, Reactants, str]]
+    subspecies: Dict[str, Dict[str, str]]
+    subspecies_rests: Dict[str, str]
 
-    def __init__(
-        self,
-        reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
-        impurities: Optional[Dict[str, Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
-        species: Optional[Iterable[str]] = None
-    ):
-        """Create impure reaction network
 
-        Parameters
-        ----------
-        impurities: mapping from strings to educts, products, and impurity fraction
-        """
+    def __init__(self,
+                 reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
+                 species: Optional[Iterable[str]] = None): # FIXME: accept subspecies_defs
         super().__init__(reactions, species)
-        self.side_reactions = {}
+        self.subspecies = {}
+        self.subspecies_rests = {}
 
-        for impurity, side_reaction in impurities.items() if impurities else []:
-            self.add_impurity(impurity, *side_reaction)
+    # The matrices S and SI are chosen to be idempotent:
+    #     S.values @ S.values @ x = S.values @ x
+    #     SI.values @ SI.values @ y = SI.values @ y
+    # It holds that
+    #     S.values @ SI.values @ S.values @ x == S.values @ x
+    # but generally not
+    #     SI.values @ S.values @ x == x
 
-    def __str__(self) -> str:
-        def render(impurity, side_reaction):
-            educt_set, product_set, name = side_reaction
-            educts = ' + '.join(
-                (species if stoich == 1 else f"{-stoich} {species}")
-                + (' [impure]' if species == impurity else '')
-                for species, stoich in educt_set
-            )
-            products = ' + '.join(
-                species if stoich == 1 else f"{stoich} {species}"
-                for species, stoich in product_set
-            )
-            return f"{educts} -> {products}; {name}={self.params[name].value}"
-        return super().__str__() + '\n' + '\n'.join(
-            render(*side_reaction) for side_reaction in self.side_reactions.items()
-        )
+    # FIXME: this behviour is currently not fulfilled
+    # The mappings from species to subspecies should be automorphisms over the union of
+    # the two spaces. That is: S and SI redistribute concentrations over the joint
+    # species-subspecies-space. This makes it easier to access subspecies just like species.
 
-    def _repr_html_(self) -> str:
-        def render(impurity, side_reaction):
-            educt_set, product_set, fraction = side_reaction
-            educts = ' + '.join(
-                (species if stoich == 1 else f"{-stoich} {species}")
-                + (' [impure]' if species == impurity else '')
-                for species, stoich in educt_set
-            )
-            products = ' + '.join(
-                species if stoich == 1 else f"{stoich} {species}"
-                for species, stoich in product_set
-            )
-            return educts, products, fraction
-        return (
-            '<table>'
-            + '\n'.join(
-                f'''<tr>
-                    <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
-                    <td style="text-align: center">&LongRightArrow;</td>
-                    <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left">{name} = {self.params[name].value:.2g}</td>
-                </tr>'''
-                for reaction, name in self.reactions.items()
-            )
-            + '\n'.join(
-                f'''<tr>
-                    <td style="text-align: right">{(res:=render(impurity, side_reaction))[0]}</td>
-                    <td style="text-align: center">&LongRightArrow;</td>
-                    <td style="text-align: left">{res[1]}</td>
-                    <td style="text-align: left">{res[2]} = {self.params[res[2]].value:.2g}</td>
-                </tr>'''
-                for impurity, side_reaction in self.side_reactions.items()
-            )
-            + '</table>'
-        )
+    # However, xarray is not made for automporphisms, because the range dimension is not the
+    # same as the domain dimension. S @ x will currently produce data along the subspecies
+    # domain. When applying S a second time, in S @ S @ x, xarray solves the "matrix" for the
+    # subspecies domain, essentially applying a transpose.
+    # I could define an Auomporphism class that overloads the matrix multiplication opperator
+    # to swap out the dimension of the default multiplication result.
 
-    def add_impurity(self, impurity: str, educts: Reactants, products: Reactants,
-                     fraction: lmfit.Parameter):
-        """Add side reaction for impure species
+    @property
+    def split_species(self):
+        """Split matrix distributing species into subspecies concentrations
+        """
+        all_subspecies = set(*chain(self.subspecies.values()))
+        result = xr.DataArray([[(self.params[self.subspecies[species][subspecies]]
+                                 if subspecies in self.subspecies[species] else 0.)
+                                if species in self.subspecies
+                                else int(species==subspecies and subspecies not in all_subspecies)
+                                for species in self.species]
+                               for subspecies in self.species],
+                              {'subspecies': self.species, 'species': self.species})
+        for subspecies, species in self.subspecies_rests.items():
+            result[result.subspecies==subspecies] = 0.
+            result[result.subspecies==subspecies, result.species==species] = (
+                1 - result[..., result.species==species].sum())
+            result[result.subspecies==species, result.species==species] = 1.
+        return result
+
+    @property
+    def merge_subspecies(self):
+        """Merge matrix adding up subspecies concentrations into species
+        """
+        result = xr.DataArray([[int(subspecies in self.subspecies[species]
+                                    if species in self.subspecies
+                                    else species==subspecies)
+                                for subspecies in self.species] for species in self.species],
+                              {'species': self.species, 'subspecies': self.species})
+        for subspecies, species in self.subspecies_rests.items():
+            result[result.species==species, result.subspecies==subspecies] = 1.
+        return result
+
+    def define_subspecies(self, species: str, subspecies: Dict[str, lmfit.Parameter],
+                          rest: Optional[str]='pure'):
+        """Define subspecies of a given species
 
         Parameters
         ----------
-        impurity: string
-        educts: tuple of species name, stoichiometry tuples
-        products: tuple of species name, stoichiometry tuples
-        fraction: float between 0 and 1
+            species: str
+                The species that should be partitioned into subspecies
+            subspecies: Dict[str, lmfit.Parameter]
+                Fractions (between 0 and 1) of named subspecies
+            rest: str
+                suffix for the remainder part of the species (default pure)
         """
-        if impurity in self.side_reactions:
-            raise ValueError(f"Species {impurity} can only have one declared side reaction.")
-
-        self.side_reactions[impurity] = educts, products, fraction.name
-        self.params.add(fraction)
-
-        # collect species
+        # FIXME: do name wrangling in crn_parser
+        if species not in self.species:
+            self.species = self.species.append(pd.Index([species]))
+        if (name:=f'{species}_{rest}') not in self.species:
+            self.species = self.species.append(pd.Index([name]))
         self.species = self.species.append(pd.Index([
-            name for name, _ in educts+products
-            if name not in self.species
+            name for suffix in subspecies
+            if (name:=f'{species}_{suffix}') not in self.species
         ]))
+        if subspecies and species not in self.subspecies:
+            self.subspecies[species] = {}
+            self.subspecies_rests[f'{species}_{rest}'] = species
+        for sub, par in subspecies.items():
+            self.subspecies[species][f'{species}_{sub}'] = par.name
+            if par.name not in self.params:
+                self.params.add(par)
+
+    # FIXME: should state be overloaded as merge_subspecies @ super().state ?
 
     def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
                   t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
-        fluxes = []
-        initial_condition = self.state(initial_condition)
-        for impurity, side_reaction in self.side_reactions.items():
-            conc = initial_condition.sel(species=impurity)
-            educts, products, name = side_reaction
+        """Generate trajectory for given initial condition(s).
 
-            # compute stoichiometry vector
-            stoichiometry = np.zeros_like(self.species)
-            for species, stoich in educts:
-                stoichiometry[self.species.get_loc(species)] -= stoich
-            for species, stoich in products:
-                stoichiometry[self.species.get_loc(species)] += stoich
-
-            if not stoichiometry[self.species.get_loc(impurity)] < 0:
-                raise ValueError("Side reactions cannot be catalytic")
-
-            flux = np.min([
-                -(self.params[name] if conc.species==impurity else 1.)/stoich*conc
-                for conc, stoich in zip(initial_condition.T, stoichiometry)
-                if stoich < 0
-            ], axis=0)
-            fluxes.append((flux, stoichiometry))
-
-        for flux, stoichiometry in fluxes:
-            if len(initial_condition.dims) == 1:
-                initial_condition = initial_condition + flux*stoichiometry
-            else:
-                initial_condition = initial_condition + flux.reshape(-1,1)*stoichiometry
-        return super().integrate(initial_condition, t_eval, t0, **options)
+        This converts the given initial condition to subspecies concentrations
+        which are then integrated using CRN.integrate. Trajectories are merged
+        back into total species concentrations.
+        """
+        initial_subspecies = self.split_species @ initial_condition
+        traj_subspecies = super().integrate(initial_subspecies, t_eval, t0, **options)
+        return self.merge_subspecies @ traj_subspecies
 
 
-def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, ImpureCRN]:
+def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, PartitionedCRN]:
     """Construct a chemical reaction network from a string representation.
 
     See nanosuite.crn_parser for a definition of the CRN specification language
@@ -524,10 +548,21 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     -------
     A CRN instance with the given reactions.
     """
+    crn: Union[CRN, PartitionedCRN]
+
     crn_def = crn_parser.parse(string)
 
+    if not crn_def:
+        raise ValueError("Error in CRN definition")
+
     # create CRN from definition
-    crn = CRN(species=species)
+    if crn_def.species_defs:
+        crn = PartitionedCRN(species=species)
+        for species_def in crn_def.species_defs.values():
+            crn.define_subspecies(*species_def)
+    else:
+        crn = CRN(species=species)
+
     for reaction in crn_def.reactions:
         if isinstance(reaction, crn_parser.Reaction):
             crn.add_reaction(*reaction)

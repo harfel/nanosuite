@@ -137,6 +137,7 @@ def test_circular_burst_reactions(reactions, initial):
         test_crn.integrate(initial)
 
 def test_burst_after_initialization():
+    """Ensure reaction can be made burst by changing their rate constant"""
     test_crn = crn.from_string("""
         A -> X; k
     """)
@@ -151,26 +152,30 @@ def test_burst_reaction_name_consistancy():
     """)
     assert len(test_crn.burst_reactions) == 2
 
-def test_impurity_1():
+def test_impurities():
     """Ensure correct treatment of impurities"""
     test_crn = crn.from_string("""
-       A contains impure
+       A contains impure with p_impure = 0.1
 
-       A -> X
-       A [impure] -> Y;  k=0.1
+       A -> X;           k = 10.
+       A [impure] -> Y;  k
     """)
-    initial = xr.DataArray([1., 0., 0.], {'species': test_crn.species})
+    initial = test_crn.state(A=1.)
     traj = test_crn.integrate(initial)
-    assert (traj.sel(species='X') == 10*traj.sel(species='Y')).all()
+    assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15 ).all()
 
-@pytest.mark.skip("FIXME: write test")
-def test_impurity_2():
-    """Ensure correct treatment of impurities"""
+def test_impurities_have_implicit_pure_fractions():
+    """Ensure implicit purities are accounted for"""
     test_crn = crn.from_string("""
        A contains impure with p = 0.5
 
-       A [impure] -> X
+       A [impure] -> X; k=inf
     """)
+    initial = test_crn.state(A=1.0)
+    traj = test_crn.integrate(initial)
+    assert traj.sel(species="A", time=0) == 0.5
+    assert traj.sel(species="A_impure", time=0) == 0.
+    assert traj.sel(species="A", time=100) == 0.5
 
 @pytest.mark.skip("FIXME: write test")
 def test_impurity_3():
