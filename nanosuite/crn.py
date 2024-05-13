@@ -220,11 +220,7 @@ class CRN:
             conc.update(**extra_conc)
             return xr.DataArray([conc.get(species, 0.) for species in self.species],
                                 {'species': self.species})
-        species_coord = conc.dims[0]
-        return xr.DataArray([float(conc.loc[{species_coord: s}])
-                                 if s in conc.coords[species_coord] else 0.
-                                 for s in self.species],
-                                {species_coord: self.species})
+        return conc.reindex({'species': self.species}, fill_value=0.)
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -419,11 +415,20 @@ class PartitionedCRN(CRN):
     Internally, the mapping from species space to subspecies space is
     represented by matrix multiplications over the joint species-subspecies
     space, refered to as split (S) and merge (M). If x denotes a species state
-    vector. y = S @ x is a vector in species-subspecies space where subspecies
+    vector. y = x @ S is a vector in species-subspecies space where subspecies
     concentrations are set from x according to the CRN's subspecies definitions.
     Similarly, the merge matrix M sets the concentrations of species by adding
     up all their subspecies concentrations.
     """
+
+    # The matrices S and M are chosen to be idempotent:
+    #     x @ S @ S = x @ S
+    #     M @ M @ y = M @ y
+    # It holds that
+    #     x @ S @ M @ S == x @ S
+    # but generally not
+    #     x @ S @ M == x
+
     subspecies: Dict[str, Dict[str, str]]
     subspecies_rests: Dict[str, str]
 
@@ -435,56 +440,38 @@ class PartitionedCRN(CRN):
         self.subspecies = {}
         self.subspecies_rests = {}
 
-    # The matrices S and SI are chosen to be idempotent:
-    #     S.values @ S.values @ x = S.values @ x
-    #     SI.values @ SI.values @ y = SI.values @ y
-    # It holds that
-    #     S.values @ SI.values @ S.values @ x == S.values @ x
-    # but generally not
-    #     SI.values @ S.values @ x == x
-
-    # FIXME: this behviour is only fulfilled for S.values, but not for S
-    # The mappings from species to subspecies should be automorphisms over the union of
-    # the two spaces. That is: S and SI redistribute concentrations over the joint
-    # species-subspecies-space. This makes it easier to access subspecies just like species.
-
-    # However, xarray is not made for automporphisms, because the range dimension is not the
-    # same as the domain dimension. S @ x will currently produce data along the subspecies
-    # domain. When applying S a second time, in S @ S @ x, xarray solves the "matrix" for the
-    # subspecies domain, essentially applying a transpose.
-    # I could define an Auomporphism class that overloads the matrix multiplication opperator
-    # to swap out the dimension of the default multiplication result.
-
     @property
     def split_species(self):
         """Split matrix distributing species into subspecies concentrations
         """
         all_subspecies = set(*chain(self.subspecies.values()))
-        result = xr.DataArray([[(self.params[self.subspecies[species][subspecies]]
-                                 if subspecies in self.subspecies[species] else 0.)
-                                if species in self.subspecies
-                                else int(species==subspecies and subspecies not in all_subspecies)
-                                for species in self.species]
-                               for subspecies in self.species],
-                              {'subspecies': self.species, 'species': self.species})
+        result = np.array([[(self.params[self.subspecies[species][subspecies]]
+                             if subspecies in self.subspecies[species] else 0.)
+                            if species in self.subspecies
+                            else int(species==subspecies and subspecies not in all_subspecies)
+                            for subspecies in self.species]
+                           for species in self.species])
         for subspecies, species in self.subspecies_rests.items():
-            result[result.subspecies==subspecies] = 0.
-            result[result.subspecies==subspecies, result.species==species] = (
-                1 - result[..., result.species==species].sum())
-            result[result.subspecies==species, result.species==species] = 1.
+            i = self.species.tolist().index(species)
+            j = self.species.tolist().index(subspecies)
+            result[...,j] = 0.
+            result[i, j] = (
+                1 - result[i].sum())
+            result[i, i] = 1.
         return result
 
     @property
     def merge_subspecies(self):
         """Merge matrix adding up subspecies concentrations into species
         """
-        result = xr.DataArray([[int(subspecies in self.subspecies[species]
-                                    if species in self.subspecies
-                                    else species==subspecies)
-                                for subspecies in self.species] for species in self.species],
-                              {'species': self.species, 'subspecies': self.species})
+        result = np.array([[int(subspecies in self.subspecies[species]
+                                if species in self.subspecies
+                                else species==subspecies)
+                            for subspecies in self.species] for species in self.species])
         for subspecies, species in self.subspecies_rests.items():
-            result[result.species==species, result.subspecies==subspecies] = 1.
+            i = self.species.tolist().index(species)
+            j = self.species.tolist().index(subspecies)
+            result[i, j] = 1.
         return result
 
     def define_subspecies(self, species: str, subspecies: Dict[str, lmfit.Parameter],
@@ -527,9 +514,11 @@ class PartitionedCRN(CRN):
         which are then integrated using CRN.integrate. Trajectories are merged
         back into total species concentrations.
         """
-        initial_subspecies = self.split_species @ initial_condition
+        initial = self.state(initial_condition)
+        initial_subspecies = xr.DataArray(initial.values @ self.split_species,
+                                          initial.coords)
         traj_subspecies = super().integrate(initial_subspecies, t_eval, t0, **options)
-        return self.merge_subspecies @ traj_subspecies
+        return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords)
 
 
 def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, PartitionedCRN]:

@@ -161,7 +161,7 @@ def test_impurities():
     """)
     initial = test_crn.state(A=1.)
     traj = test_crn.integrate(initial)
-    assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15 ).all()
+    assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
     """Ensure correct behaviour of impure burst reactions"""
@@ -176,5 +176,23 @@ def test_impurities_can_burst():
     assert traj.sel(species="A_impure", time=0) == 0.
     assert traj.sel(species="A", time=100) == 0.5
 
+def test_impurities_support_parallel_systems():
+    """Ensure that impurities are compatible with parallel systems"""
+    test_crn = crn.from_string("""
+    A contains impure with p=0.1
 
-# FIXME: write test for impure reactions with multiple initial states
+    A [impure] -> X
+    """)
+
+    initial = xr.DataArray([
+        [1.],
+        [2.],
+        [3.],
+    ], {
+        'system': ['1', '2', '3'],
+        'species': ['A']
+    })
+
+    traj = test_crn.integrate(initial)
+
+    assert (traj.sel(time=0, species="A_impure") - [0.1, 0.2, 0.3] < 1e-15).all()
