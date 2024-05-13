@@ -443,7 +443,7 @@ class PartitionedCRN(CRN):
     # but generally not
     #     SI.values @ S.values @ x == x
 
-    # FIXME: this behviour is currently not fulfilled
+    # FIXME: this behviour is only fulfilled for S.values, but not for S
     # The mappings from species to subspecies should be automorphisms over the union of
     # the two spaces. That is: S and SI redistribute concentrations over the joint
     # species-subspecies-space. This makes it easier to access subspecies just like species.

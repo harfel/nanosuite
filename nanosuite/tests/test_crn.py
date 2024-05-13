@@ -18,17 +18,16 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
-@pytest.mark.skip("FIXME: fix this issue later")
 def test_repr_html():
     """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
         A + B -> C; k1=1.1
-        C + D -> E + B; k2=1.2
+        C + D -> B + E; k2=1.2
         A [impure] + D -> E; k=inf
     """)
     rep = ''.join(line.strip() for line in test_crn._repr_html_().split('\n')) # pylint: disable=protected-access
     expected = '''<table><tr>
-            <td style="text-align: right">A + B</td>
+            <td style="text-align: right">A_pure + B</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">C</td>
             <td style="text-align: left">k1 = 1.1</td>
@@ -36,10 +35,10 @@ def test_repr_html():
         <tr>
             <td style="text-align: right">C + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
-            <td style="text-align: left">E + B</td>
+            <td style="text-align: left">B + E</td>
             <td style="text-align: left">k2 = 1.2</td>
         </tr><tr>
-            <td style="text-align: right">A [impure] + D</td>
+            <td style="text-align: right">A_impure + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">E</td>
             <td style="text-align: left">k = inf</td>
@@ -153,7 +152,7 @@ def test_burst_reaction_name_consistancy():
     assert len(test_crn.burst_reactions) == 2
 
 def test_impurities():
-    """Ensure correct treatment of impurities"""
+    """Ensure correct split into subspecies"""
     test_crn = crn.from_string("""
        A contains impure with p_impure = 0.1
 
@@ -164,10 +163,10 @@ def test_impurities():
     traj = test_crn.integrate(initial)
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15 ).all()
 
-def test_impurities_have_implicit_pure_fractions():
-    """Ensure implicit purities are accounted for"""
+def test_impurities_can_burst():
+    """Ensure correct behaviour of impure burst reactions"""
     test_crn = crn.from_string("""
-       A contains impure with p = 0.5
+       A contains impure with 0.5
 
        A [impure] -> X; k=inf
     """)
@@ -177,34 +176,5 @@ def test_impurities_have_implicit_pure_fractions():
     assert traj.sel(species="A_impure", time=0) == 0.
     assert traj.sel(species="A", time=100) == 0.5
 
-@pytest.mark.skip("FIXME: write test")
-def test_impurity_3():
-    """Ensure correct treatment of impurities"""
-    test_crn = crn.from_string("""
-       A contains impure with p=0.5 rest pure
 
-       A -> X
-       A [impure] -> Y;  k=0.1
-    """)
-
-@pytest.mark.skip("FIXME: write test")
-def test_impurity_4():
-    """Ensure correct treatment of impurities"""
-    test_crn = crn.from_string("""
-       A contains imp1 with p=0.25,
-         contains imp2 with p=0.25
-       A [imp1] -> X;  k=inf
-       A [imp1] -> Y;  k=inf
-       A [imp2] -> Z;  k=inf
-    """)
-
-@pytest.mark.skip("FIXME: write test")
-def test_impurity_5():
-    """Ensure correct treatment of impurities"""
-    test_crn = crn.from_string("""
-       A contains imp1 with p=0.25, 
-         contains imp2 with p=0.25
-       A [imp1] -> X;  k=inf
-       A [imp1] -> Y;  k=0.1
-       A [imp2] -> Z;  k=inf
-    """)
+# FIXME: write test for impure reactions with multiple initial states

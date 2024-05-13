@@ -270,13 +270,13 @@ CrnDef = namedtuple('CrnDef', ['reactions', 'species_defs'])
 
 
 def replace_name_placeholders(crn_def, variables):
+    """Substitute preliminary generated variable names"""
     pattern = re.compile(r'\d+')
     bound_nums = [match for name, param in variables.items()
                   for match in pattern.findall(name)
                   if not name.startswith('_')]
     free_rates = [idx_str for idx, _ in enumerate(variables, 1)
                   if (idx_str:=str(idx)) not in bound_nums]
-    free_fracts = list(free_rates)
 
     for reaction in crn_def.reactions:
         if isinstance(reaction, Reaction):
@@ -291,10 +291,10 @@ def replace_name_placeholders(crn_def, variables):
             variables[reaction.backward].name = f'kb{num}'
 
     for species_def in crn_def.species_defs.values():
-        for rate in species_def.subspecies.values():
+        for suffix, rate in species_def.subspecies.items():
             if not rate.startswith('_'):
                 continue
-            variables[rate].name = f'p{free_fracts.pop(0)}'
+            variables[rate].name = f'p_{species_def.species}_{suffix}'
 
 def parse(string: str) -> Optional[CrnDef]:
     """Construct abstract CrnDef from string input"""
