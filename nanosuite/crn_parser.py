@@ -77,7 +77,7 @@ def t_COMMENT(_):       # pylint: disable=invalid-name
     r'\#.*'
 
 def t_REAL(t):          # pylint: disable=invalid-name
-    r'(\d+\.\d*(e\-?\d+)?|inf)'
+    r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|inf'
     t.value = float(t.value)
     return t
 
@@ -196,10 +196,8 @@ def p_species(p):
 
 def p_var_def(p):
     """var_def : LABEL '=' REAL
-               | LABEL '=' INT
                | LABEL
                | REAL
-               | INT
     """
     if len(p) == 4:
         if p[1].startswith('_'):
@@ -208,7 +206,7 @@ def p_var_def(p):
             raise ValueError("Inconsistent values for rate constant {p[1]}.")
         p.parser.context[p[1]] = lmfit.Parameter(p[1], value=p[3], min=0)
         p[0] = p[1]
-    elif isinstance(p[1], (int, float)):
+    elif isinstance(p[1], float):
         name = f'_k_{len(p.parser.context)+1}'
         p.parser.context[name] = lmfit.Parameter(name, value=p[1], min=0)
         p[0] = name
@@ -313,13 +311,7 @@ def parse(string: str) -> CrnDef:
     lexer.text = string
     parser = yacc()
     parser.context = {}
-    try:
-        crn_def = parser.parse(string, lexer=lexer)
-    except lex.LexError:
-        return None
-
-    if not crn_def:
-        return None
+    crn_def = parser.parse(string, lexer=lexer)
 
     # collect implicitly defined subspecies
     for reaction in crn_def.reactions:

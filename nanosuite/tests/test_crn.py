@@ -201,3 +201,8 @@ def test_from_string_raises_valueerror(string):
     """Ensure that malformed input raises exceptions"""
     with pytest.raises(crn.crn_parser.CRNError):
         crn.from_string(string)
+
+@pytest.mark.parametrize("value", ["0", "1", "1.", "0.1", ".01", "1.23e-31", "6e2"])
+def test_from_string_real_formats(value):
+    """Ensure parsing of parameter values"""
+    crn.from_string(f"""A -> B; k={value}""")
