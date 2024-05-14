@@ -309,7 +309,7 @@ def parse(string: str) -> CrnDef:
     """Construct abstract CrnDef from string input"""
     lexer = lex.lex()
     lexer.text = string
-    parser = yacc()
+    parser = yacc(debug=False)
     parser.context = {}
     crn_def = parser.parse(string, lexer=lexer)
 
