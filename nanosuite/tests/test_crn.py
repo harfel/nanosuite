@@ -192,7 +192,12 @@ def test_impurities_support_parallel_systems():
         'system': ['1', '2', '3'],
         'species': ['A']
     })
-
     traj = test_crn.integrate(initial)
 
     assert (traj.sel(time=0, species="A_impure") - [0.1, 0.2, 0.3] < 1e-15).all()
+
+@pytest.mark.parametrize("string", ["<>", "->", "A ->", "A B"])
+def test_from_string_raises_valueerror(string):
+    """Ensure that malformed input raises exceptions"""
+    with pytest.raises(crn.crn_parser.CRNError):
+        crn.from_string(string)

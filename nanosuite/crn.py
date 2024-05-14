@@ -1,6 +1,5 @@
 """Chemical reaction networks
 """
-import sys
 from copy import deepcopy
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 from itertools import chain
@@ -547,9 +546,6 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     crn: Union[CRN, PartitionedCRN]
 
     crn_def = crn_parser.parse(string)
-
-    if not crn_def:
-        sys.exit(-1)
 
     # create CRN from definition
     if crn_def.species_defs:

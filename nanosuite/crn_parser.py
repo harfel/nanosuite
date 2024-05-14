@@ -42,14 +42,17 @@
     can be defined without explicit fraction or variable name. If no
     explicit name is given for the rest, 'pure' is assumed.
 """
-import sys
 import re
 from collections import namedtuple
 from itertools import chain
-from typing import Optional
 import lmfit # type: ignore
 from ply import lex # type: ignore
 from ply.yacc import yacc # type: ignore
+
+
+class CRNError(ValueError):
+    """Exceptions for syntax errors in parser input"""
+
 
 # Tokens
 
@@ -99,13 +102,14 @@ def t_newline(t):
 
 def t_error(t):
     """Handle syntax errors on the lexer level"""
+
     start = t.lexer.text.rfind('\n', 0, t.lexpos) + 1
     end = t.lexer.text.find('\n', t.lexpos)
     col = t.lexpos - start + 1
-    sys.stderr.write(f"Illegal character: '{t.value[0]}' in line {t.lineno}:\n")
-    sys.stderr.write(t.lexer.text[start: end if end != -1 else None]+'\n')
-    sys.stderr.write(f"{(col-1)*' '}^\n")
-    #t.lexer.skip(1)
+    msg = f"""Illegal character: '{t.value[0]}' in line {t.lineno}:
+{t.lexer.text[start: end if end != -1 else None]}
+{(col-1)*' '}^"""
+    raise CRNError(msg)
 
 
 # Grammar
@@ -254,14 +258,15 @@ def p_fraction_def(p):
 def p_error(t):
     """Handle errors on the grammar level"""
     if not t:
-        sys.stderr.write("Unexpected end of input\n")
-        return
+        raise CRNError("Unexpected end of input")
+
     start = t.lexer.text.rfind('\n', 0, t.lexpos) + 1
     end = t.lexer.text.find('\n', t.lexpos)
     col = t.lexpos - start + 1
-    sys.stderr.write(f"Syntax error: '{t.value}' in line {t.lineno}:\n")
-    sys.stderr.write(t.lexer.text[start: end if end != -1 else None]+'\n')
-    sys.stderr.write(f"{(col-1)*' '}^\n")
+    msg = f"""Syntax error: '{t.value}' in line {t.lineno}:
+{t.lexer.text[start: end if end != -1 else None]}
+{(col-1)*' '}^"""
+    raise CRNError(msg)
 
 
 # AST objects
@@ -302,7 +307,7 @@ def replace_name_placeholders(crn_def, variables):
                 continue
             variables[rate].name = f'p_{species_def.species}_{suffix}'
 
-def parse(string: str) -> Optional[CrnDef]:
+def parse(string: str) -> CrnDef:
     """Construct abstract CrnDef from string input"""
     lexer = lex.lex()
     lexer.text = string
