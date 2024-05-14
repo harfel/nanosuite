@@ -1,5 +1,6 @@
 """Chemical reaction networks
 """
+import sys
 from copy import deepcopy
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 from itertools import chain
@@ -191,8 +192,8 @@ class CRN:
     def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
         self.params[name] = value
 
-    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /, **extra_conc
-              ) -> xr.DataArray:
+    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /,
+              **extra_conc: float) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
 
         Create a state vector with the given species concentrations.
@@ -435,10 +436,14 @@ class PartitionedCRN(CRN):
 
     def __init__(self,
                  reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
-                 species: Optional[Iterable[str]] = None): # FIXME: accept subspecies_defs
+                 species_defs : Optional[List[Tuple[str, Dict[str, lmfit.Parameter], str]]] = None,
+                 species: Optional[Iterable[str]] = None):
         super().__init__(reactions, species)
         self.subspecies = {}
         self.subspecies_rests = {}
+
+        for species_def in species_defs or []:
+            self.define_subspecies(*species_def)
 
     @property
     def split_species(self):
@@ -487,24 +492,26 @@ class PartitionedCRN(CRN):
             rest: str
                 suffix for the remainder part of the species (default pure)
         """
-        # FIXME: do name wrangling in crn_parser
         if species not in self.species:
             self.species = self.species.append(pd.Index([species]))
-        if (name:=f'{species}_{rest}') not in self.species:
-            self.species = self.species.append(pd.Index([name]))
+        if (rest) not in self.species:
+            self.species = self.species.append(pd.Index([rest]))
         self.species = self.species.append(pd.Index([
-            name for suffix in subspecies
-            if (name:=f'{species}_{suffix}') not in self.species
+            suffix for suffix in subspecies
+            if suffix not in self.species
         ]))
         if subspecies and species not in self.subspecies:
             self.subspecies[species] = {}
-            self.subspecies_rests[f'{species}_{rest}'] = species
+            self.subspecies_rests[rest or 'pure'] = species
         for sub, par in subspecies.items():
-            self.subspecies[species][f'{species}_{sub}'] = par.name
+            self.subspecies[species][sub] = par.name
             if par.name not in self.params:
                 self.params.add(par)
 
-    # FIXME: should state be overloaded as merge_subspecies @ super().state ?
+    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /,
+              **extra_conc: float) -> xr.DataArray:
+        state = super().state(conc, **extra_conc)
+        return xr.DataArray(state.values @ self.split_species, state.coords)
 
     def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
                   t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
@@ -542,7 +549,7 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     crn_def = crn_parser.parse(string)
 
     if not crn_def:
-        raise ValueError("Error in CRN definition")
+        sys.exit(-1)
 
     # create CRN from definition
     if crn_def.species_defs:

@@ -99,8 +99,13 @@ def t_newline(t):
 
 def t_error(t):
     """Handle syntax errors on the lexer level"""
-    print("Illegal character {t.value[0]}")
-    t.lexer.skip(1)
+    start = t.lexer.text.rfind('\n', 0, t.lexpos) + 1
+    end = t.lexer.text.find('\n', t.lexpos)
+    col = t.lexpos - start + 1
+    sys.stderr.write(f"Illegal character: '{t.value[0]}' in line {t.lineno}:\n")
+    sys.stderr.write(t.lexer.text[start: end if end != -1 else None]+'\n')
+    sys.stderr.write(f"{(col-1)*' '}^\n")
+    #t.lexer.skip(1)
 
 
 # Grammar
@@ -251,10 +256,11 @@ def p_error(t):
     if not t:
         sys.stderr.write("Unexpected end of input\n")
         return
-    start = example.rfind('\n', 0, t.lexpos) + 1 # FIXME: do not use example!
+    start = t.lexer.text.rfind('\n', 0, t.lexpos) + 1
+    end = t.lexer.text.find('\n', t.lexpos)
     col = t.lexpos - start + 1
-    sys.stderr.write(f"Syntax error: '{t.value}' in line {t.lineno}\n")
-    sys.stderr.write(example[start: example.find('\n', t.lexpos)+1])
+    sys.stderr.write(f"Syntax error: '{t.value}' in line {t.lineno}:\n")
+    sys.stderr.write(t.lexer.text[start: end if end != -1 else None]+'\n')
     sys.stderr.write(f"{(col-1)*' '}^\n")
 
 
@@ -275,18 +281,18 @@ def replace_name_placeholders(crn_def, variables):
     bound_nums = [match for name, param in variables.items()
                   for match in pattern.findall(name)
                   if not name.startswith('_')]
-    free_rates = [idx_str for idx, _ in enumerate(variables, 1)
+    free_nums = [idx_str for idx, _ in enumerate(variables, 1)
                   if (idx_str:=str(idx)) not in bound_nums]
 
     for reaction in crn_def.reactions:
         if isinstance(reaction, Reaction):
             if not reaction.rate.startswith('_'):
                 continue
-            variables[reaction.rate].name = f'k{free_rates.pop(0)}'
+            variables[reaction.rate].name = f'k{free_nums.pop(0)}'
         else:
             if not reaction.forward.startswith('_'):
                 continue
-            num = free_rates.pop(0)
+            num = free_nums.pop(0)
             variables[reaction.forward].name = f'kf{num}'
             variables[reaction.backward].name = f'kb{num}'
 
@@ -298,9 +304,14 @@ def replace_name_placeholders(crn_def, variables):
 
 def parse(string: str) -> Optional[CrnDef]:
     """Construct abstract CrnDef from string input"""
+    lexer = lex.lex()
+    lexer.text = string
     parser = yacc()
     parser.context = {}
-    crn_def = parser.parse(string, lexer=lex.lex())
+    try:
+        crn_def = parser.parse(string, lexer=lexer)
+    except lex.LexError:
+        return None
 
     if not crn_def:
         return None
@@ -335,9 +346,9 @@ def parse(string: str) -> Optional[CrnDef]:
                                        parser.context[rct.forward], parser.context[rct.backward])
                       for rct in crn_def.reactions],
                      {species: SpeciesDef(species,
-                                          {suffix: parser.context[frac]
+                                          {f'{species}_{suffix}': parser.context[frac]
                                            for suffix, frac in spdef.subspecies.items()},
-                                          spdef.remains or 'pure')
+                                          f'{species}_{spdef.remains or "pure"}')
                       for species, spdef in crn_def.species_defs.items()})
 
     return crn_def
