@@ -84,6 +84,17 @@ def test_from_string_rate_value(value):
     """)
     assert test_crn.params['k1'] == float(value)
 
+def test_from_string_repeated_reversible_rates():
+    """Ensure correct treatment of common rate constants in reversible reactions."""
+    model = crn.from_string("""
+        A + B <=> C; kf1 = 1e7, 1e3
+        C + D <=> E; kf1, kb = 1e3
+        """)
+    assert len(model.params) == 3
+    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)]
+    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)]
+    assert k1 == k2
+
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
     test_crn = crn.from_string("""
