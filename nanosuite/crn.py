@@ -50,6 +50,10 @@ class CRN:
     reactions: Dict[Tuple[Reactants, Reactants], str]
     params: lmfit.Parameters
 
+    DEFAULT_INTEGRATION_START = 0
+    DEFAULT_INTEGRATION_END = 100
+    DEFAULT_INTEGRATION_POINTS = 501
+
     def __init__(self,
                  reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
                  species: Optional[Iterable[str]] = None):
@@ -249,8 +253,9 @@ class CRN:
 
         return kinetics
 
-    def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
-                  t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
+                  t_eval: Union[Iterable, float, None] = None,
+                  t0: Optional[float] = None, **options) -> xr.DataArray:  # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -267,9 +272,18 @@ class CRN:
         ----------
         initial_condition: 1D or 2D xarray.DataArray
             the last coord must denote species concentrations
-        t_eval: pd.Index
-            Array of time points at which system states should be reported.
-            (Does not influence the numerical step width of integration).
+        t_eval: float, tuple, Iterable or None
+            Time points at which system states should be reported.
+            If t_eval is scalar, the reported range starts at t0 or
+            CRN.DEFAULT_INTEGRATION_START if t0 is not provided and stops
+            at t_eval. If t_eval is a tuple, the values are taken as start
+            and end points. If t_eval is an iterable, those are the
+            returned integration points. If t_eval is not provided,
+            results are reported between CRN.DEFAULT_INTEGRATION_START and
+            CRN.DEFAULT_INTEGRATON_END with CRN.DEFAULT_INTEGRATION_POINTS
+            points.
+            (t_eval does not influence the numerical step width of
+            the integrator).
         t0: float
             time point at which integration starts.
         options
@@ -280,23 +294,42 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
+        if isinstance(t_eval, tuple):
+            t_eval = (t_eval + (self.DEFAULT_INTEGRATION_POINTS,))[:3]
+            t_eval = pd.Index(np.linspace(*t_eval, dtype=float), name="time")  # type: ignore
+        elif isinstance(t_eval, pd.Index):
+            pass
+        elif isinstance(t_eval, Iterable):
+            t_eval = pd.Index(t_eval, name="time")
+        elif t_eval is None:
+            t_eval = pd.Index(np.linspace(t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
+                                          self.DEFAULT_INTEGRATION_END,
+                                          self.DEFAULT_INTEGRATION_POINTS, dtype=float),
+                              name="time")
+        else:
+            t_eval = pd.Index(np.linspace(t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
+                                          t_eval,
+                                          self.DEFAULT_INTEGRATION_POINTS, dtype=float),
+                              name="time")
+
         initial_condition = self.state(initial_condition)
         if any(param.value==float('inf') for param in self.params.values()):
             initial_condition = self.perform_burst_reactions(initial_condition)
-        t_eval = t_eval if t_eval is not None else pd.Index(np.linspace(0, 100, 101), name="time")
+
         kinetics = self.rate_law()
 
         result = xr.DataArray(np.zeros(initial_condition.shape+t_eval.shape),
                               [(dim, initial_condition.indexes[dim])
                                for dim in initial_condition.dims]+[t_eval])
         if len(initial_condition.dims) == 1:
-            result[0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial_condition,
+            result[0:] = solve_ivp(kinetics, (t0 or 0., t_eval[-1]), initial_condition,
                                    t_eval=t_eval, vectorized=True, **options).y
         else:
             for idx, initial in enumerate(initial_condition):
                 # TODO: parallelize using multiprocessing.Pool's
-                result[idx, 0:] = solve_ivp(kinetics, (t0, t_eval[-1]), initial,
+                result[idx, 0:] = solve_ivp(kinetics, (t0 or 0., t_eval[-1]), initial,
                                             t_eval=t_eval, vectorized=True, **options).y
+        result.name = "concentration"
         return result
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
@@ -448,7 +481,7 @@ class PartitionedCRN(CRN):
     def split_species(self):
         """Split matrix distributing species into subspecies concentrations
         """
-        all_subspecies = set(*chain(self.subspecies.values()))
+        all_subspecies = set(chain(*self.subspecies.values()))
         result = np.array([[(self.params[self.subspecies[species][subspecies]]
                              if subspecies in self.subspecies[species] else 0.)
                             if species in self.subspecies
@@ -512,8 +545,9 @@ class PartitionedCRN(CRN):
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
 
-    def integrate(self, initial_condition: xr.DataArray,                                         # pylint: disable=invalid-name
-                  t_eval: Optional[pd.Index] = None, t0: float = 0., **options) -> xr.DataArray: # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
+                  t_eval: Union[Iterable, float, None] = None,
+                  t0: Optional[float] = None, **options) -> xr.DataArray:  # pylint: disable=invalid-name
         """Generate trajectory for given initial condition(s).
 
         This converts the given initial condition to subspecies concentrations
@@ -524,7 +558,8 @@ class PartitionedCRN(CRN):
         initial_subspecies = xr.DataArray(initial.values @ self.split_species,
                                           initial.coords)
         traj_subspecies = super().integrate(initial_subspecies, t_eval, t0, **options)
-        return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords)
+        return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
+                            name=traj_subspecies.name)
 
 
 def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, PartitionedCRN]:

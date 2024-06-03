@@ -217,3 +217,60 @@ def test_from_string_raises_valueerror(string):
 def test_from_string_real_formats(value):
     """Ensure parsing of parameter values"""
     crn.from_string(f"""A -> B; k={value}""")
+
+def test_integrate_teval_is_optional():
+    """Ensure that scalar t_eval is optional"""
+    model = crn.from_string("A + B -> C")
+    model.DEFAULT_INTEGRATION_START = 10
+    model.DEFAULT_INTEGRATION_END = 200
+
+    traj = model.integrate(model.state(A=10, B=10))
+
+    assert traj.time[0] == model.DEFAULT_INTEGRATION_START
+    assert traj.time[-1] == model.DEFAULT_INTEGRATION_END
+    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+
+def test_integrate_teval_accepts_float():
+    """Ensure that scalar t_eval is taken as end value"""
+    model = crn.from_string("A + B -> C")
+    model.DEFAULT_INTEGRATION_START = 10
+    model.DEFAULT_INTEGRATION_END = 200
+
+    traj = model.integrate(model.state(A=10, B=10), t_eval=66)
+
+    assert traj.time[0] == model.DEFAULT_INTEGRATION_START
+    assert traj.time[-1] == 66
+    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+
+def test_integrate_scalar_teval_starts_at_t0():
+    """Ensure that scalar t_eval uses t0 as start value"""
+    model = crn.from_string("A + B -> C")
+    model.DEFAULT_INTEGRATION_START = 10
+    model.DEFAULT_INTEGRATION_END = 200
+
+    traj = model.integrate(model.state(A=10, B=10), t0=-5, t_eval=66)
+
+    assert traj.time[0] == -5
+    assert traj.time[-1] == 66
+    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+
+def test_integrate_teval_accepts_tuple():
+    """Ensure that tuple t_eval is taken as start and end values"""
+    model = crn.from_string("A + B -> C")
+    model.DEFAULT_INTEGRATION_START = 10
+    model.DEFAULT_INTEGRATION_END = 200
+
+    traj = model.integrate(model.state(A=10, B=10), t_eval=(5, 66))
+
+    assert traj.time[0] == 5
+    assert traj.time[-1] == 66
+    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert traj.sel(species='C')[0] > 0
+
+def test_integrate_teval_accepts_iterable():
+    """Ensure that scalar t_eval is taken as time points"""
+    model = crn.from_string("A + B -> C")
+    traj = model.integrate(model.state(A=10, B=10), t_eval=[2, 4, 8, 16, 32])
+    assert len(traj.time) == 5
+    assert traj.time[0] == 2
+    assert traj.time[-1] == 32
