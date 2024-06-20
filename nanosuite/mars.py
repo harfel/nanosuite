@@ -1,7 +1,7 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Optional
+from typing import cast, Callable, Iterable, Optional, Union
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -61,7 +61,8 @@ class Assay:
             except ValueError:
                 continue
 
-        deactivated = attributes.pop('Grey fields contain deactivated wells:   /   Disabled by user', '').split('; ')
+        deactivated = attributes.pop(
+            'Grey fields contain deactivated wells:   /   Disabled by user', '').split('; ')
         attributes['deactivated_cells'] = ', '.join(deactivated)
 
         # Create main df and eval if it needs to be transposed
@@ -174,6 +175,19 @@ class Assay:
              'time': self.plate.time},
             attrs=self.plate.attrs, name=self.plate.name
         )
+
+    def content(self, factor: float, conc: Optional[dict] = None,
+                **kwargs: Union[float, Iterable]) -> xr.DataArray:
+        """FIXME: document"""
+        conc = conc if conc else {}
+        conc.update(kwargs)
+        array = xr.DataArray(
+            dims=['content', 'species'],
+            coords={'content': self.plate.indexes['content'].droplevel('well').unique(),
+                    'species': list(conc.keys())})
+        for species, values in conc.items():
+            array.loc[..., species] = values
+        return factor*array
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
@@ -389,7 +403,7 @@ class Assay:
         x = np.log(self.mean()).data.flatten()
         y = np.log(self.std()**2).data.flatten()
         regresult = scipy.stats.linregress(x, y) # FIXME: what if regresult.intercept is negative?
-        def power_variance(Y: float) -> float:
+        def power_variance(Y: float) -> float:  # pylint: disable=invalid-name
             """Return power variance var(Y) = A*Y^B"""
-            return (regresult.intercept * Y**regresult.slope)
+            return regresult.intercept * Y**regresult.slope
         return power_variance

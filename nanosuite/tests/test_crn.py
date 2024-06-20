@@ -257,7 +257,7 @@ def test_integrate_scalar_teval_starts_at_t0():
 def test_integrate_teval_accepts_tuple():
     """Ensure that tuple t_eval is taken as start and end values"""
     model = crn.from_string("A + B -> C")
-    model.DEFAULT_INTEGRATION_START = 10
+    model.DEFAULT_INTEGRATION_START = 2
     model.DEFAULT_INTEGRATION_END = 200
 
     traj = model.integrate(model.state(A=10, B=10), t_eval=(5, 66))
@@ -274,3 +274,39 @@ def test_integrate_teval_accepts_iterable():
     assert len(traj.time) == 5
     assert traj.time[0] == 2
     assert traj.time[-1] == 32
+
+def test_integrate_teval_accepts_dataarrays():
+    """Ensure that xarrays are taken directly as time dimension"""
+    model = crn.from_string("A + B -> C")
+    times = xr.DataArray([0, 1, 2, 3, 4], {'testtime': [0, 1, 2, 3, 4]})
+    traj = model.integrate(model.state(A=10, B=10), t_eval=times)
+    assert (traj.testtime == times).all()
+
+def test_integrate_teval_accepts_scalar_arrays():
+    """Ensure that scalar arrays are taken as end point of a time interval"""
+    model = crn.from_string("A + B -> C")
+    times = xr.DataArray([0, 1, 2, 3, 4], {'time': [0, 1, 2, 3, 4]})
+    traj = model.integrate(model.state(A=10, B=10), t_eval=times.max(), t0=-1)
+    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert traj.time[0] == -1
+    assert traj.time[-1] == 4
+
+def test_perform_burst_reactions_works_with_multiple_samples():
+    """Ensure that burst reactions can be performed for a set of samples."""
+    model = crn.from_string("A + B -> C; k=inf")
+    init = xr.DataArray([
+        [4, 0],
+        [4, 1],
+        [4, 2],
+        [4, 3],
+        [4, 4],
+        [4, 5],
+        [4, 6],
+        [4, 7],
+        [4, 8],
+    ], {
+        'sample': "a b c d e f g h i".split(),
+        'species': "A B".split(),
+    })
+    traj = model.integrate(init)
+    assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()

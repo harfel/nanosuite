@@ -294,11 +294,23 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
+        # FIXME: consider to include t0 into crn.params
         if isinstance(t_eval, tuple):
             t_eval = (t_eval + (self.DEFAULT_INTEGRATION_POINTS,))[:3]
             t_eval = pd.Index(np.linspace(*t_eval, dtype=float), name="time")  # type: ignore
         elif isinstance(t_eval, pd.Index):
             pass
+        elif isinstance(t_eval, xr.DataArray):
+            if t_eval.ndim == 0:
+                t_eval = pd.Index(np.linspace(
+                    t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
+                    float(t_eval),
+                    self.DEFAULT_INTEGRATION_POINTS, dtype=float
+                ), name="time")
+            elif t_eval.ndim == 1:
+                pass
+            else:
+                raise ValueError("t_eval must have either zero or one dimension.")
         elif isinstance(t_eval, Iterable):
             t_eval = pd.Index(t_eval, name="time")
         elif t_eval is None:
@@ -322,12 +334,18 @@ class CRN:
                               [(dim, initial_condition.indexes[dim])
                                for dim in initial_condition.dims]+[t_eval])
         if len(initial_condition.dims) == 1:
-            result[0:] = solve_ivp(kinetics, (t0 or 0., t_eval[-1]), initial_condition,
+            result[0:] = solve_ivp(kinetics,
+                                   (t0 if t0 is not None 
+                                       else self.DEFAULT_INTEGRATION_START, t_eval[-1]),
+                                   initial_condition,
                                    t_eval=t_eval, vectorized=True, **options).y
         else:
             for idx, initial in enumerate(initial_condition):
                 # TODO: parallelize using multiprocessing.Pool's
-                result[idx, 0:] = solve_ivp(kinetics, (t0 or 0., t_eval[-1]), initial,
+                result[idx, 0:] = solve_ivp(kinetics,
+                                            (t0 if t0 is not None 
+                                                else self.DEFAULT_INTEGRATION_START, t_eval[-1]),
+                                            initial,
                                             t_eval=t_eval, vectorized=True, **options).y
         result.name = "concentration"
         return result
@@ -357,10 +375,18 @@ class CRN:
         iterations = 10*len(self.burst_reactions)
         for _ in range(iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
-                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
-            fraction = min(x/y for x, y in zip(state, rates) if y>0).values if rates.any() else 0
-            state -= fraction*rates
-            if fraction < 1e-10:
+                if len(state.dims) == 1:
+                    rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
+                    fraction = min(x/y for x, y in zip(state, rates) if y>0).values if rates.any() else 0
+                else:
+                    tmp = np.zeros((L.shape[0], state.shape[0]))
+                    for idx, row in enumerate(state.values):
+                        tmp[:, idx] = np.nansum(Z.T*np.log(row), axis=1)
+                    rates = Z @ L @ np.exp(tmp)
+                    fraction = np.array([min(x/y for x,y in zip(s, r) if y>0) if r.any() else 0 
+                                        for s, r in zip(state.values, rates.T)])
+            state -= (fraction*rates).T
+            if np.all(fraction < 1e-10):
                 break
         else:
             raise ValueError(f"Burst reactions did not converge within {iterations} steps.")
@@ -402,6 +428,8 @@ class CRN:
         t0 = t0 if t0 is not None else lmfit.Parameter('t0', value=0., max=0.)
         params.add(t0)
         def objective(params):
+            import sys
+            sys.stderr.write('\r'+str(params))
             self.params = params
             model = conversion(self.integrate(initial, t_eval=data.time,
                                               t0=params['t0'].value))
