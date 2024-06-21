@@ -90,7 +90,7 @@ def test_from_string_repeated_reversible_rates():
         A + B <=> C; kf1 = 1e7, 1e3
         C + D <=> E; kf1, kb = 1e3
         """)
-    assert len(model.params) == 3
+    assert len(model.params) == 4
     k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)]
     k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)]
     assert k1 == k2
@@ -106,7 +106,12 @@ def test_implicit_rate_names():
     assert 'k0' in test_crn.params
     assert 'k1' in test_crn.params
     assert 'k2' in test_crn.params
-    assert len(test_crn.params) == 3
+    assert len(test_crn.params) == 4
+
+def test_forbid_t0_as_rate_name():
+    """Forbid using t0 as a rate parameter"""
+    with pytest.raises(ValueError):
+        crn.from_string("A -> B; t0=1")
 
 def test_inconsistent_rate_names():
     """Ensure that rates cannot be assigned inconsistent values"""
@@ -221,50 +226,43 @@ def test_from_string_real_formats(value):
 def test_integrate_teval_is_optional():
     """Ensure that scalar t_eval is optional"""
     model = crn.from_string("A + B -> C")
-    model.DEFAULT_INTEGRATION_START = 10
-    model.DEFAULT_INTEGRATION_END = 200
 
     traj = model.integrate(model.state(A=10, B=10))
 
-    assert traj.time[0] == model.DEFAULT_INTEGRATION_START
-    assert traj.time[-1] == model.DEFAULT_INTEGRATION_END
-    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert traj.time[0] == crn.DEFAULT_INTEGRATION_START
+    assert traj.time[-1] == crn.DEFAULT_INTEGRATION_END
+    assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
 def test_integrate_teval_accepts_float():
     """Ensure that scalar t_eval is taken as end value"""
     model = crn.from_string("A + B -> C")
-    model.DEFAULT_INTEGRATION_START = 10
-    model.DEFAULT_INTEGRATION_END = 200
 
     traj = model.integrate(model.state(A=10, B=10), t_eval=66)
 
-    assert traj.time[0] == model.DEFAULT_INTEGRATION_START
+    assert traj.time[0] == crn.DEFAULT_INTEGRATION_START
     assert traj.time[-1] == 66
-    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
 def test_integrate_scalar_teval_starts_at_t0():
     """Ensure that scalar t_eval uses t0 as start value"""
     model = crn.from_string("A + B -> C")
-    model.DEFAULT_INTEGRATION_START = 10
-    model.DEFAULT_INTEGRATION_END = 200
+    model['t0'].value = -5
 
-    traj = model.integrate(model.state(A=10, B=10), t0=-5, t_eval=66)
+    traj = model.integrate(model.state(A=10, B=10), t_eval=66)
 
     assert traj.time[0] == -5
     assert traj.time[-1] == 66
-    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
 def test_integrate_teval_accepts_tuple():
     """Ensure that tuple t_eval is taken as start and end values"""
     model = crn.from_string("A + B -> C")
-    model.DEFAULT_INTEGRATION_START = 2
-    model.DEFAULT_INTEGRATION_END = 200
 
     traj = model.integrate(model.state(A=10, B=10), t_eval=(5, 66))
 
     assert traj.time[0] == 5
     assert traj.time[-1] == 66
-    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
     assert traj.sel(species='C')[0] > 0
 
 def test_integrate_teval_accepts_iterable():
@@ -285,11 +283,12 @@ def test_integrate_teval_accepts_dataarrays():
 def test_integrate_teval_accepts_scalar_arrays():
     """Ensure that scalar arrays are taken as end point of a time interval"""
     model = crn.from_string("A + B -> C")
+    model['t0'].value = -1
     times = xr.DataArray([0, 1, 2, 3, 4], {'time': [0, 1, 2, 3, 4]})
-    traj = model.integrate(model.state(A=10, B=10), t_eval=times.max(), t0=-1)
-    assert len(traj.time) == model.DEFAULT_INTEGRATION_POINTS
+    traj = model.integrate(model.state(A=10, B=10), t_eval=times.max())
     assert traj.time[0] == -1
     assert traj.time[-1] == 4
+    assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""

@@ -12,6 +12,11 @@ from . import crn_parser
 
 Reactants = Tuple[Tuple[str, int], ...] # TODO: support generic Tuple[Tuple[T, int], ...]
 
+DEFAULT_INTEGRATION_START = 0
+DEFAULT_INTEGRATION_END = 100
+DEFAULT_INTEGRATION_POINTS = 501
+DEFAULT_MIN_T0 = -np.inf
+
 class CRN:
     """Chemical reaction network
 
@@ -50,10 +55,6 @@ class CRN:
     reactions: Dict[Tuple[Reactants, Reactants], str]
     params: lmfit.Parameters
 
-    DEFAULT_INTEGRATION_START = 0
-    DEFAULT_INTEGRATION_END = 100
-    DEFAULT_INTEGRATION_POINTS = 501
-
     def __init__(self,
                  reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
                  species: Optional[Iterable[str]] = None):
@@ -72,6 +73,7 @@ class CRN:
         self.complexes = []
         self.reactions = {}
         self.params = lmfit.Parameters()
+        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=False)
         for reaction in reactions or []:
             self.add_reaction(*reaction)
 
@@ -253,9 +255,9 @@ class CRN:
 
         return kinetics
 
-    def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray,       # pylint: disable=invalid-name
                   t_eval: Union[Iterable, float, None] = None,
-                  t0: Optional[float] = None, **options) -> xr.DataArray:  # pylint: disable=invalid-name
+                  **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -274,18 +276,15 @@ class CRN:
             the last coord must denote species concentrations
         t_eval: float, tuple, Iterable or None
             Time points at which system states should be reported.
-            If t_eval is scalar, the reported range starts at t0 or
-            CRN.DEFAULT_INTEGRATION_START if t0 is not provided and stops
-            at t_eval. If t_eval is a tuple, the values are taken as start
-            and end points. If t_eval is an iterable, those are the
+            If t_eval is scalar, the reported range starts at self.params['t0']
+            and stops at t_eval. If t_eval is a tuple, the values are taken
+            as start and end points. If t_eval is an iterable, those are the
             returned integration points. If t_eval is not provided,
-            results are reported between CRN.DEFAULT_INTEGRATION_START and
-            CRN.DEFAULT_INTEGRATON_END with CRN.DEFAULT_INTEGRATION_POINTS
+            results are reported between crn.DEFAULT_INTEGRATION_START and
+            crn.DEFAULT_INTEGRATON_END with crn.DEFAULT_INTEGRATION_POINTS
             points.
             (t_eval does not influence the numerical step width of
             the integrator).
-        t0: float
-            time point at which integration starts.
         options
             any remaining keyword arguments are passed to
             scipy.optimize.solve_ivp
@@ -294,18 +293,16 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        # FIXME: consider to include t0 into crn.params
         if isinstance(t_eval, tuple):
-            t_eval = (t_eval + (self.DEFAULT_INTEGRATION_POINTS,))[:3]
+            t_eval = (t_eval + (DEFAULT_INTEGRATION_POINTS,))[:3]
             t_eval = pd.Index(np.linspace(*t_eval, dtype=float), name="time")  # type: ignore
         elif isinstance(t_eval, pd.Index):
             pass
         elif isinstance(t_eval, xr.DataArray):
             if t_eval.ndim == 0:
                 t_eval = pd.Index(np.linspace(
-                    t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
-                    float(t_eval),
-                    self.DEFAULT_INTEGRATION_POINTS, dtype=float
+                    self.params['t0'].value, float(t_eval),
+                    DEFAULT_INTEGRATION_POINTS, dtype=float
                 ), name="time")
             elif t_eval.ndim == 1:
                 pass
@@ -314,14 +311,13 @@ class CRN:
         elif isinstance(t_eval, Iterable):
             t_eval = pd.Index(t_eval, name="time")
         elif t_eval is None:
-            t_eval = pd.Index(np.linspace(t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
-                                          self.DEFAULT_INTEGRATION_END,
-                                          self.DEFAULT_INTEGRATION_POINTS, dtype=float),
+            t_eval = pd.Index(np.linspace(self.params['t0'].value,
+                                          DEFAULT_INTEGRATION_END,
+                                          DEFAULT_INTEGRATION_POINTS, dtype=float),
                               name="time")
         else:
-            t_eval = pd.Index(np.linspace(t0 if t0 is not None else self.DEFAULT_INTEGRATION_START,
-                                          t_eval,
-                                          self.DEFAULT_INTEGRATION_POINTS, dtype=float),
+            t_eval = pd.Index(np.linspace(self.params['t0'].value, t_eval,
+                                          DEFAULT_INTEGRATION_POINTS, dtype=float),
                               name="time")
 
         initial_condition = self.state(initial_condition)
@@ -335,16 +331,14 @@ class CRN:
                                for dim in initial_condition.dims]+[t_eval])
         if len(initial_condition.dims) == 1:
             result[0:] = solve_ivp(kinetics,
-                                   (t0 if t0 is not None 
-                                       else self.DEFAULT_INTEGRATION_START, t_eval[-1]),
+                                   (self.params['t0'], t_eval[-1]),
                                    initial_condition,
                                    t_eval=t_eval, vectorized=True, **options).y
         else:
             for idx, initial in enumerate(initial_condition):
                 # TODO: parallelize using multiprocessing.Pool's
                 result[idx, 0:] = solve_ivp(kinetics,
-                                            (t0 if t0 is not None 
-                                                else self.DEFAULT_INTEGRATION_START, t_eval[-1]),
+                                            (self.params['t0'], t_eval[-1]),
                                             initial,
                                             t_eval=t_eval, vectorized=True, **options).y
         result.name = "concentration"
@@ -377,13 +371,14 @@ class CRN:
             with np.errstate(divide='ignore', invalid='ignore'):
                 if len(state.dims) == 1:
                     rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
-                    fraction = min(x/y for x, y in zip(state, rates) if y>0).values if rates.any() else 0
+                    fraction = min(x/y for x, y in zip(state, rates)
+                                   if y > 0).values if rates.any() else 0
                 else:
                     tmp = np.zeros((L.shape[0], state.shape[0]))
                     for idx, row in enumerate(state.values):
                         tmp[:, idx] = np.nansum(Z.T*np.log(row), axis=1)
                     rates = Z @ L @ np.exp(tmp)
-                    fraction = np.array([min(x/y for x,y in zip(s, r) if y>0) if r.any() else 0 
+                    fraction = np.array([min(x/y for x,y in zip(s, r) if y>0) if r.any() else 0
                                         for s, r in zip(state.values, rates.T)])
             state -= (fraction*rates).T
             if np.all(fraction < 1e-10):
@@ -397,7 +392,7 @@ class CRN:
             initial: xr.DataArray,
             conversion: Optional[Callable[[xr.DataArray], xr.DataArray]]=None,
             error: Union[float, xr.DataArray]=1.,
-            t0: Optional[lmfit.Parameter]=None,  # pylint: disable=invalid-name
+            vary_t0: bool=True,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -411,8 +406,8 @@ class CRN:
             time. Can be obtained from mars.Assay.calibrate.
         error: optional xr.DataArray with rfu over time or float (default 1.)
             Standard deviations of measured data
-        t0:  optional lmfit.Parameter
-            Time at which the reaction started.
+        vary_t0:  optional bool (default True)
+            FIXME: explain
         options:
             Any remaining keyword arguments are pass to
             lmfit.minimize
@@ -425,14 +420,11 @@ class CRN:
         conversion = conversion or (lambda conc: conc)
         original = deepcopy(self.params)
         params = self.params
-        t0 = t0 if t0 is not None else lmfit.Parameter('t0', value=0., max=0.)
-        params.add(t0)
+        params['t0'].vary = vary_t0
+        params['t0'].max = float(data.time[0])
         def objective(params):
-            import sys
-            sys.stderr.write('\r'+str(params))
             self.params = params
-            model = conversion(self.integrate(initial, t_eval=data.time,
-                                              t0=params['t0'].value))
+            model = conversion(self.integrate(initial, t_eval=data.time))
             return (data-model)/error
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
@@ -575,7 +567,7 @@ class PartitionedCRN(CRN):
 
     def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
                   t_eval: Union[Iterable, float, None] = None,
-                  t0: Optional[float] = None, **options) -> xr.DataArray:  # pylint: disable=invalid-name
+                  **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
         This converts the given initial condition to subspecies concentrations
@@ -585,7 +577,7 @@ class PartitionedCRN(CRN):
         initial = self.state(initial_condition)
         initial_subspecies = xr.DataArray(initial.values @ self.split_species,
                                           initial.coords)
-        traj_subspecies = super().integrate(initial_subspecies, t_eval, t0, **options)
+        traj_subspecies = super().integrate(initial_subspecies, t_eval, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
                             name=traj_subspecies.name)
 
