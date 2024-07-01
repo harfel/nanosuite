@@ -36,6 +36,6 @@ def test_varying_header_fields():
 def test_content():
     """Ensure correct setup of assay content"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../examples/edc_RFU.xlsx'))
-    content = assay.content(1e-9, A=10, B=20, C=list(range(1, 19)))
+    content = assay.plate_setup(1e-9, A=10, B=20, C=list(range(1, 19)))
     assert (content[0] == [1e-8, 2e-8, 1e-9]).all()
     assert (abs(content[-1] - [1e-8, 2e-8, 1.8e-8]) < 1e-23).all()

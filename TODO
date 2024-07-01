@@ -4,7 +4,7 @@ revamped CRN
 CRN subspecies concept
 ----------------------
 CRN species can be partitioned into subspecies. Simulation are performed on the subspecies
-level (so that for example the subspecies RNA_mutant can react different from RNA_mutant).
+level (so that for example the subspecies RNA_mutant can react different from RNA_wildtype).
 In contrast, interaction with the CRN, such as setting up simulations and reporting 
 results are by default done on the species level, unless explicitly asked for.
 
@@ -15,7 +15,7 @@ So, I need a mapping (injection) from a CRN species state to subspecies to perfo
 on the subspecies. I then need a projection back from subspecies to CRN species -- which is just
 adding up subspecies concentrations.
 
-I can hold species and subspecies conconcentrations in the same trajectory xarray, and update
+I can hold species and subspecies concentrations in the same trajectory xarray, and update
 species concentrations after each simulation:
 
 >>> for species, subspecies in crn.species_definitions:
@@ -107,6 +107,8 @@ assay.contents = xr.DataArray(
     { 'content': [...],
       'species': [...]}
 )
+
+assay.calibrate(assay.plate.sel(sample="Sample X16"), assay.plate.sel(sample="Sample X2"))
 
 model = crn.from_string("""
     A + B -> C

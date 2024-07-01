@@ -1,7 +1,7 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
 """
 import warnings
-from typing import cast, Callable, Iterable, Optional, Union
+from typing import cast, Callable, Dict, Iterable, Optional, Union
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -136,6 +136,7 @@ class Assay:
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
 
+    # TODO: mean and std should be a cached Assay properties, recomputed when active wells change
     def mean(self) -> xr.DataArray:
         """Return sample means
 
@@ -164,8 +165,8 @@ class Assay:
 
         Returns
         -------
-        DataArray of fluorescence standard deviation of all active wells that
-        belong to the same sample.
+        DataArray of fluorescence standard deviation of all active wells
+        that belong to the same sample.
         """
         samples = pd.Series(self.plate.sample.data).unique()
         return xr.DataArray(
@@ -176,9 +177,30 @@ class Assay:
             attrs=self.plate.attrs, name=self.plate.name
         )
 
-    def content(self, factor: float, conc: Optional[dict] = None,
-                **kwargs: Union[float, Iterable]) -> xr.DataArray:
-        """FIXME: document"""
+    def plate_setup(self, factor: float, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
+                    **kwargs: Union[float, Iterable]) -> xr.DataArray:
+        """Define plate setup
+
+        This method generates a correctly indexed xr.DataArray that
+        describes the plate setup in terms of concentrations of chemical
+        species for each sample.
+
+        Parameters
+        ----------
+        factor: float
+            Common concentration prefactor
+        conc, kwargs: Dict[str, Union[float, Iterable]]
+            Concentrations of chemical species. If a float is given,
+            the species is uniform over all samples. If an iterable
+            is given, it must have the same length as there are
+            samples in the assay.
+
+        Returns
+        -------
+        An xr.DataArray with dimensions 'content' (taken from Assay.plate)
+        and 'species', where each sample has species concentrations as
+        provided in the method arguments.
+        """
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
@@ -218,6 +240,7 @@ class Assay:
 
         See documentation of the specialized calibration methods for detail.
         """
+	# FIXME: Deprecate Assay.calibrate and its implementation methods
         if method == 'direct':
             if error is not None:
                 warnings.warn("Argument error is ignored with method 'direct'.")
@@ -392,6 +415,156 @@ class Assay:
             rfu.name = "RFU"
             return rfu.transpose()
         return from_rfu, to_rfu
+
+    def convert(
+        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
+        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0., /,
+        method: Optional[str] = 'direct'
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transforms between RFU values and concentrations
+
+        E.g.
+        >>> from_rfu, to_rfu = assay.convert(assay.plate.sample=="Sample X1",
+                                             assay_plate.sample=="Sample X10")
+
+        Parameters
+        ----------
+        pos_rfu: xr.DataArray
+            Positive control samples.
+        neg_rfu: optional xr.DataArray
+            Negative control samples. Assumed to be zero if not provided.
+        pos_conc, neg_conc: optional xr.DataArray
+            Concentration vectors of the positive and negative controls
+        method: 'direct' (default) or 'relaxation'
+        error: optional function mapping float on float values # FIXME: not supported
+            Error model used for fitting when using the 'relaxation' method 
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
+
+        See documentation of the specialized calibration methods for detail.
+        """
+        if method == 'direct':
+            return self.convert_direct(pos_rfu, neg_rfu, pos_conc, neg_conc)
+        elif method == 'relaxation':
+            return self.convert_relaxation(pos_rfu, neg_rfu, pos_conc, neg_conc)
+        raise ValueError(f"Unsupported calibration method '{method}'.")
+
+    def convert_direct(
+        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
+        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transforms between raw RFU values and concentrations
+
+        Transforms are based on the linear relations
+
+        (rfu-neg_rfu)/(pos_rfu-neg_rfu) = (conc-neg_conc)/(pos_conc-neg_conc)
+
+        where the left hand side is a linear interpolation from negative
+        to positive control RFU values and the right hand side expresses
+        the reaction coordinate from neg_conc to pos_conc. The transformation
+        is performed for each time point independently.
+
+        Parameters
+        ----------
+        pos_rfu: xarray.DataArray
+            RFU values of the positive control            
+        neg_rfu: optional xarray.DataArray
+            RFU values of the negative control
+        pos_conc: xarray.DataArray or float (default 1)
+            Concentrations associated with positive control
+        neg_conc: xarray.DataArray or float (default 0)
+            Concentrations associated with negative control
+
+        Returns
+        -------
+        Two functions from_rfu and to_rfu with signatures
+
+        fromRFU(rfu: xr.DataArray) -> xr.DataArray
+        toRFU(rfu: xr.DataArray) -> xr.DataArray
+        """
+        neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
+        pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
+        neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
+
+        def from_rfu(rfu) :
+            return neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
+        def to_rfu(conc):
+            return neg + (pos-neg) * (conc-neg_conc)/(pos_conc-neg_conc)
+        return from_rfu, to_rfu
+
+    def convert_relaxation(
+        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
+        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """FIXME: document"""
+        # FIXME: make sure that controls can be any content subset, incl. multiple samples
+        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
+        def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
+            if r_1 == r_2:
+                return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
+                        + r_1*(rfu_1 - rfu_inf)*time*np.exp(-r_1*time))
+            return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
+                    + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
+
+        error = lambda _ : 1 # FIXME: use optional argument value
+
+        controls = xr.concat([pos_rfu, neg_rfu], dim='content') if neg_rfu is not None else pos_rfu
+
+        pos_samples = pos_rfu.sample
+        neg_samples = neg_rfu.sample if neg_rfu is not None else []
+
+        def well_model(time, params):
+            positive = double_relaxation(
+                time,
+                params['r1'], params['r2'],
+                params['P0'], params['P1'], params['Pinf']
+            )
+            negative = double_relaxation(
+                time,
+                params['r1'], params['r2'],
+                params['N0'], params['N1'], params['Ninf']
+            )
+            return np.array([
+                positive if sample in pos_samples else negative
+                for sample in controls.sample.data
+            ])
+
+        def residuals_for(data):
+            def residuals(params):
+                model = well_model(data.time, params)
+                return (data-model)/error(data)
+            return residuals
+
+        split = controls.shape[-1]//5
+        params = lmfit.create_params(
+            r1 = {'value': float(10/controls.time[split]) , 'min': 0., 'vary': True},
+            r2 = {'value': float(1/controls.time[-1]), 'min': 0., 'vary': True},
+            N0 = {'value': float(controls[controls.sample.isin(neg_samples)][0, 0]), 'min': 0.},
+            N1 = {'value': float(controls[controls.sample.isin(neg_samples)][0, split]), 'min': 0.},
+            Ninf = {'value': float(controls[controls.sample.isin(neg_samples)][0, -1]), 'min': 0.},
+            P0 = {'value': float(controls[controls.sample.isin(pos_samples)][0, 0]), 'min': 0.},
+            P1 = {'value': float(controls[controls.sample.isin(pos_samples)][0, split]), 'min': 0.},
+            Pinf = {'value': float(controls[controls.sample.isin(pos_samples)][0, -1]), 'min': 0.},
+        )
+        fit = lmfit.minimize(residuals_for(controls), params)
+
+        neg_model = double_relaxation(
+            controls.time, fit.params['r1'], fit.params['r2'],
+            fit.params['N0'], fit.params['N1'], fit.params['Ninf']
+        )
+
+        pos_model = double_relaxation(
+            controls.time, fit.params['r1'], fit.params['r2'],
+            fit.params['P0'], fit.params['P1'], fit.params['Pinf']
+        )
+
+        return self.convert_direct(pos_model, neg_model, pos_conc, neg_conc)
 
     def compute_power_variance_model(self) -> Callable[[float], float]:
         """Compute power variance model 
