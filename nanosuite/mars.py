@@ -136,7 +136,7 @@ class Assay:
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
 
-    # TODO: mean and std should be a cached Assay properties, recomputed when active wells change
+    # FIXME: mean and std should be a cached Assay properties, recomputed when active wells change
     def mean(self) -> xr.DataArray:
         """Return sample means
 
@@ -240,7 +240,9 @@ class Assay:
 
         See documentation of the specialized calibration methods for detail.
         """
-	# FIXME: Deprecate Assay.calibrate and its implementation methods
+        warnings.warn("Assay.calibrate is deprecated and will be removed in a future "
+                      "version of nanosuite. Change your code to use Assay.convert.")
+
         if method == 'direct':
             if error is not None:
                 warnings.warn("Argument error is ignored with method 'direct'.")
@@ -450,7 +452,7 @@ class Assay:
         """
         if method == 'direct':
             return self.convert_direct(pos_rfu, neg_rfu, pos_conc, neg_conc)
-        elif method == 'relaxation':
+        if method == 'relaxation':
             return self.convert_relaxation(pos_rfu, neg_rfu, pos_conc, neg_conc)
         raise ValueError(f"Unsupported calibration method '{method}'.")
 
@@ -490,6 +492,8 @@ class Assay:
         neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
         pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
         neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
+        neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
 
         def from_rfu(rfu) :
@@ -504,7 +508,13 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """FIXME: document"""
         # FIXME: make sure that controls can be any content subset, incl. multiple samples
+        neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
+        #pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
+        #neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
+        neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
+
         def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
             if r_1 == r_2:
                 return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
@@ -512,7 +522,8 @@ class Assay:
             return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
                     + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
 
-        error = lambda _ : 1 # FIXME: use optional argument value
+        def error(_):
+            return 1 # FIXME: use optional argument value
 
         controls = xr.concat([pos_rfu, neg_rfu], dim='content') if neg_rfu is not None else pos_rfu
 
@@ -520,20 +531,12 @@ class Assay:
         neg_samples = neg_rfu.sample if neg_rfu is not None else []
 
         def well_model(time, params):
-            positive = double_relaxation(
-                time,
-                params['r1'], params['r2'],
-                params['P0'], params['P1'], params['Pinf']
-            )
-            negative = double_relaxation(
-                time,
-                params['r1'], params['r2'],
-                params['N0'], params['N1'], params['Ninf']
-            )
-            return np.array([
-                positive if sample in pos_samples else negative
-                for sample in controls.sample.data
-            ])
+            positive = double_relaxation(time, params['r1'], params['r2'],
+                                         params['P0'], params['P1'], params['Pinf'])
+            negative = double_relaxation(time, params['r1'], params['r2'],
+                                         params['N0'], params['N1'], params['Ninf'])
+            return np.array([positive if sample in pos_samples else negative
+                             for sample in controls.sample.data])
 
         def residuals_for(data):
             def residuals(params):
@@ -554,15 +557,10 @@ class Assay:
         )
         fit = lmfit.minimize(residuals_for(controls), params)
 
-        neg_model = double_relaxation(
-            controls.time, fit.params['r1'], fit.params['r2'],
-            fit.params['N0'], fit.params['N1'], fit.params['Ninf']
-        )
-
-        pos_model = double_relaxation(
-            controls.time, fit.params['r1'], fit.params['r2'],
-            fit.params['P0'], fit.params['P1'], fit.params['Pinf']
-        )
+        neg_model = double_relaxation(controls.time, fit.params['r1'], fit.params['r2'],
+                                      fit.params['N0'], fit.params['N1'], fit.params['Ninf'])
+        pos_model = double_relaxation(controls.time, fit.params['r1'], fit.params['r2'],
+                                      fit.params['P0'], fit.params['P1'], fit.params['Pinf'])
 
         return self.convert_direct(pos_model, neg_model, pos_conc, neg_conc)
 

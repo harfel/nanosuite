@@ -2,4 +2,4 @@
 
 Toolset for working with experimental DNA nanotechnology.
 """
-__version__ = '0.2.3'
+__version__ = '0.2.4rc1'
