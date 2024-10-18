@@ -42,3 +42,11 @@ def test_issue_0002():
         impure_crn.integrate(initial)
     except ValueError as x:
         pytest.fail(str(x))
+
+
+def test_issue_0011():
+    """Ensure that catalysts are not added to the species twice"""
+    model = crn.from_string("""
+        A + C -> Z + C
+    """)
+    assert len(model.species) == 3, "Reactants introduced multiple times"
