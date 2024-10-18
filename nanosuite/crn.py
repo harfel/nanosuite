@@ -156,10 +156,11 @@ class CRN:
         rate: lmfit.Parameter of the rate constant
         """
         # collect species and complexes
-        self.species = self.species.append(pd.Index([
-            name for name, _ in educts+products
-            if name not in self.species
-        ]))
+        for reactants in [educts, products]:
+            self.species = self.species.append(pd.Index([
+                name for name, _ in reactants
+                if name not in self.species
+            ]))
 
         for compl in [educts, products]:
             if compl not in self.complexes:
