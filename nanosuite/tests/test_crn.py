@@ -2,6 +2,7 @@
 """
 import math
 from nanosuite import crn
+import lmfit
 
 
 def test_params_add():
@@ -94,3 +95,8 @@ def test_from_string_impure_fraction():
         A [impure] + B -> C;    p=0.05
     """)
     assert test_crn.params['p'].value == 0.05
+
+def test_add_reaction_respects_catalysts():
+    network = crn.CRN()
+    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)), rate=lmfit.Parameter('k'))
+    assert len(network.species) == 3
