@@ -4,6 +4,7 @@ import math
 import pytest
 import xarray as xr
 from nanosuite import crn
+import lmfit
 
 
 def test_params_add():
@@ -222,6 +223,12 @@ def test_from_string_raises_valueerror(string):
 def test_from_string_real_formats(value):
     """Ensure parsing of parameter values"""
     crn.from_string(f"""A -> B; k={value}""")
+
+
+def test_add_reaction_respects_catalysts():
+    network = crn.CRN()
+    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)), rate=lmfit.Parameter('k'))
+    assert len(network.species) == 3
 
 def test_integrate_teval_is_optional():
     """Ensure that scalar t_eval is optional"""
