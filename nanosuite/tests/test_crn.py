@@ -63,6 +63,11 @@ def test_from_string_reversible():
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
+@pytest.mark.parametrize("reaction", ["2A -> B", "2 A -> B", "2*A -> B", "A -> 2B", "A -> 2*B"])
+def test_stoichiometries(reaction):
+    """Ensure that species can occur in higher stoichiometries"""
+    crn.from_string(reaction)
+
 def test_from_string_rate():
     """Ensure correct parsing of reaction rates"""
     test_crn = crn.from_string("""
@@ -223,7 +228,6 @@ def test_from_string_raises_valueerror(string):
 def test_from_string_real_formats(value):
     """Ensure parsing of parameter values"""
     crn.from_string(f"""A -> B; k={value}""")
-
 
 def test_add_reaction_respects_catalysts():
     network = crn.CRN()
