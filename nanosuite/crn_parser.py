@@ -71,19 +71,19 @@ tokens = [
     'LABEL',
 ] + list(reserved.values())
 
-literals = list(';=+[],')
+literals = list(';=+*[],')
 
 def t_COMMENT(_):       # pylint: disable=invalid-name
     r'\#.*'
 
+def t_INT(t):           # pylint: disable=invalid-name
+    r'\d+(?![0-9\.e])'
+    t.value = int(t.value)
+    return t
+
 def t_REAL(t):          # pylint: disable=invalid-name
     r'([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|inf'
     t.value = float(t.value)
-    return t
-
-def t_INT(t):           # pylint: disable=invalid-name
-    r'\d+'
-    t.value = int(t.value)
     return t
 
 def t_LABEL(t):         # pylint: disable=invalid-name
@@ -195,9 +195,9 @@ def p_species(p):
         p[0] = Species(p[1], None)
 
 def p_var_def(p):
-    """var_def : LABEL '=' REAL
+    """var_def : LABEL '=' number
                | LABEL
-               | REAL
+               | number
     """
     if len(p) == 4:
         if p[1].startswith('_'):
@@ -208,7 +208,7 @@ def p_var_def(p):
             raise ValueError("Inconsistent values for rate constant {p[1]}.")
         p.parser.context[p[1]] = lmfit.Parameter(p[1], value=p[3], min=0)
         p[0] = p[1]
-    elif isinstance(p[1], float):
+    elif isinstance(p[1], (int, float)):
         name = f'_k_{len(p.parser.context)+1}'
         p.parser.context[name] = lmfit.Parameter(name, value=p[1], min=0)
         p[0] = name
@@ -256,6 +256,11 @@ def p_fraction_def(p):
         name = f'_p_{len(p.parser.context)+1}'
         p.parser.context[name] = lmfit.Parameter(name, 0., min=0, max=1)
         p[0] = FractionDef(p[1], name)
+
+def p_number(p):
+    """number : REAL
+              | INT"""
+    p[0] = p[1]
 
 def p_error(t):
     """Handle errors on the grammar level"""

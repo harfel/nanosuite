@@ -63,6 +63,16 @@ def test_from_string_reversible():
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
+@pytest.mark.parametrize("reaction", ["2A -> B", "2 A -> B", "2*A -> B", "A -> 2B", "A -> 2*B"])
+def test_stoichiometries(reaction):
+    """Ensure that species can occur in higher stoichiometries"""
+    crn.from_string(reaction)
+
+def test_from_string_forbids_nonint_stoichiometries():
+    """Forbid noninteger notation of stoichiometries"""
+    with pytest.raises(ValueError):
+        crn.from_string("1.0 A -> B")
+
 def test_from_string_rate():
     """Ensure correct parsing of reaction rates"""
     test_crn = crn.from_string("""
@@ -77,7 +87,7 @@ def test_from_string_rate_name():
     """)
     assert test_crn.params['k'] == 1
 
-@pytest.mark.parametrize("value", [10, 1.0, 1e-1, 'inf'])
+@pytest.mark.parametrize("value", [10, '10.', 100, 1.0, 1e-1, 'inf'])
 def test_from_string_rate_value(value):
     """Ensure correct parsing of rate constant values"""
     test_crn = crn.from_string(f"""
@@ -173,7 +183,7 @@ def test_impurities():
     test_crn = crn.from_string("""
        A contains impure with p_impure = 0.1
 
-       A -> X;           k = 10.
+       A -> X;           k = 10
        A [impure] -> Y;  k
     """)
     initial = test_crn.state(A=1.)
@@ -223,7 +233,6 @@ def test_from_string_raises_valueerror(string):
 def test_from_string_real_formats(value):
     """Ensure parsing of parameter values"""
     crn.from_string(f"""A -> B; k={value}""")
-
 
 def test_add_reaction_respects_catalysts():
     network = crn.CRN()

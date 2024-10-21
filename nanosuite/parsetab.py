@@ -6,9 +6,9 @@ _tabversion = '3.10'
 
 _lr_method = 'LALR'
 
-_lr_signature = "COMMENT CONTAINS DOUBLE_ARROW INT LABEL REAL REST RIGHT_ARROW WITHcrn : statement\n           | statement crn\n    statement : COMMENT\n                 | reaction\n                 | species_def\n    reaction : reactants RIGHT_ARROW reactants\n                | reactants RIGHT_ARROW reactants ';' var_def\n                | reactants DOUBLE_ARROW reactants\n                | reactants DOUBLE_ARROW reactants ';' var_def ',' var_def\n    reactants : species\n                 | species '+' reactants\n                 | INT '*' species\n                 | INT '*' species '+' reactants\n                 | INT species\n                 | INT species '+' reactants\n    species : LABEL\n               | LABEL '[' LABEL ']'\n    var_def : LABEL '=' REAL\n               | LABEL\n               | REAL\n    species_def : LABEL subspecies_list\n    \n    subspecies_list : subspecies_def\n                    | subspecies_def ',' subspecies_list\n    subspecies_def : CONTAINS fraction_def\n                      | REST LABEL\n    fraction_def : LABEL\n                    | LABEL WITH var_def\n    "
+_lr_signature = "COMMENT CONTAINS DOUBLE_ARROW INT LABEL REAL REST RIGHT_ARROW WITHcrn : statement\n           | statement crn\n    statement : COMMENT\n                 | reaction\n                 | species_def\n    reaction : reactants RIGHT_ARROW reactants\n                | reactants RIGHT_ARROW reactants ';' var_def\n                | reactants DOUBLE_ARROW reactants\n                | reactants DOUBLE_ARROW reactants ';' var_def ',' var_def\n    reactants : species\n                 | species '+' reactants\n                 | INT '*' species\n                 | INT '*' species '+' reactants\n                 | INT species\n                 | INT species '+' reactants\n    species : LABEL\n               | LABEL '[' LABEL ']'\n    var_def : LABEL '=' number\n               | LABEL\n               | number\n    species_def : LABEL subspecies_list\n    \n    subspecies_list : subspecies_def\n                    | subspecies_def ',' subspecies_list\n    subspecies_def : CONTAINS fraction_def\n                      | REST LABEL\n    fraction_def : LABEL\n                    | LABEL WITH var_def\n    number : REAL\n              | INT"
     
-_lr_action_items = {'COMMENT':([0,2,3,4,5,8,13,15,20,21,22,23,26,27,28,29,30,34,35,38,39,40,41,43,44,47,48,],[3,3,-3,-4,-5,-10,-21,-22,-14,-16,-6,-8,-24,-26,-25,-11,-12,-17,-23,-15,-7,-19,-20,-27,-13,-18,-9,]),'LABEL':([0,2,3,4,5,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,43,44,46,47,48,],[7,7,-3,-4,-5,-10,21,21,21,-21,24,-22,27,28,21,21,-14,-16,-6,-8,-24,-26,-25,-11,-12,21,40,40,-17,-23,40,21,-15,-7,-19,-20,-27,-13,40,-18,-9,]),'INT':([0,2,3,4,5,8,11,12,13,15,18,20,21,22,23,26,27,28,29,30,31,34,35,37,38,39,40,41,43,44,47,48,],[9,9,-3,-4,-5,-10,9,9,-21,-22,9,-14,-16,-6,-8,-24,-26,-25,-11,-12,9,-17,-23,9,-15,-7,-19,-20,-27,-13,-18,-9,]),'$end':([1,2,3,4,5,8,10,13,15,20,21,22,23,26,27,28,29,30,34,35,38,39,40,41,43,44,47,48,],[0,-1,-3,-4,-5,-10,-2,-21,-22,-14,-16,-6,-8,-24,-26,-25,-11,-12,-17,-23,-15,-7,-19,-20,-27,-13,-18,-9,]),'RIGHT_ARROW':([6,7,8,20,21,29,30,34,38,44,],[11,-16,-10,-14,-16,-11,-12,-17,-15,-13,]),'DOUBLE_ARROW':([6,7,8,20,21,29,30,34,38,44,],[12,-16,-10,-14,-16,-11,-12,-17,-15,-13,]),'+':([7,8,20,21,30,34,],[-16,18,31,-16,37,-17,]),'[':([7,21,],[14,14,]),'CONTAINS':([7,25,],[16,16,]),'REST':([7,25,],[17,17,]),';':([8,20,21,22,23,29,30,34,38,44,],[-10,-14,-16,32,33,-11,-12,-17,-15,-13,]),'*':([9,],[19,]),',':([15,26,27,28,40,41,42,43,47,],[25,-24,-26,-25,-19,-20,46,-27,-18,]),']':([24,],[34,]),'WITH':([27,],[36,]),'REAL':([32,33,36,45,46,],[41,41,41,47,41,]),'=':([40,],[45,]),}
+_lr_action_items = {'COMMENT':([0,2,3,4,5,8,13,15,20,21,22,23,26,27,28,29,30,34,35,38,39,40,41,42,43,45,46,49,50,],[3,3,-3,-4,-5,-10,-21,-22,-14,-16,-6,-8,-24,-26,-25,-11,-12,-17,-23,-15,-7,-19,-20,-28,-29,-27,-13,-18,-9,]),'LABEL':([0,2,3,4,5,8,9,11,12,13,14,15,16,17,18,19,20,21,22,23,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,45,46,48,49,50,],[7,7,-3,-4,-5,-10,21,21,21,-21,24,-22,27,28,21,21,-14,-16,-6,-8,-24,-26,-25,-11,-12,21,40,40,-17,-23,40,21,-15,-7,-19,-20,-28,-29,-27,-13,40,-18,-9,]),'INT':([0,2,3,4,5,8,11,12,13,15,18,20,21,22,23,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,45,46,47,48,49,50,],[9,9,-3,-4,-5,-10,9,9,-21,-22,9,-14,-16,-6,-8,-24,-26,-25,-11,-12,9,43,43,-17,-23,43,9,-15,-7,-19,-20,-28,-29,-27,-13,43,43,-18,-9,]),'$end':([1,2,3,4,5,8,10,13,15,20,21,22,23,26,27,28,29,30,34,35,38,39,40,41,42,43,45,46,49,50,],[0,-1,-3,-4,-5,-10,-2,-21,-22,-14,-16,-6,-8,-24,-26,-25,-11,-12,-17,-23,-15,-7,-19,-20,-28,-29,-27,-13,-18,-9,]),'RIGHT_ARROW':([6,7,8,20,21,29,30,34,38,46,],[11,-16,-10,-14,-16,-11,-12,-17,-15,-13,]),'DOUBLE_ARROW':([6,7,8,20,21,29,30,34,38,46,],[12,-16,-10,-14,-16,-11,-12,-17,-15,-13,]),'+':([7,8,20,21,30,34,],[-16,18,31,-16,37,-17,]),'[':([7,21,],[14,14,]),'CONTAINS':([7,25,],[16,16,]),'REST':([7,25,],[17,17,]),';':([8,20,21,22,23,29,30,34,38,46,],[-10,-14,-16,32,33,-11,-12,-17,-15,-13,]),'*':([9,],[19,]),',':([15,26,27,28,40,41,42,43,44,45,49,],[25,-24,-26,-25,-19,-20,-28,-29,48,-27,-18,]),']':([24,],[34,]),'WITH':([27,],[36,]),'REAL':([32,33,36,47,48,],[42,42,42,42,42,]),'=':([40,],[47,]),}
 
 _lr_action = {}
 for _k, _v in _lr_action_items.items():
@@ -17,7 +17,7 @@ for _k, _v in _lr_action_items.items():
       _lr_action[_x][_k] = _y
 del _lr_action_items
 
-_lr_goto_items = {'crn':([0,2,],[1,10,]),'statement':([0,2,],[2,2,]),'reaction':([0,2,],[4,4,]),'species_def':([0,2,],[5,5,]),'reactants':([0,2,11,12,18,31,37,],[6,6,22,23,29,38,44,]),'species':([0,2,9,11,12,18,19,31,37,],[8,8,20,8,8,8,30,8,8,]),'subspecies_list':([7,25,],[13,35,]),'subspecies_def':([7,25,],[15,15,]),'fraction_def':([16,],[26,]),'var_def':([32,33,36,46,],[39,42,43,48,]),}
+_lr_goto_items = {'crn':([0,2,],[1,10,]),'statement':([0,2,],[2,2,]),'reaction':([0,2,],[4,4,]),'species_def':([0,2,],[5,5,]),'reactants':([0,2,11,12,18,31,37,],[6,6,22,23,29,38,46,]),'species':([0,2,9,11,12,18,19,31,37,],[8,8,20,8,8,8,30,8,8,]),'subspecies_list':([7,25,],[13,35,]),'subspecies_def':([7,25,],[15,15,]),'fraction_def':([16,],[26,]),'var_def':([32,33,36,48,],[39,44,45,50,]),'number':([32,33,36,47,48,],[41,41,41,49,41,]),}
 
 _lr_goto = {}
 for _k, _v in _lr_goto_items.items():
@@ -44,14 +44,16 @@ _lr_productions = [
   ('reactants -> INT species + reactants','reactants',4,'p_reactants','crn_parser.py',173),
   ('species -> LABEL','species',1,'p_species','crn_parser.py',189),
   ('species -> LABEL [ LABEL ]','species',4,'p_species','crn_parser.py',190),
-  ('var_def -> LABEL = REAL','var_def',3,'p_var_def','crn_parser.py',198),
+  ('var_def -> LABEL = number','var_def',3,'p_var_def','crn_parser.py',198),
   ('var_def -> LABEL','var_def',1,'p_var_def','crn_parser.py',199),
-  ('var_def -> REAL','var_def',1,'p_var_def','crn_parser.py',200),
-  ('species_def -> LABEL subspecies_list','species_def',2,'p_species_def','crn_parser.py',221),
-  ('subspecies_list -> subspecies_def','subspecies_list',1,'p_subspecies_list','crn_parser.py',227),
-  ('subspecies_list -> subspecies_def , subspecies_list','subspecies_list',3,'p_subspecies_list','crn_parser.py',228),
-  ('subspecies_def -> CONTAINS fraction_def','subspecies_def',2,'p_subspecies_def','crn_parser.py',236),
-  ('subspecies_def -> REST LABEL','subspecies_def',2,'p_subspecies_def','crn_parser.py',237),
-  ('fraction_def -> LABEL','fraction_def',1,'p_fraction_def','crn_parser.py',245),
-  ('fraction_def -> LABEL WITH var_def','fraction_def',3,'p_fraction_def','crn_parser.py',246),
+  ('var_def -> number','var_def',1,'p_var_def','crn_parser.py',200),
+  ('species_def -> LABEL subspecies_list','species_def',2,'p_species_def','crn_parser.py',225),
+  ('subspecies_list -> subspecies_def','subspecies_list',1,'p_subspecies_list','crn_parser.py',231),
+  ('subspecies_list -> subspecies_def , subspecies_list','subspecies_list',3,'p_subspecies_list','crn_parser.py',232),
+  ('subspecies_def -> CONTAINS fraction_def','subspecies_def',2,'p_subspecies_def','crn_parser.py',240),
+  ('subspecies_def -> REST LABEL','subspecies_def',2,'p_subspecies_def','crn_parser.py',241),
+  ('fraction_def -> LABEL','fraction_def',1,'p_fraction_def','crn_parser.py',249),
+  ('fraction_def -> LABEL WITH var_def','fraction_def',3,'p_fraction_def','crn_parser.py',250),
+  ('number -> REAL','number',1,'p_number','crn_parser.py',261),
+  ('number -> INT','number',1,'p_number','crn_parser.py',262),
 ]
