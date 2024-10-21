@@ -1,8 +1,9 @@
 """Unit tests for mars
 """
 import os
-import xarray as xr
+import pytest
 import pandas as pd
+import xarray as xr
 from nanosuite.mars import Assay
 
 def test_deactivate():
@@ -30,9 +31,10 @@ def test_avg():
         assert (assay.mean().sel(sample=sample)
                 == assay.plate.sel(sample=sample).mean(axis=0)).all()
 
-def test_varying_header_fields():
+@pytest.mark.parametrize("assayfile", ['testdata_001_RUC.xlsx', 'testdata_002_RUC.xlsx'])
+def test_ensure_all_testcases_can_be_loaded(assayfile):
     """Ensure correct handling of different header field formatting"""
-    Assay(os.path.join(os.path.dirname(__file__), './data/testdata_001_RUC.xlsx'))
+    Assay(os.path.join(os.path.dirname(__file__), 'data', assayfile))
 
 def test_plate_setup():
     """Ensure correct setup of assay content"""
