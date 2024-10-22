@@ -68,7 +68,7 @@ class Assay:
         # Create main df and eval if it needs to be transposed
         df_main = df_total.iloc[len(df_header):,]
 
-        if isinstance(df_main.iloc[1, 2], str):
+        if df_main.iloc[1,0] == 'Content':
             df_main = df_main.T
 
         df_main.columns = pd.Index(df_main.iloc[0])
@@ -76,7 +76,8 @@ class Assay:
         df_main.index = pd.Index(np.arange(1, len(df_main) + 1))
 
         # extract coordinates from dataframe
-        times = df_main.iloc[:1, 2:].values.flatten().astype(float)
+        # TODO: Assay should define a time_unit and respect the one in the execl file
+        times = df_main.iloc[:1, 2:].values.flatten().astype(float)  # FIXME: time can be str formatted
         main_array = df_main.iloc[1:, 2:].values
 
         samples = df_main['Content'][1:]
