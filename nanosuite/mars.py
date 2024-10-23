@@ -28,6 +28,13 @@ class Assay:
     active_wells: 1D xarray DataArray
         Wells that have not been blanked by the user.
     """
+    path: str
+    full_plate: xr.DataArray
+    plate: xr.DataArray
+    _mean: xr.DataArray | None = None
+    _std: xr.DataArray | None = None
+
+
     def __init__(self, path: str, groups: Optional[dict[str, list[str]|slice]] = None):
         """Plate reader data as saved by MARS.
 
@@ -123,6 +130,8 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
+        self._mean = None
+        self._std = None
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -136,8 +145,10 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
+        self._mean = None
+        self._std = None
 
-    # FIXME: mean and std should be a cached Assay properties, recomputed when active wells change
+    @property
     def mean(self) -> xr.DataArray:
         """Return sample means
 
@@ -146,37 +157,35 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        samples = pd.Series(self.plate.sample.data).unique()
-        return xr.DataArray(
-            [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
-            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-             'time': self.plate.time},
-            attrs=self.plate.attrs, name=self.plate.name
-        )
+        if self._mean is None:
+            samples = pd.Series(self.plate.sample.data).unique()
+            self._mean = xr.DataArray(
+                [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
+                {'content': self.plate.indexes['content'].droplevel('well').unique(),
+                 'time': self.plate.time},
+                attrs=self.plate.attrs, name=self.plate.name
+            )
+        return self._mean
 
-    def std(self, ddof: int = 0) -> xr.DataArray:
+    @property
+    def std(self) -> xr.DataArray:
         """Return sample standard deviation
-
-        Parameters
-        ----------
-        ddof: optional int (default = 0)
-            Difference in number of degrees of freedom. Return value is
-            calculated as 1/(N-ddof) sum_{i=1}^N(x_i - <x>) where N is the
-            number of samples.
 
         Returns
         -------
         DataArray of fluorescence standard deviation of all active wells
         that belong to the same sample.
         """
-        samples = pd.Series(self.plate.sample.data).unique()
-        return xr.DataArray(
-            [self.plate.sel(sample=sample).std(dim='content', ddof=ddof).data
-             for sample in samples],
-            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-             'time': self.plate.time},
-            attrs=self.plate.attrs, name=self.plate.name
-        )
+        if self._std is None:
+            samples = pd.Series(self.plate.sample.data).unique()
+            self._std = xr.DataArray(
+                [self.plate.sel(sample=sample).std(dim='content').data
+                 for sample in samples],
+                {'content': self.plate.indexes['content'].droplevel('well').unique(),
+                 'time': self.plate.time},
+                attrs=self.plate.attrs, name=self.plate.name
+            )
+        return self._std
 
     def plate_setup(self, factor: float, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
                     **kwargs: Union[float, Iterable]) -> xr.DataArray:

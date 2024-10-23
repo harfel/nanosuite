@@ -28,7 +28,7 @@ def test_avg():
     """Ensure correct average calculation"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../nanosuite/examples/edc_RFU.xlsx'))
     for sample in pd.Series(assay.plate.sample.data).unique():
-        assert (assay.mean().sel(sample=sample)
+        assert (assay.mean.sel(sample=sample)
                 == assay.plate.sel(sample=sample).mean(axis=0)).all()
 
 @pytest.mark.parametrize("assayfile", ['testdata_001_RUC.xlsx', 'testdata_002_RUC.xlsx'])
