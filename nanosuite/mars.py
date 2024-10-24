@@ -1,4 +1,8 @@
 """Tools to work with BMG Labtech MARS plate reader data analysis files.
+
+Due to proprietary data formats, MARS files cannot be read directly but have
+to be exported to excel. The generated excel files can be loaded with
+Assay(path_to_excel_file).
 """
 import warnings
 from typing import cast, Callable, Dict, Iterable, Optional, Union
@@ -27,6 +31,12 @@ class Assay:
 
     active_wells: 1D xarray DataArray
         Wells that have not been blanked by the user.
+
+    mean: 2D xarray DataArray
+        Mean fluorescence of active wells
+
+    std: 2D xarray DataArray
+        Standard deviation of active wells
     """
     path: str
     full_plate: xr.DataArray
@@ -84,7 +94,8 @@ class Assay:
 
         # extract coordinates from dataframe
         # TODO: Assay should define a time_unit and respect the one in the execl file
-        times = df_main.iloc[:1, 2:].values.flatten().astype(float)  # FIXME: time can be str formatted
+        # FIXME: time can be str formatted
+        times = df_main.iloc[:1, 2:].values.flatten().astype(float)
         main_array = df_main.iloc[1:, 2:].values
 
         samples = df_main['Content'][1:]
@@ -130,8 +141,7 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
-        self._mean = None
-        self._std = None
+        self._recompute_stats()
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -145,8 +155,7 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
-        self._mean = None
-        self._std = None
+        self._recompute_stats()
 
     @property
     def mean(self) -> xr.DataArray:
@@ -186,6 +195,15 @@ class Assay:
                 attrs=self.plate.attrs, name=self.plate.name
             )
         return self._std
+
+    def _recompute_stats(self):
+        """Recompute mean and std
+
+        The properties are indeed computed lazily and all that is done here is set a
+        "dirty bit" to trigger recomputation when needed.
+        """
+        self._mean = None
+        self._std = None
 
     def plate_setup(self, factor: float, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
                     **kwargs: Union[float, Iterable]) -> xr.DataArray:
@@ -292,7 +310,6 @@ class Assay:
         quickly equilibrates towards an equilibrium value that itself
         slowly equilibrates over time.
         """
-        # TODO: report fit statistics
         pos_rfu = (
             pos_rfu
             if pos_rfu is not None
@@ -517,12 +534,16 @@ class Assay:
         pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """FIXME: document"""
-        # FIXME: make sure that controls can be any content subset, incl. multiple samples
-        neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
-        #pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
-        #neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        """Compute transforms between RFU values and concentrations
+
+        Same as Assay.convert_direct, but the conversion is based on a
+        double exponential relaxation model that is fitted against
+        the controls. Specifically, the model assumes that fluoresence
+        quickly equilibrates towards an equilibrium value that itself
+        slowly equilibrates over time.
+        """
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
-        neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
+        neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc or 0*pos_conc)
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
 
         def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
@@ -533,7 +554,7 @@ class Assay:
                     + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
 
         def error(_):
-            return 1 # FIXME: use optional argument value
+            return 1 # use optional argument value
 
         controls = xr.concat([pos_rfu, neg_rfu], dim='content') if neg_rfu is not None else pos_rfu
 
@@ -581,8 +602,8 @@ class Assay:
         log transformed means. Based in the regression parameters A,B, return a
         function that calculates $A*Y^B$ for some provided fluorescence Y.
         """
-        x = np.log(self.mean()).data.flatten()
-        y = np.log(self.std()**2).data.flatten()
+        x = np.log(self.mean).flatten()
+        y = np.log(self.std**2).flatten()
         regresult = scipy.stats.linregress(x, y) # FIXME: what if regresult.intercept is negative?
         def power_variance(Y: float) -> float:  # pylint: disable=invalid-name
             """Return power variance var(Y) = A*Y^B"""
