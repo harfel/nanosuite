@@ -31,8 +31,14 @@ def test_avg():
         assert (assay.mean.sel(sample=sample)
                 == assay.plate.sel(sample=sample).mean(axis=0)).all()
 
-@pytest.mark.parametrize("assayfile", ['testdata_001_RUC.xlsx', 'testdata_002_RUC.xlsx'])
-def test_ensure_all_testcases_can_be_loaded(assayfile):
+def test_excel_time_units():
+    assay_1 = Assay(os.path.join(os.path.dirname(__file__), 'data', 'testdata_003_RUC.xlsx'))
+    assay_2 = Assay(os.path.join(os.path.dirname(__file__), 'data', 'testdata_004_RUC.xlsx'))
+    assert (assay_1.plate.time == assay_2.plate.time).all()
+
+@pytest.mark.parametrize("assayfile", ['testdata_001_RUC.xlsx', 'testdata_002_RUC.xlsx',
+                                       'testdata_003_RUC.xlsx', 'testdata_004_RUC.xlsx'])
+def test_ensure_all_testdata_can_be_loaded(assayfile):
     """Ensure correct handling of different header field formatting"""
     Assay(os.path.join(os.path.dirname(__file__), 'data', assayfile))
 

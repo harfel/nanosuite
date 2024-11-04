@@ -4,6 +4,7 @@ Due to proprietary data formats, MARS files cannot be read directly but have
 to be exported to excel. The generated excel files can be loaded with
 Assay(path_to_excel_file).
 """
+import re
 import warnings
 from typing import cast, Callable, Dict, Iterable, Optional, Union
 import numpy as np
@@ -15,6 +16,10 @@ import lmfit # type: ignore
 
 class Assay:
     """Access to MARS data.
+
+    Assay instances provide access to RFU raw data, mean RFU and standard variance.
+    Time points are converted to seconds, independent of the time unit given in the
+    imported Excel file.
 
     Assay instances have the following attributes:
 
@@ -93,9 +98,7 @@ class Assay:
         df_main.index = pd.Index(np.arange(1, len(df_main) + 1))
 
         # extract coordinates from dataframe
-        # TODO: Assay should define a time_unit and respect the one in the execl file
-        # FIXME: time can be str formatted
-        times = df_main.iloc[:1, 2:].values.flatten().astype(float)
+        times = self._parse_time(df_main.iloc[0, 1], df_main.iloc[0, 2:])
         main_array = df_main.iloc[1:, 2:].values
 
         samples = df_main['Content'][1:]
@@ -104,7 +107,6 @@ class Assay:
         df_content['group'] = "Unknown"
         df_content.columns = pd.Index(['sample', 'well', 'group'])
         df_content = df_content.reindex(columns=['group', 'sample', 'well'])
-        # set df_content['group'] from groups dict
         for group, group_samples in groups.items():
             if isinstance(group_samples, slice):
                 start = samples[samples==group_samples.start].index[0]
@@ -114,6 +116,9 @@ class Assay:
                 df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
+        if 'Inj.' in main_array:
+            raise RuntimeError("FIXME: respect injections")
+
         # from dataframe to xarray
         self.full_plate = xr.DataArray(main_array,
             {"content": df_multicontent, "time": times},
@@ -122,6 +127,21 @@ class Assay:
 
         self.active_wells = ~self.full_plate.well.isin(deactivated)
         self.plate = self.full_plate[self.active_wells]
+
+    def _parse_time(self, label, times):
+        def convert(string):
+            match = re.match(r'((?P<h>\d+) h)? *((?P<min>\d+) min)? *((?P<s>\d+) s)?', string)
+            return (60*60*float(match.group('h') or 0)
+                    + 60*float(match.group('min') or 0)
+                    + float(match.group('s') or 0))
+        if label == 'Time':
+            return np.array(list(map(convert, times)))
+        factor = {
+            'Time [s]': 1,
+            'Time [min]': 60,
+            'Time [h]': 60*60,
+        }[label]
+        return factor * times.values.flatten().astype(float)
 
     def __repr__(self) -> str:
         return f'<Assay "{self.path}">'
