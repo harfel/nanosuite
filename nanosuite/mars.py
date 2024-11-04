@@ -26,22 +26,25 @@ class Assay:
     Attributes
     ----------
     path: str
-        Path of the associated xlsx file (read only).
+        Path of the associated xlsx file (read only)
 
     plate: 2D xarray DataArray
-        Fluorescence values of all active wells and time points.
+        Fluorescence values of all active wells and time points
 
     full_plate: 2D xarray DataArray
-        Fluorescence values of all wells and time points.
+        Fluorescence values of all wells and time points
 
     active_wells: 1D xarray DataArray
-        Wells that have not been blanked by the user.
+        Wells that have not been blanked by the user
 
     mean: 2D xarray DataArray
         Mean fluorescence of active wells
 
     std: 2D xarray DataArray
         Standard deviation of active wells
+
+    injections: pandas.Index
+        Times (in seconds) at which injections occurred
     """
     path: str
     full_plate: xr.DataArray
@@ -116,8 +119,13 @@ class Assay:
                 df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
-        if 'Inj.' in main_array:
-            raise RuntimeError("FIXME: respect injections")
+        # The line below blindly assumes that injections happen over
+        # a single plate reader cycle.
+        inj_indexes = sorted(set(np.where(main_array == 'Inj.')[1]))
+        for index in reversed(inj_indexes):
+            main_array = np.delete(main_array, index, 1)
+            times = np.delete(times, index, 0)
+        self.injections = pd.Index([times[index] for index in inj_indexes], name="time")
 
         # from dataframe to xarray
         self.full_plate = xr.DataArray(main_array,
