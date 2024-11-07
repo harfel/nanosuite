@@ -493,8 +493,6 @@ class Assay:
         pos_conc, neg_conc: optional xr.DataArray
             Concentration vectors of the positive and negative controls
         method: 'direct' (default) or 'relaxation'
-        error: optional function mapping float on float values # FIXME: not supported
-            Error model used for fitting when using the 'relaxation' method 
 
         Returns
         -------
@@ -581,13 +579,8 @@ class Assay:
             return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
                     + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
 
-        def error(_):
-            return 1 # use optional argument value
-
-        controls = xr.concat([pos_rfu, neg_rfu], dim='content') if neg_rfu is not None else pos_rfu
-
-        pos_samples = pos_rfu.sample
-        neg_samples = neg_rfu.sample if neg_rfu is not None else []
+        controls = xr.concat([pos_rfu.mean(dim='content'), neg_rfu.mean(dim='content')],
+                             dim='content') if neg_rfu is not None else pos_rfu.mean(dim='content')
 
         def well_model(time, params):
             positive = double_relaxation(time, params['r1'], params['r2'],
@@ -600,7 +593,7 @@ class Assay:
         def residuals_for(data):
             def residuals(params):
                 model = well_model(data.time, params)
-                return (data-model)/error(data)
+                return (data-model)
             return residuals
 
         split = controls.shape[-1]//5
