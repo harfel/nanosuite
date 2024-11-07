@@ -233,7 +233,7 @@ class Assay:
         self._mean = None
         self._std = None
 
-    def plate_setup(self, factor: float, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
+    def plate_setup(self, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
                     **kwargs: Union[float, Iterable]) -> xr.DataArray:
         """Define plate setup
 
@@ -241,10 +241,15 @@ class Assay:
         describes the plate setup in terms of concentrations of chemical
         species for each sample.
 
+        Example
+        -------
+        To define the plate setup of four samples with 0, 2, 4, and 6 mM
+        of species A and 1 mM of species B:
+
+        >>> concentrations = 1e-6 * assay.plate_setup(A=[0, 2, 4, 6], B=1)
+
         Parameters
         ----------
-        factor: float
-            Common concentration prefactor
         conc, kwargs: Dict[str, Union[float, Iterable]]
             Concentrations of chemical species. If a float is given,
             the species is uniform over all samples. If an iterable
@@ -257,6 +262,9 @@ class Assay:
         and 'species', where each sample has species concentrations as
         provided in the method arguments.
         """
+        # TODO: could support ellipsis in conc values:
+        # species = [..., 8, 9, 10], species = [1, 2, 3, ...], species = [1, 2, ..., 10]
+        # But what would be the best default valuesfor the ellipsis?
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
@@ -265,7 +273,7 @@ class Assay:
                     'species': list(conc.keys())})
         for species, values in conc.items():
             array.loc[..., species] = values
-        return factor*array
+        return array
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
@@ -550,7 +558,8 @@ class Assay:
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
 
         def from_rfu(rfu) :
-            return neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
+            return (neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
+                    ).transpose(*rfu.dims[:-1], *pos_conc.dims, rfu.dims[-1])
         def to_rfu(conc):
             return neg + (pos-neg) * (conc-neg_conc)/(pos_conc-neg_conc)
         return from_rfu, to_rfu

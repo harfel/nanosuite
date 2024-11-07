@@ -45,7 +45,7 @@ def test_ensure_all_testdata_can_be_loaded(assayfile):
 def test_plate_setup():
     """Ensure correct setup of assay content"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../nanosuite/examples/edc_RFU.xlsx'))
-    content = assay.plate_setup(1e-9, A=10, B=20, C=list(range(1, 19)))
+    content = 1e-9*assay.plate_setup(A=10, B=20, C=list(range(1, 19)))
     assert (content[0] == [1e-8, 2e-8, 1e-9]).all()
     assert (abs(content[-1] - [1e-8, 2e-8, 1.8e-8]) < 1e-23).all()
 
