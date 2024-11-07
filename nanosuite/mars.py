@@ -623,10 +623,10 @@ class Assay:
         log transformed means. Based in the regression parameters A,B, return a
         function that calculates $A*Y^B$ for some provided fluorescence Y.
         """
-        x = np.log(self.mean).flatten()
-        y = np.log(self.std**2).flatten()
-        regresult = scipy.stats.linregress(x, y) # FIXME: what if regresult.intercept is negative?
+        x = np.log(self.mean).values.flatten()
+        y = np.log(self.std**2).values.flatten()
+        regresult = scipy.stats.linregress(x, y)
         def power_variance(Y: float) -> float:  # pylint: disable=invalid-name
             """Return power variance var(Y) = A*Y^B"""
-            return regresult.intercept * Y**regresult.slope
+            return np.exp(regresult.intercept) * Y**regresult.slope
         return power_variance
