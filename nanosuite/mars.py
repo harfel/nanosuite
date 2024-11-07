@@ -131,7 +131,11 @@ class Assay:
         self.full_plate = xr.DataArray(main_array,
             {"content": df_multicontent, "time": times},
             name="RFU",
-            attrs=attributes,).astype(float)
+            attrs=attributes,).astype(float).assign_coords(
+                seconds=('time', times),
+                minutes=('time', times/60),
+                hours=('time', times/3600),
+            )
 
         self.active_wells = ~self.full_plate.well.isin(deactivated)
         self.plate = self.full_plate[self.active_wells]
@@ -199,8 +203,13 @@ class Assay:
             self._mean = xr.DataArray(
                 [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
                 {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                 'time': self.plate.time},
-                attrs=self.plate.attrs, name=self.plate.name
+                 'time': self.plate.time,
+                 'seconds': self.plate.seconds,
+                 'minutes': self.plate.minutes,
+                 'hours': self.plate.hours},
+                dims=('content', 'time'),
+                attrs=self.plate.attrs, 
+                name=self.plate.name
             )
         return self._mean
 
@@ -219,8 +228,13 @@ class Assay:
                 [self.plate.sel(sample=sample).std(dim='content').data
                  for sample in samples],
                 {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                 'time': self.plate.time},
-                attrs=self.plate.attrs, name=self.plate.name
+                 'time': self.plate.time,
+                 'seconds': self.plate.seconds,
+                 'minutes': self.plate.minutes,
+                 'hours': self.plate.hours},
+                dims=('content', 'time'),
+                attrs=self.plate.attrs,
+                name=self.plate.name
             )
         return self._std
 

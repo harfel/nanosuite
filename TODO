@@ -1,4 +1,3 @@
-- support Assay.time_unit (default per second?)
 - assay._repr_html_
 = feature/new-assay
 - support assay.plate - assay.mean
