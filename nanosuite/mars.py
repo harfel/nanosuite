@@ -114,7 +114,7 @@ class Assay:
             if isinstance(group_samples, slice):
                 start = samples[samples==group_samples.start].index[0]
                 end = samples[samples==group_samples.stop].index[-1]
-                group_samples = cast(list, samples.loc[start:end].unique())
+                group_samples = list(samples.loc[start:end].unique())
             for sample in group_samples:
                 df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
@@ -596,25 +596,28 @@ class Assay:
                                          params['P0'], params['P1'], params['Pinf'])
             negative = double_relaxation(time, params['r1'], params['r2'],
                                          params['N0'], params['N1'], params['Ninf'])
-            return np.array([positive if sample in pos_samples else negative
-                             for sample in controls.sample.data])
+            return xr.concat([positive, negative],
+                             dim='content') if neg_rfu is not None else positive
 
         def residuals_for(data):
             def residuals(params):
                 model = well_model(data.time, params)
-                return (data-model)
+                return data - model
             return residuals
 
         split = controls.shape[-1]//5
         params = lmfit.create_params(
             r1 = {'value': float(10/controls.time[split]) , 'min': 0., 'vary': True},
             r2 = {'value': float(1/controls.time[-1]), 'min': 0., 'vary': True},
-            N0 = {'value': float(controls[controls.sample.isin(neg_samples)][0, 0]), 'min': 0.},
-            N1 = {'value': float(controls[controls.sample.isin(neg_samples)][0, split]), 'min': 0.},
-            Ninf = {'value': float(controls[controls.sample.isin(neg_samples)][0, -1]), 'min': 0.},
-            P0 = {'value': float(controls[controls.sample.isin(pos_samples)][0, 0]), 'min': 0.},
-            P1 = {'value': float(controls[controls.sample.isin(pos_samples)][0, split]), 'min': 0.},
-            Pinf = {'value': float(controls[controls.sample.isin(pos_samples)][0, -1]), 'min': 0.},
+            N0 = {'value': float(neg_rfu.mean(dim='content')[0]) if neg_rfu is not None else 0,
+                  'min': 0.},
+            N1 = {'value': float(neg_rfu.mean(dim='content')[split]) if neg_rfu is not None else 0,
+                  'min': 0.},
+            Ninf = {'value': float(neg_rfu.mean(dim='content')[-1]) if neg_rfu is not None else 0,
+                    'min': 0.},
+            P0 = {'value': float(pos_rfu.mean(dim='content')[0]), 'min': 0.},
+            P1 = {'value': float(pos_rfu.mean(dim='content')[split]), 'min': 0.},
+            Pinf = {'value': float(pos_rfu.mean(dim='content')[-1]), 'min': 0.},
         )
         fit = lmfit.minimize(residuals_for(controls), params)
 
@@ -626,14 +629,14 @@ class Assay:
         return self.convert_direct(pos_model, neg_model, pos_conc, neg_conc)
 
     def compute_power_variance_model(self) -> Callable[[float], float]:
-        """Compute power variance model 
+        """Compute power variance model
 
         Fit a linear regression against the log transformed sample variance over
         log transformed means. Based in the regression parameters A,B, return a
         function that calculates $A*Y^B$ for some provided fluorescence Y.
         """
-        x = np.log(self.mean).values.flatten()
-        y = np.log(self.std**2).values.flatten()
+        x = cast(xr.DataArray, np.log(self.mean)).values.flatten()
+        y = cast(xr.DataArray, np.log(self.std**2)).values.flatten()
         regresult = scipy.stats.linregress(x, y)
         def power_variance(Y: float) -> float:  # pylint: disable=invalid-name
             """Return power variance var(Y) = A*Y^B"""

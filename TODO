@@ -1,9 +1,5 @@
-- load Assay from URL
 - support Assay.time_unit (default per second?)
-- respect excel time unit
 - assay._repr_html_
-+ support Assay.convert error argument
-- run pytest, mypy and pylint
 = feature/new-assay
 - support assay.plate - assay.mean
 
