@@ -420,6 +420,7 @@ class CRN:
             attribute params, which are the optimized parameters.
         """
         conversion = conversion or (lambda conc: conc)
+        initial = initial[initial.sample.isin(data.sample)]
         original = deepcopy(self.params)
         params = self.params
         params['t0'].vary = vary_t0
