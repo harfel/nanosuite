@@ -208,7 +208,7 @@ class Assay:
                  'minutes': self.plate.minutes,
                  'hours': self.plate.hours},
                 dims=('content', 'time'),
-                attrs=self.plate.attrs, 
+                attrs=self.plate.attrs,
                 name=self.plate.name
             )
         return self._mean
@@ -582,7 +582,6 @@ class Assay:
         self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
         pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
-        """FIXME: document"""
         """Compute transforms between RFU values and concentrations
 
         Same as Assay.convert_direct, but the conversion is based on a
@@ -592,7 +591,9 @@ class Assay:
         slowly equilibrates over time.
         """
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
-        neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc or 0*pos_conc)
+        neg_conc = (neg_conc
+                    if isinstance(neg_conc, xr.DataArray)
+                    else xr.DataArray(neg_conc or 0*pos_conc))
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
 
         def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
