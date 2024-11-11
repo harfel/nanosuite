@@ -408,7 +408,8 @@ class CRN:
         error: optional xr.DataArray with rfu over time or float (default 1.)
             Standard deviations of measured data
         vary_t0:  optional bool (default True)
-            FIXME: explain
+            If set to True (default) the fitting is allowed to vary the start
+            time of the reaction to lie before the start data.time
         options:
             Any remaining keyword arguments are pass to
             lmfit.minimize
