@@ -6,6 +6,7 @@ __version__ = '0.2.4rc3'
 
 
 try:
+    from . import jupyter
     from .mars import Assay
     from .crn import from_string as crn_from_string
 

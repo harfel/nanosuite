@@ -8,10 +8,10 @@ import re
 import warnings
 from typing import cast, Callable, Dict, Iterable, Optional, Union
 import numpy as np
-import pandas as pd
-import xarray as xr
-import scipy # type: ignore
-import lmfit # type: ignore
+import pandas as pd  # type: ignore
+import xarray as xr  # type: ignore
+import scipy         # type: ignore
+import lmfit         # type: ignore
 
 
 class Assay:

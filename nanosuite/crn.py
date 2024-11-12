@@ -1,16 +1,16 @@
 """Chemical reaction networks
 """
 from copy import deepcopy
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Callable, Iterable
 from itertools import chain
-import xarray as xr
+import xarray as xr                   # type: ignore
 import numpy as np
-import pandas as pd
+import pandas as pd                   # type: ignore
 from scipy.integrate import solve_ivp # type: ignore
-import lmfit # type: ignore
+import lmfit                          # type: ignore
 from . import crn_parser
 
-Reactants = Tuple[Tuple[str, int], ...] # TODO: support generic Tuple[Tuple[T, int], ...]
+Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
 DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
@@ -51,13 +51,13 @@ class CRN:
     # TODO: support open networks and buffered species
 
     species: pd.Index
-    complexes: List[Reactants]
-    reactions: Dict[Tuple[Reactants, Reactants], str]
+    complexes: list[Reactants]
+    reactions: dict[tuple[Reactants, Reactants], str]
     params: lmfit.Parameters
 
     def __init__(self,
-                 reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
-                 species: Optional[Iterable[str]] = None):
+                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 species: Iterable[str]|None = None):
         """Create an chemical reaction network.
 
         Parameters
@@ -100,7 +100,7 @@ class CRN:
         )
 
     @property
-    def burst_reactions(self) -> Dict[Tuple[Reactants, Reactants], str]:
+    def burst_reactions(self) -> dict[tuple[Reactants, Reactants], str]:
         """Return subset of reactions with infinite rate constant"""
         return {
             reaction: rate
@@ -195,10 +195,10 @@ class CRN:
     def __getitem__(self, name: str) -> lmfit.Parameter:
         return self.params[name]
 
-    def __setitem__(self, name: str, value: Union[float, lmfit.Parameter]):
+    def __setitem__(self, name: str, value: float|lmfit.Parameter):
         self.params[name] = value
 
-    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /,
+    def state(self, conc: xr.DataArray|dict[str, float]|None = None, /,
               **extra_conc: float) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
 
@@ -257,7 +257,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: xr.DataArray,       # pylint: disable=invalid-name
-                  t_eval: Union[Iterable, float, None] = None,
+                  t_eval: Iterable|float|None = None,
                   **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
@@ -294,32 +294,36 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        if isinstance(t_eval, tuple):
-            t_eval = (t_eval + (DEFAULT_INTEGRATION_POINTS,))[:3]
-            t_eval = pd.Index(np.linspace(*t_eval, dtype=float), name="time")  # type: ignore
-        elif isinstance(t_eval, pd.Index):
-            pass
-        elif isinstance(t_eval, xr.DataArray):
-            if t_eval.ndim == 0:
-                t_eval = pd.Index(np.linspace(
-                    self.params['t0'].value, float(t_eval),
-                    DEFAULT_INTEGRATION_POINTS, dtype=float
-                ), name="time")
-            elif t_eval.ndim == 1:
-                pass
+        def stratify_t_eval(times: Iterable|float|None) -> pd.Index:
+            raise RuntimeError("FIXME: not implemented yet")
+            if isinstance(times, tuple):
+                return pd.Index(np.linspace(*(times + (DEFAULT_INTEGRATION_POINTS,))[:3],
+                                            dtype=float),
+                                name="time")
+            elif isinstance(times, pd.Index):
+                return times
+            elif isinstance(times, xr.DataArray):
+                if times.ndim == 0:
+                    return pd.Index(np.linspace(self.params['t0'].value,
+                                                float(t_eval), DEFAULT_INTEGRATION_POINTS,
+                                                dtype=float),
+                                    name="time")
+                elif times.ndim == 1:
+                    return times
+                else:
+                    raise ValueError("t_eval must have either zero or one dimension.")
+            elif isinstance(times, Iterable):
+                return pd.Index(times, name="time")
+            elif times is None:
+                return pd.Index(np.linspace(self.params['t0'].value,
+                                            DEFAULT_INTEGRATION_END,
+                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
+                                name="time")
             else:
-                raise ValueError("t_eval must have either zero or one dimension.")
-        elif isinstance(t_eval, Iterable):
-            t_eval = pd.Index(t_eval, name="time")
-        elif t_eval is None:
-            t_eval = pd.Index(np.linspace(self.params['t0'].value,
-                                          DEFAULT_INTEGRATION_END,
-                                          DEFAULT_INTEGRATION_POINTS, dtype=float),
-                              name="time")
-        else:
-            t_eval = pd.Index(np.linspace(self.params['t0'].value, t_eval,
-                                          DEFAULT_INTEGRATION_POINTS, dtype=float),
-                              name="time")
+                return pd.Index(np.linspace(self.params['t0'].value, t_eval,
+                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
+                                name="time")
+        times: pd.Index = stratify_t_eval(t_eval)
 
         initial_condition = self.state(initial_condition)
         if any(param.value==float('inf') for param in self.params.values()):
@@ -327,21 +331,21 @@ class CRN:
 
         kinetics = self.rate_law()
 
-        result = xr.DataArray(np.zeros(initial_condition.shape+t_eval.shape),
+        result = xr.DataArray(np.zeros(initial_condition.shape + times.shape),
                               [(dim, initial_condition.indexes[dim])
-                               for dim in initial_condition.dims]+[t_eval])
+                               for dim in initial_condition.dims]+[times])
         if len(initial_condition.dims) == 1:
             result[0:] = solve_ivp(kinetics,
-                                   (self.params['t0'], t_eval[-1]),
+                                   (self.params['t0'], times[-1]),
                                    initial_condition,
-                                   t_eval=t_eval, vectorized=True, **options).y
+                                   t_eval=times, vectorized=True, **options).y
         else:
             for idx, initial in enumerate(initial_condition):
                 # TODO: parallelize using multiprocessing.Pool's
                 result[idx, 0:] = solve_ivp(kinetics,
-                                            (self.params['t0'], t_eval[-1]),
+                                            (self.params['t0'], times[-1]),
                                             initial,
-                                            t_eval=t_eval, vectorized=True, **options).y
+                                            t_eval=times, vectorized=True, **options).y
         result.name = "concentration"
         return result
 
@@ -391,9 +395,9 @@ class CRN:
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray,
-            conversion: Optional[Callable[[xr.DataArray], xr.DataArray]]=None,
-            error: Union[float, xr.DataArray]=1.,
-            vary_t0: bool=True,
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+            error: float|xr.DataArray = 1.,
+            vary_t0: bool = True,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -485,14 +489,14 @@ class PartitionedCRN(CRN):
     # but generally not
     #     x @ S @ M == x
 
-    subspecies: Dict[str, Dict[str, str]]
-    subspecies_rests: Dict[str, str]
+    subspecies: dict[str, dict[str, str]]
+    subspecies_rests: dict[str, str]
 
 
     def __init__(self,
-                 reactions: Optional[List[Tuple[Reactants, Reactants, lmfit.Parameter]]] = None,
-                 species_defs : Optional[List[Tuple[str, Dict[str, lmfit.Parameter], str]]] = None,
-                 species: Optional[Iterable[str]] = None):
+                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 species_defs : list[tuple[str, dict[str, lmfit.Parameter], str]]|None = None,
+                 species: Iterable[str]|None = None):
         super().__init__(reactions, species)
         self.subspecies = {}
         self.subspecies_rests = {}
@@ -534,15 +538,15 @@ class PartitionedCRN(CRN):
             result[i, j] = 1.
         return result
 
-    def define_subspecies(self, species: str, subspecies: Dict[str, lmfit.Parameter],
-                          rest: Optional[str]='pure'):
+    def define_subspecies(self, species: str, subspecies: dict[str, lmfit.Parameter],
+                          rest: str='pure'):
         """Define subspecies of a given species
 
         Parameters
         ----------
             species: str
                 The species that should be partitioned into subspecies
-            subspecies: Dict[str, lmfit.Parameter]
+            subspecies: dict[str, lmfit.Parameter]
                 Fractions (between 0 and 1) of named subspecies
             rest: str
                 suffix for the remainder part of the species (default pure)
@@ -563,13 +567,13 @@ class PartitionedCRN(CRN):
             if par.name not in self.params:
                 self.params.add(par)
 
-    def state(self, conc: Optional[Union[xr.DataArray, Dict[str, float]]] = None, /,
+    def state(self, conc: xr.DataArray|dict[str, float]|None = None, /,
               **extra_conc: float) -> xr.DataArray:
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
 
     def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
-                  t_eval: Union[Iterable, float, None] = None,
+                  t_eval: Iterable|float|None = None,
                   **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
@@ -585,7 +589,7 @@ class PartitionedCRN(CRN):
                             name=traj_subspecies.name)
 
 
-def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, PartitionedCRN]:
+def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:
     """Construct a chemical reaction network from a string representation.
 
     See nanosuite.crn_parser for a definition of the CRN specification language
@@ -601,7 +605,7 @@ def from_string(string: str, species: Optional[List[str]] = None) -> Union[CRN, 
     -------
     A CRN instance with the given reactions.
     """
-    crn: Union[CRN, PartitionedCRN]
+    crn: CRN|PartitionedCRN
 
     crn_def = crn_parser.parse(string)
 
