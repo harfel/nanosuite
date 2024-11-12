@@ -3,6 +3,7 @@
 from copy import deepcopy
 from typing import Callable, Iterable
 from itertools import chain
+import warnings
 import xarray as xr                   # type: ignore
 import numpy as np
 import pandas as pd                   # type: ignore
@@ -73,7 +74,7 @@ class CRN:
         self.complexes = []
         self.reactions = {}
         self.params = lmfit.Parameters()
-        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=False)
+        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
         for reaction in reactions or []:
             self.add_reaction(*reaction)
 
@@ -396,7 +397,7 @@ class CRN:
             initial: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
-            vary_t0: bool = True,
+            vary_t0: bool|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -410,24 +411,22 @@ class CRN:
             time. Can be obtained from mars.Assay.calibrate.
         error: optional xr.DataArray with rfu over time or float (default 1.)
             Standard deviations of measured data
-        vary_t0:  optional bool (default True)
-            If set to True (default) the fitting is allowed to vary the start
-            time of the reaction to lie before the start data.time
         options:
-            Any remaining keyword arguments are pass to
-            lmfit.minimize
+            Any remaining keyword arguments are pass to lmfit.minimize
 
         Result
         ------
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        conversion = conversion or (lambda conc: conc)
+        if vary_t0 is not None:
+            warnings.warn("Argument vary_t0 to CRN.fit is no longer supported. "
+                          "Set CRN.params['t0'].vary instead")
+        conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
         original = deepcopy(self.params)
         params = self.params
-        params['t0'].vary = vary_t0
-        params['t0'].max = float(data.time[0])
+        params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):
             self.params = params
             model = conversion(self.integrate(initial, t_eval=data.time))
