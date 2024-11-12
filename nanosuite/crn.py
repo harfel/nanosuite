@@ -295,7 +295,6 @@ class CRN:
             2D or 3D DataArray of trajectories. See above.
         """
         def stratify_t_eval(times: Iterable|float|None) -> pd.Index:
-            raise RuntimeError("FIXME: not implemented yet")
             if isinstance(times, tuple):
                 return pd.Index(np.linspace(*(times + (DEFAULT_INTEGRATION_POINTS,))[:3],
                                             dtype=float),
