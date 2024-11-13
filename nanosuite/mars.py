@@ -6,7 +6,7 @@ Assay(path_to_excel_file).
 """
 import re
 import warnings
-from typing import cast, Callable, Dict, Iterable, Optional, Union
+from typing import cast, Callable, Iterable
 import numpy as np
 import pandas as pd  # type: ignore
 import xarray as xr  # type: ignore
@@ -53,7 +53,7 @@ class Assay:
     _std: xr.DataArray | None = None
 
 
-    def __init__(self, path: str, groups: Optional[dict[str, list[str]|slice]] = None):
+    def __init__(self, path: str, groups: dict[str, list[str]|slice]|None = None):
         """Plate reader data as saved by MARS.
 
         Parameters
@@ -247,8 +247,8 @@ class Assay:
         self._mean = None
         self._std = None
 
-    def plate_setup(self, conc: Optional[Dict[str, Union[float, Iterable]]] = None,
-                    **kwargs: Union[float, Iterable]) -> xr.DataArray:
+    def plate_setup(self, conc: dict[str, float|Iterable]|None = None,
+                    **kwargs: float|Iterable) -> xr.DataArray:
         """Define plate setup
 
         This method generates a correctly indexed xr.DataArray that
@@ -264,7 +264,7 @@ class Assay:
 
         Parameters
         ----------
-        conc, kwargs: Dict[str, Union[float, Iterable]]
+        conc, kwargs: dict[str, float|Iterable]
             Concentrations of chemical species. If a float is given,
             the species is uniform over all samples. If an iterable
             is given, it must have the same length as there are
@@ -291,10 +291,10 @@ class Assay:
 
     def calibrate(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
-        pos_rfu: Optional[xr.DataArray]=None,
-        neg_rfu: Optional[xr.DataArray]=None, *,
-        method: str='direct',
-        error: Optional[Callable[[float], float]]=None,
+        pos_rfu: xr.DataArray|None = None,
+        neg_rfu: xr.DataArray|None = None, *,
+        method: str = 'direct',
+        error: Callable[[float], float]|None = None,
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
@@ -332,9 +332,9 @@ class Assay:
 
     def calibrate_relaxation(
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
-        pos_rfu: Optional[xr.DataArray]=None,
-        neg_rfu: Optional[xr.DataArray]=None, *,
-        error: Optional[Callable[[float], float]]=None,
+        pos_rfu: xr.DataArray|None = None,
+        neg_rfu: xr.DataArray|None = None, *,
+        error: Callable[[float], float]|None = None,
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
@@ -496,9 +496,9 @@ class Assay:
         return from_rfu, to_rfu
 
     def convert(
-        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
-        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0., /,
-        method: Optional[str] = 'direct'
+        self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
+        pos_conc: xr.DataArray|float = 1., neg_conc: xr.DataArray|float = 0., /,
+        method: str = 'direct'
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between RFU values and concentrations
 
@@ -532,8 +532,8 @@ class Assay:
         raise ValueError(f"Unsupported calibration method '{method}'.")
 
     def convert_direct(
-        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
-        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
+        self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
+        pos_conc: xr.DataArray|float = 1., neg_conc: xr.DataArray|float = 0.
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
 
@@ -579,8 +579,8 @@ class Assay:
         return from_rfu, to_rfu
 
     def convert_relaxation(
-        self, pos_rfu: xr.DataArray, neg_rfu: Optional[xr.DataArray] = None,
-        pos_conc: Union[xr.DataArray, float] = 1., neg_conc: Union[xr.DataArray, float] = 0.
+        self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
+        pos_conc: xr.DataArray|float = 1., neg_conc: xr.DataArray|float = 0.
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between RFU values and concentrations
 
