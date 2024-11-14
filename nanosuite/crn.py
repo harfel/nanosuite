@@ -1,7 +1,7 @@
 """Chemical reaction networks
 """
 from copy import deepcopy
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 from itertools import chain
 import warnings
 import xarray as xr                   # type: ignore
@@ -199,36 +199,73 @@ class CRN:
     def __setitem__(self, name: str, value: float|lmfit.Parameter):
         self.params[name] = value
 
-    def state(self, conc: xr.DataArray|dict[str, float]|None = None, /,
-              **extra_conc: float) -> xr.DataArray:
+    def state(self, conc: xr.DataArray|dict[str, float|Sequence[float]]|None = None, /,
+              **extra_conc: float|Sequence[float]) -> xr.DataArray:
         """Generate a state vector with given species concentrations.
 
         Create a state vector with the given species concentrations.
         Species of the CRN that are ommitted in the input are set to 0.
+        Concentrations can either be floating point numbers or sequences
+        of floating point numbers. In case of the latter, the function
+        returns a 2D DataArray wich species concentrations for the provided
+        number of distinct samples.
 
         >>> initial = crn.state(A=100, B=100)
 
         Parameters
         ----------
-        conc: an xarray.DataArray with a coordinate "species"
-              or a dictionary from species labels to float
+        conc: a 1D or 2D xarray.DataArray with a coordinate "species"
+              or a dictionary from species labels to float or sequence
+              of floats
             giving species concentrations.
         extra_conc:
-            named keyword arguemtns of additional concentrations.
+            named keyword arguemnts of additional concentrations.
 
         Returns
         -------
-        A DataArray with the same contents as conc, but padded
-        with 0's for any unspecified species.
+        Either a 1D DataArray (if scalar concentrations where provided
+        for all species) or a 2D DataArray (if any concentration was
+        provided as sequence). Unspecified species are padded with 0.
         """
-        if conc is None:
-            return xr.DataArray([extra_conc.get(species, 0.) for species in self.species],
-                                {'species': self.species})
+        # determine resultant DataArray shape
+        conc = conc if conc is not None else {}
         if isinstance(conc, dict):
-            conc.update(**extra_conc)
-            return xr.DataArray([conc.get(species, 0.) for species in self.species],
-                                {'species': self.species})
-        return conc.reindex({'species': self.species}, fill_value=0.)
+            n_samples = list(set(len(value) for value in chain(conc.values(), extra_conc.values())
+                                 if isinstance(value, Sequence)))
+            if len(n_samples) > 1:
+                raise ValueError("Inconsistent length of samples given.")
+            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+        elif conc.ndim == 1:
+            n_samples = list(set(len(value) for value in extra_conc.values()
+                                 if isinstance(value, Sequence)))
+            if len(n_samples) > 1:
+                raise ValueError("Inconsistent length of samples given.")
+            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+        else:
+            samples = conc.indexes[conc.dims[0]] if conc.ndim>1 else []
+
+        # initialize state DataArray
+        if isinstance(conc, dict) and conc and samples:
+            state = xr.DataArray([value if isinstance(value, Sequence) else len(samples)*[value]
+                                  for value in conc.values()],
+                                 {'species': list(conc.keys()), 'sample': samples}).T
+        elif isinstance(conc, dict) and samples:
+            state = xr.DataArray(()).expand_dims({'sample': samples, 'species': []})
+        elif isinstance(conc, dict) and conc:
+            state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
+        elif isinstance(conc, dict):
+            state = xr.DataArray(len(self.species)*[0], {'species': self.species})
+        elif conc.ndim == 1 and samples:
+            state = conc.expand_dims({'sample': samples}, 0)
+        else:
+            state = conc
+        
+        # reindex state to include missing species
+        state = state.reindex({'species': self.species}, fill_value=0.).copy()
+        # set extra_conc values
+        for species, val in extra_conc.items():
+            state.loc[..., species] = val
+        return state
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -257,7 +294,7 @@ class CRN:
 
         return kinetics
 
-    def integrate(self, initial_condition: xr.DataArray,       # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable|float|None = None,
                   **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
@@ -570,7 +607,7 @@ class PartitionedCRN(CRN):
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
 
-    def integrate(self, initial_condition: xr.DataArray,                   # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable|float|None = None,
                   **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
