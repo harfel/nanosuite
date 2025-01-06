@@ -2,7 +2,7 @@
 
 Toolset for working with experimental DNA nanotechnology.
 """
-__version__ = '0.2.4rc4'
+__version__ = '0.2.4rc5'
 
 
 def _is_notebook() -> bool:
