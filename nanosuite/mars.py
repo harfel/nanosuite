@@ -65,6 +65,7 @@ class Assay:
             mapping of group names to a list or slice of sample names
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
         """
+        # TODO: warn or error if groups use samples that are not defined in the assay
         self.path = path
         groups = groups or {}
 
@@ -278,7 +279,7 @@ class Assay:
         """
         # TODO: could support ellipsis in conc values:
         # species = [..., 8, 9, 10], species = [1, 2, 3, ...], species = [1, 2, ..., 10]
-        # But what would be the best default valuesfor the ellipsis?
+        # But what would be the best default values for the ellipsis?
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(

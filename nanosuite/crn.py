@@ -231,13 +231,13 @@ class CRN:
         conc = conc if conc is not None else {}
         if isinstance(conc, dict):
             n_samples = list(set(len(value) for value in chain(conc.values(), extra_conc.values())
-                                 if isinstance(value, Sequence)))
+                                 if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
             samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
         elif conc.ndim == 1:
             n_samples = list(set(len(value) for value in extra_conc.values()
-                                 if isinstance(value, Sequence)))
+                                 if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
             samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
@@ -246,8 +246,8 @@ class CRN:
 
         # initialize state DataArray
         if isinstance(conc, dict) and conc and samples:
-            state = xr.DataArray([value if isinstance(value, Sequence) else len(samples)*[value]
-                                  for value in conc.values()],
+            state = xr.DataArray([value if isinstance(value, (Sequence, np.ndarray))
+                                        else len(samples)*[value] for value in conc.values()],
                                  {'species': list(conc.keys()), 'sample': samples}).T
         elif isinstance(conc, dict) and samples:
             state = xr.DataArray(()).expand_dims({'sample': samples, 'species': []})
@@ -259,7 +259,7 @@ class CRN:
             state = conc.expand_dims({'sample': samples}, 0)
         else:
             state = conc
-        
+
         # reindex state to include missing species
         state = state.reindex({'species': self.species}, fill_value=0.).copy()
         # set extra_conc values
@@ -295,7 +295,7 @@ class CRN:
         return kinetics
 
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
-                  t_eval: Iterable|float|None = None,
+                  t_eval: Iterable[float]|float|None = None,
                   **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
@@ -332,34 +332,32 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        def stratify_t_eval(times: Iterable|float|None) -> pd.Index:
+        def stratify_t_eval(times):
             if isinstance(times, tuple):
-                return pd.Index(np.linspace(*(times + (DEFAULT_INTEGRATION_POINTS,))[:3],
+                return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
                                             dtype=float),
                                 name="time")
-            elif isinstance(times, pd.Index):
+            if isinstance(times, pd.Index):
                 return times
-            elif isinstance(times, xr.DataArray):
+            if isinstance(times, xr.DataArray):
                 if times.ndim == 0:
                     return pd.Index(np.linspace(self.params['t0'].value,
                                                 float(t_eval), DEFAULT_INTEGRATION_POINTS,
                                                 dtype=float),
                                     name="time")
-                elif times.ndim == 1:
+                if times.ndim == 1:
                     return times
-                else:
-                    raise ValueError("t_eval must have either zero or one dimension.")
-            elif isinstance(times, Iterable):
+                raise ValueError("t_eval must have either zero or one dimension.")
+            if isinstance(times, Iterable):
                 return pd.Index(times, name="time")
-            elif times is None:
+            if times is None:
                 return pd.Index(np.linspace(self.params['t0'].value,
                                             DEFAULT_INTEGRATION_END,
                                             DEFAULT_INTEGRATION_POINTS, dtype=float),
                                 name="time")
-            else:
-                return pd.Index(np.linspace(self.params['t0'].value, t_eval,
-                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
-                                name="time")
+            return pd.Index(np.linspace(self.params['t0'].value, t_eval,
+                                        DEFAULT_INTEGRATION_POINTS, dtype=float),
+                            name="time")
         times: pd.Index = stratify_t_eval(t_eval)
 
         initial_condition = self.state(initial_condition)
@@ -602,8 +600,8 @@ class PartitionedCRN(CRN):
             if par.name not in self.params:
                 self.params.add(par)
 
-    def state(self, conc: xr.DataArray|dict[str, float]|None = None, /,
-              **extra_conc: float) -> xr.DataArray:
+    def state(self, conc: xr.DataArray|dict[str, float|Sequence[float]]|None = None, /,
+              **extra_conc: float|Sequence[float]) -> xr.DataArray:
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
 
