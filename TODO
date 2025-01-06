@@ -1,4 +1,3 @@
-- assay._repr_html_
 - improve CRN.fit(vary_t0) semantics
 - set sensible crn.params['t0'] bounds with injectors
 - PartitionedCRN._repr_html_ should show subspecies definitions

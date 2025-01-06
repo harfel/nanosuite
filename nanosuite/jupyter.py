@@ -14,6 +14,12 @@ import xarray as xr                        # type: ignore
 from . import crn, mars
 
 
+def gradient(dataset):
+    size = len(dataset)
+    for idx, _ in enumerate(dataset):
+        yield colormaps['rainbow'](idx/size)
+
+
 ####################################################################################################
 #
 # crn enhancements
@@ -42,11 +48,6 @@ class FitProgress:
         traj = self.conversion(self.crn.integrate(self.initial, t_eval=self.data.time))
         self.crn.params = original
 
-        def gradient(dataset):
-            size = len(dataset)
-            for idx, _ in enumerate(dataset):
-                yield colormaps['rainbow'](idx/size)
-
         fig = Figure()
         ax = fig.gca()
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
@@ -60,13 +61,13 @@ class FitProgress:
         fig.savefig(buf, format='png')
         buf.seek(0)
 
-        self.hdisplay.update(HTML(f"""
+        self.hdisplay.update(HTML(f'''
         <div>
             <div>Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
             <div style="displaY: inline-block">{params._repr_html_()}</div>
         </div>
-        """))
+        '''))
 
 class CRN(crn.CRN):
     """CRN class that visualizes fit progress"""
@@ -102,11 +103,29 @@ crn.PartitionedCRN = PartitionedCRN  # type: ignore
 ####################################################################################################
 class Assay(mars.Assay):
     """Assay class with graphical representation"""
-    def _repr_mimebundle_(self) -> dict[str, Any]:
-        return NotImplemented # FIXME: implement this
+    def _repr_mimebundle_(self, **kwargs) -> dict[str, Any]:
+        return {'png': self._repr_png_(**kwargs)}
 
-    def _repr_html_(self) -> str:
-        return NotImplemented
+    def _repr_png_(self, **kwargs):
+        fig = Figure()
+        ax = fig.gca()
+        ax.set_xlabel("Time [min]")
+        ax.set_ylabel("RFU")
+        ax.set_title(self.plate.attrs["Test Name"])
+        for sample, err, color in zip(self.mean, self.std, gradient(self.mean)):
+            ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
+            ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
+        ax.grid()
+        ax.legend(ncols=4, loc='upper center', bbox_to_anchor=(0.5, 0),
+                  bbox_transform=fig.transFigure)
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches="tight")
+        buf.seek(0)
+        return buf.read()
+
+    def _repr_html_(self, **kwargs) -> str:
+        return f'<img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">'
 
 # monkey patches
 mars.Assay = Assay                   # type: ignore
