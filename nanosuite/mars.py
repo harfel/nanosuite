@@ -73,8 +73,6 @@ class Assay:
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
             Only allowed it neither setup_file nor setup are provided.
         """
-        # TODO: warn or error if groups use samples that are not defined in the assay
-        # FIXME: setup could accept dictionary as in Assay.plate_setup
         self.rfu_file = rfu_file
 
         self.full_plate, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
@@ -87,10 +85,17 @@ class Assay:
             if setup:
                 raise ValueError("Arguments setup and concentrations are mutually exclusive")
             self.setup = self.read_setup(setup_file)
-        elif setup is not None:
+        elif isinstance(setup, xr.DataArray):
             if groups:
                 raise ValueError("Arguments concentrations and groups are mutually exclusive")
             self.setup = setup
+        elif isinstance(setup, dict):
+            self.setup = xr.DataArray(
+                dims=['content', 'species'],
+                coords={'content': self.full_plate.indexes['content'].droplevel('well').unique(),
+                        'species': list(setup.keys())})
+            for species, values in setup.items():
+                self.setup.loc[..., species] = values
 
         # reset self.full_plate index
         if self.setup is not None:

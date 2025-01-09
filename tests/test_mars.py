@@ -74,6 +74,16 @@ def test_init_with_setup_array():
     ))
     assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
 
+def test_init_with_setup_dict():
+    assay_1 = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    assay_2 = Assay(rfu_file=rfu_file, setup={
+        "Input": [0, 0, 0, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "Probe": 9*[10] + [0, 10, 10, 8, 6, 4, 2, 0, 0],
+        "Fuel": 9*[15] + [0, 0, 0, 13, 11, 9, 7, 5, 5],
+        "Signal": 12*[0] + [2, 4, 6, 8, 10, 10],
+    })
+    assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
+
 def test_init_setup_file_and_groups_are_exclusive():
     with pytest.raises(ValueError):
         assay = Assay(setup_file=setup_file, rfu_file=rfu_file, groups={'Unknown': "Sample X1"})
@@ -82,9 +92,24 @@ def test_init_setup_file_and_setup_are_exclusive():
     with pytest.raises(ValueError):
         assay = Assay(setup_file=setup_file, rfu_file=rfu_file, setup=xr.DataArray([1]))
 
-def test_init_setup_and_groups_are_exclusive():
+def test_init_setup_array_and_groups_are_exclusive():
     with pytest.raises(ValueError):
         assay = Assay(rfu_file=rfu_file, setup=xr.DataArray([1]), groups={'Unknown': "Sample X1"})
+
+def test_init_setup_dict_with_groups():
+    assay_1 = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    assay_2 = Assay(rfu_file=rfu_file, setup={
+        "Input": [0, 0, 0, 5e-12, 1e-11, 5e-11, 1e-10, 5e-10, 1e-9, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "Probe": 9*[1e-8] + [0, 1e-8, 1e-8, 8e-9, 6e-9, 4e-9, 2e-9, 0, 0],
+        "Fuel": 9*[1.5e-8] + [0, 0, 0, 1.3e-8, 1.1e-8, 9e-9, 7e-9, 5e-9, 5e-9],
+        "Signal": 12*[0] + [2e-9, 4e-9, 6e-9, 8e-9, 1e-8, 1e-8],
+    }, groups={
+        "Responses": slice("Sample X1", "Sample X9"),
+        "Negative": ["Sample X10", "Sample X11"],
+        "Calibration": slice("Sample X12", "Sample X16"),
+        "Positive": ["Sample X17", "Sample X18"],
+    })
+    assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
 
 def test_deactivate():
     """Ensure that wells can be activated and deactivated"""
