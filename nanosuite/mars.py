@@ -2,16 +2,17 @@
 
 Due to proprietary data formats, MARS files cannot be read directly but have
 to be exported to excel. The generated excel files can be loaded with
-Assay(path_to_excel_file).
+Assay(rfu=path_to_excel_rfu_data).
 """
+from functools import cached_property
 import re
-import warnings
 from typing import cast, Callable, Iterable
+import warnings
+import lmfit # type: ignore
 import numpy as np
-import pandas as pd  # type: ignore
-import xarray as xr  # type: ignore
-import scipy         # type: ignore
-import lmfit         # type: ignore
+import pandas as pd
+import scipy # type: ignore
+import xarray as xr
 
 
 class Assay:
@@ -25,7 +26,7 @@ class Assay:
 
     Attributes
     ----------
-    path: str
+    rfu_file: str
         Path of the associated xlsx file (read only)
 
     plate: 2D xarray DataArray
@@ -37,40 +38,154 @@ class Assay:
     active_wells: 1D xarray DataArray
         Wells that have not been blanked by the user
 
-    mean: 2D xarray DataArray
-        Mean fluorescence of active wells
-
-    std: 2D xarray DataArray
-        Standard deviation of active wells
-
     injections: pandas.Index
         Times (in seconds) at which injections occurred
+
+    setup: 2D xarray DataArray
+        Initial concentrations in mol/liter for each sample
     """
-    path: str
+    rfu_file: str
     full_plate: xr.DataArray
     plate: xr.DataArray
-    _mean: xr.DataArray | None = None
-    _std: xr.DataArray | None = None
+    injections: pd.Index
+    setup: xr.DataArray|None = None
 
 
-    def __init__(self, path: str, groups: dict[str, list[str]|slice]|None = None):
-        """Plate reader data as saved by MARS.
+    def __init__(self, rfu_file: str, setup_file: str|None = None, *,
+                 setup: xr.DataArray|None = None,
+                 groups: dict[str, list[str]|slice]|None = None):
+        """A plate reader assay
 
         Parameters
         ----------
-        path: str
-            file path
+        rfu_file: str
+            path to MARS RFU data file
+
+        setup_file: str
+            path to experimental setup file
+
+        setup: xarray.DataArray
+            A 2D DataArray with dimensions content and species denoting initial
+            conditions in mol/liter. Only allowed if setup_file is not provided.
 
         groups: dict
             mapping of group names to a list or slice of sample names
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
+            Only allowed it neither setup_file nor setup are provided.
         """
         # TODO: warn or error if groups use samples that are not defined in the assay
-        self.path = path
-        groups = groups or {}
+        # FIXME: setup could accept dictionary as in Assay.plate_setup
+        self.rfu_file = rfu_file
+
+        self.full_plate, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
+                                                                            groups or {})
+
+        # read assay setup if given
+        if setup_file:
+            if groups:
+                raise ValueError("Arguments setup and groups are mutually exclusive")
+            if setup:
+                raise ValueError("Arguments setup and concentrations are mutually exclusive")
+            self.setup = self.read_setup(setup_file)
+        elif setup is not None:
+            if groups:
+                raise ValueError("Arguments concentrations and groups are mutually exclusive")
+            self.setup = setup
+
+        # reset self.full_plate index
+        if self.setup is not None:
+            content = self.full_plate.indexes['content'].droplevel('group').to_frame()
+            content['group'] = content.apply(
+                lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
+
+            content.set_index('group', append=True, inplace=True)
+            content = content.reorder_levels(['group', 'sample', 'well'])
+            coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
+            self.full_plate = self.full_plate.assign_coords(coords=coord)
+            self.active_wells = self.active_wells.assign_coords(coords=coord)
+
+        self.plate = self.full_plate[self.active_wells]
+
+    def read_setup(self, setup_file: str) -> xr.DataArray:
+        """Read plate setup from excel file
+
+        Parameters
+        ----------
+        setup_file: str
+            path to setup Excel file
+
+        Returns
+        -------
+        DataArray of initial concentrations in mol/liter
+
+        The excel file needs to contain a worksheet named
+        "sample_preparations" with the following format:
+
+        Group | Sample ID | Buffer | Buffer % | ... | Gate  | Gate conc (nM) | ...
+        ------+-----------+--------+----------+-----+-------+----------------+-----
+        ...   | Sample X1 | TRIS   | 100      | ... | Gate1 | 100            | ...
+
+        There can be an arbitrary number of Buffer/Media components as well
+        as chemical species. Concentrations of the latter can be provided in
+        mM, uM, nM, pM or fM.
+        """
+        df = pd.read_excel(setup_file, sheet_name="sample_preparations")
+        # generate groups
+        content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(),
+                                           names=['group', 'sample'])
+        # TODO: generate portmaps
+        units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
+        factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
+        species = df.columns[-2*len(units)::2]
+        concs = df[df.columns[1-2*len(units)::2]]
+        concs *= np.array([factors[u] for u in units])
+        return xr.DataArray(concs, {'content': content, 'species': species})
+
+    def read_rfu(self, rfu_file: str,
+                 groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # full_plate
+                                                              xr.DataArray,  # active_wells
+                                                              pd.Index]:     # injections
+        """Read fluoresence data from Excel
+
+        Parameters
+        ----------
+        rfu_file: str
+            path to Excel file exported from MARS
+
+        groups: dict
+            mapping of group names to a list or slice of sample names
+            e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
+
+        Returns
+        -------
+        A three-tuple with the following content:
+        
+        all_rfu: xarray.DataArray
+            Raw RFU values of all wells over time
+
+        active_wells: xarray.DataArray
+            Boolean mask of active wells
+
+        injections: pandas.Index
+            time points at which injections occured
+        """
+        def _parse_time(label, times):
+            def convert(string):
+                match = re.match(r'((?P<h>\d+) h)? *((?P<min>\d+) min)? *((?P<s>\d+) s)?', string)
+                return (60*60*float(match.group('h') or 0)
+                        + 60*float(match.group('min') or 0)
+                        + float(match.group('s') or 0))
+            if label == 'Time':
+                return np.array(list(map(convert, times)))
+            factor = {
+                'Time [s]': 1,
+                'Time [min]': 60,
+                'Time [h]': 60*60,
+            }[label]
+            return factor * times.values.flatten().astype(float)
 
         # Create header df and extract data
-        df_total = pd.read_excel(self.path, header=None)
+        df_total = pd.read_excel(rfu_file, header=None)
         content_start = df_total[df_total[0]=='Well'].index[0]
         df_header = df_total.iloc[:content_start, :1]
 
@@ -102,7 +217,7 @@ class Assay:
         df_main.index = pd.Index(np.arange(1, len(df_main) + 1))
 
         # extract coordinates from dataframe
-        times = self._parse_time(df_main.iloc[0, 1], df_main.iloc[0, 2:])
+        times = _parse_time(df_main.iloc[0, 1], df_main.iloc[0, 2:])
         main_array = df_main.iloc[1:, 2:].values
 
         samples = df_main['Content'][1:]
@@ -126,10 +241,10 @@ class Assay:
         for index in reversed(inj_indexes):
             main_array = np.delete(main_array, index, 1)
             times = np.delete(times, index, 0)
-        self.injections = pd.Index([times[index] for index in inj_indexes], name="time")
+        injections = pd.Index([times[index] for index in inj_indexes], name="time")
 
         # from dataframe to xarray
-        self.full_plate = xr.DataArray(main_array,
+        full_plate = xr.DataArray(main_array,
             {"content": df_multicontent, "time": times},
             name="RFU",
             attrs=attributes,).astype(float).assign_coords(
@@ -138,26 +253,12 @@ class Assay:
                 hours=('time', times/3600),
             )
 
-        self.active_wells = ~self.full_plate.well.isin(deactivated)
-        self.plate = self.full_plate[self.active_wells]
+        active_wells = ~full_plate.well.isin(deactivated)
 
-    def _parse_time(self, label, times):
-        def convert(string):
-            match = re.match(r'((?P<h>\d+) h)? *((?P<min>\d+) min)? *((?P<s>\d+) s)?', string)
-            return (60*60*float(match.group('h') or 0)
-                    + 60*float(match.group('min') or 0)
-                    + float(match.group('s') or 0))
-        if label == 'Time':
-            return np.array(list(map(convert, times)))
-        factor = {
-            'Time [s]': 1,
-            'Time [min]': 60,
-            'Time [h]': 60*60,
-        }[label]
-        return factor * times.values.flatten().astype(float)
+        return full_plate, active_wells, injections
 
     def __repr__(self) -> str:
-        return f'<Assay "{self.path}">'
+        return f'<Assay "{self.rfu_file}">'
 
     def _repr_html_(self) -> str:
         return self.plate._repr_html_() # pylint: disable=protected-access
@@ -174,7 +275,10 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
-        self._recompute_stats()
+        if hasattr(self, 'mean'):
+            del self.mean
+        if hasattr(self, 'std'):
+            del self.std
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -188,9 +292,12 @@ class Assay:
         self.plate = self.full_plate[self.active_wells]
         self.plate.attrs['deactivated_cells'] = ', '.join(
             self.full_plate[~self.active_wells].well.values)
-        self._recompute_stats()
+        if hasattr(self, 'mean'):
+            del self.mean
+        if hasattr(self, 'std'):
+            del self.std
 
-    @property
+    @cached_property
     def mean(self) -> xr.DataArray:
         """Return sample means
 
@@ -199,22 +306,20 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        if self._mean is None:
-            samples = pd.Series(self.plate.sample.data).unique()
-            self._mean = xr.DataArray(
-                [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
-                {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                 'time': self.plate.time,
-                 'seconds': self.plate.seconds,
-                 'minutes': self.plate.minutes,
-                 'hours': self.plate.hours},
-                dims=('content', 'time'),
-                attrs=self.plate.attrs,
-                name=self.plate.name
-            )
-        return self._mean
+        samples = pd.Series(self.plate.sample.data).unique()
+        return xr.DataArray(
+            [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
+            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+             'time': self.plate.time,
+             'seconds': self.plate.seconds,
+             'minutes': self.plate.minutes,
+             'hours': self.plate.hours},
+            dims=('content', 'time'),
+            attrs=self.plate.attrs,
+            name=self.plate.name
+        )
 
-    @property
+    @cached_property
     def std(self) -> xr.DataArray:
         """Return sample standard deviation
 
@@ -223,34 +328,25 @@ class Assay:
         DataArray of fluorescence standard deviation of all active wells
         that belong to the same sample.
         """
-        if self._std is None:
-            samples = pd.Series(self.plate.sample.data).unique()
-            self._std = xr.DataArray(
-                [self.plate.sel(sample=sample).std(ddof=1, dim='content').data
-                 for sample in samples],
-                {'content': self.plate.indexes['content'].droplevel('well').unique(),
-                 'time': self.plate.time,
-                 'seconds': self.plate.seconds,
-                 'minutes': self.plate.minutes,
-                 'hours': self.plate.hours},
-                dims=('content', 'time'),
-                attrs=self.plate.attrs,
-                name=self.plate.name
-            )
-        return self._std
-
-    def _recompute_stats(self):
-        """Recompute mean and std
-
-        The properties are indeed computed lazily and all that is done here is set a
-        "dirty bit" to trigger recomputation when needed.
-        """
-        self._mean = None
-        self._std = None
+        samples = pd.Series(self.plate.sample.data).unique()
+        return xr.DataArray(
+            [self.plate.sel(sample=sample).std(ddof=1, dim='content').data
+             for sample in samples],
+            {'content': self.plate.indexes['content'].droplevel('well').unique(),
+             'time': self.plate.time,
+             'seconds': self.plate.seconds,
+             'minutes': self.plate.minutes,
+             'hours': self.plate.hours},
+            dims=('content', 'time'),
+            attrs=self.plate.attrs,
+            name=self.plate.name
+        )
 
     def plate_setup(self, conc: dict[str, float|Iterable]|None = None,
                     **kwargs: float|Iterable) -> xr.DataArray:
         """Define plate setup
+
+        DEPRECATED: Use Assay.setup
 
         This method generates a correctly indexed xr.DataArray that
         describes the plate setup in terms of concentrations of chemical
@@ -261,7 +357,7 @@ class Assay:
         To define the plate setup of four samples with 0, 2, 4, and 6 mM
         of species A and 1 mM of species B:
 
-        >>> concentrations = 1e-6 * assay.plate_setup(A=[0, 2, 4, 6], B=1)
+        >>> concentrations = 1e-3 * assay.plate_setup(A=[0, 2, 4, 6], B=1)
 
         Parameters
         ----------
@@ -273,13 +369,12 @@ class Assay:
 
         Returns
         -------
-        An xr.DataArray with dimensions 'content' (taken from Assay.plate)
+        An xarray DataArray with dimensions 'content' (taken from Assay.plate)
         and 'species', where each sample has species concentrations as
         provided in the method arguments.
         """
-        # TODO: could support ellipsis in conc values:
-        # species = [..., 8, 9, 10], species = [1, 2, 3, ...], species = [1, 2, ..., 10]
-        # But what would be the best default values for the ellipsis?
+        warnings.warn("Assay.plate_setup is deprecated."
+                      " Initial concentrations are stored in Assay.setup")
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
@@ -298,6 +393,8 @@ class Assay:
         error: Callable[[float], float]|None = None,
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
+
+        DEPRECATED: Use Assay.convert
 
         Parameters
         ----------
@@ -338,6 +435,8 @@ class Assay:
         error: Callable[[float], float]|None = None,
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
+
+        DEPRECATED: Use Assay.convert_relexation
 
         Parameters
         ----------
@@ -435,6 +534,8 @@ class Assay:
         pos_rfu=None, neg_rfu=None
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
+
+        DEPRECATED: Use Assay.convert_direct
 
         Transforms are based on the linear relations
 
@@ -570,10 +671,9 @@ class Assay:
         neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
         neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
-        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)  # FIXME: control ???
+        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='content', fill_value=0.)
 
         def from_rfu(rfu) :
-            #return neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
             return (neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
                     ).transpose(*rfu.dims[:-1], *pos_conc.dims, rfu.dims[-1])
         def to_rfu(conc):
