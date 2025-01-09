@@ -111,7 +111,7 @@ class Assay(mars.Assay):
         ax = fig.gca()
         ax.set_xlabel("Time [min]")
         ax.set_ylabel("RFU")
-        ax.set_title(self.plate.attrs["Test Name"])
+        ax.set_title(self.rfu.attrs["Test Name"])
         for sample, err, color in zip(self.mean, self.std, gradient(self.mean)):
             ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
             ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))

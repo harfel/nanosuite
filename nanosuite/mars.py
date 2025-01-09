@@ -29,10 +29,10 @@ class Assay:
     rfu_file: str
         Path of the associated xlsx file (read only)
 
-    plate: 2D xarray DataArray
+    rfu: 2D xarray DataArray
         Fluorescence values of all active wells and time points
 
-    full_plate: 2D xarray DataArray
+    all_rfu: 2D xarray DataArray
         Fluorescence values of all wells and time points
 
     active_wells: 1D xarray DataArray
@@ -45,8 +45,8 @@ class Assay:
         Initial concentrations in mol/liter for each sample
     """
     rfu_file: str
-    full_plate: xr.DataArray
-    plate: xr.DataArray
+    all_rfu: xr.DataArray
+    rfu: xr.DataArray
     injections: pd.Index
     setup: xr.DataArray|None = None
 
@@ -75,8 +75,8 @@ class Assay:
         """
         self.rfu_file = rfu_file
 
-        self.full_plate, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
-                                                                            groups or {})
+        self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
+                                                                         groups or {})
 
         # read assay setup if given
         if setup_file:
@@ -92,24 +92,24 @@ class Assay:
         elif isinstance(setup, dict):
             self.setup = xr.DataArray(
                 dims=['content', 'species'],
-                coords={'content': self.full_plate.indexes['content'].droplevel('well').unique(),
+                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique(),
                         'species': list(setup.keys())})
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
 
-        # reset self.full_plate index
+        # reset self.all_rfu index
         if self.setup is not None:
-            content = self.full_plate.indexes['content'].droplevel('group').to_frame()
+            content = self.all_rfu.indexes['content'].droplevel('group').to_frame()
             content['group'] = content.apply(
                 lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
 
             content.set_index('group', append=True, inplace=True)
             content = content.reorder_levels(['group', 'sample', 'well'])
             coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
-            self.full_plate = self.full_plate.assign_coords(coords=coord)
+            self.all_rfu = self.all_rfu.assign_coords(coords=coord)
             self.active_wells = self.active_wells.assign_coords(coords=coord)
 
-        self.plate = self.full_plate[self.active_wells]
+        self.rfu = self.all_rfu[self.active_wells]
 
     def read_setup(self, setup_file: str) -> xr.DataArray:
         """Read plate setup from excel file
@@ -147,7 +147,7 @@ class Assay:
         return xr.DataArray(concs, {'content': content, 'species': species})
 
     def read_rfu(self, rfu_file: str,
-                 groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # full_plate
+                 groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu
                                                               xr.DataArray,  # active_wells
                                                               pd.Index]:     # injections
         """Read fluoresence data from Excel
@@ -249,7 +249,7 @@ class Assay:
         injections = pd.Index([times[index] for index in inj_indexes], name="time")
 
         # from dataframe to xarray
-        full_plate = xr.DataArray(main_array,
+        all_rfu = xr.DataArray(main_array,
             {"content": df_multicontent, "time": times},
             name="RFU",
             attrs=attributes,).astype(float).assign_coords(
@@ -258,28 +258,28 @@ class Assay:
                 hours=('time', times/3600),
             )
 
-        active_wells = ~full_plate.well.isin(deactivated)
+        active_wells = ~all_rfu.well.isin(deactivated)
 
-        return full_plate, active_wells, injections
+        return all_rfu, active_wells, injections
 
     def __repr__(self) -> str:
         return f'<Assay "{self.rfu_file}">'
 
     def _repr_html_(self) -> str:
-        return self.plate._repr_html_() # pylint: disable=protected-access
+        return self.rfu._repr_html_() # pylint: disable=protected-access
 
     def deactivate(self, wells: str|list[str]) -> None:
         """Deactivate a well or list of wells
 
-        Activating and deactivating wells will set a new Assay.plate --
-        invalidating any reference to the previous plate attribute.
+        Activating and deactivating wells will set a new Assay.rfu --
+        invalidating any reference to the previous rfu attribute.
         """
         if isinstance(wells, str):
             wells = [wells]
         self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), False)
-        self.plate = self.full_plate[self.active_wells]
-        self.plate.attrs['deactivated_cells'] = ', '.join(
-            self.full_plate[~self.active_wells].well.values)
+        self.rfu = self.all_rfu[self.active_wells]
+        self.rfu.attrs['deactivated_cells'] = ', '.join(
+            self.all_rfu[~self.active_wells].well.values)
         if hasattr(self, 'mean'):
             del self.mean
         if hasattr(self, 'std'):
@@ -288,15 +288,15 @@ class Assay:
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
 
-        Activating and deactivating wells will set a new Assay.plate --
-        invalidating any reference to the previous plate attribute.
+        Activating and deactivating wells will set a new Assay.rfu --
+        invalidating any reference to the previous rfu attribute.
         """
         if isinstance(wells, str):
             wells = [wells]
         self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), True)
-        self.plate = self.full_plate[self.active_wells]
-        self.plate.attrs['deactivated_cells'] = ', '.join(
-            self.full_plate[~self.active_wells].well.values)
+        self.rfu = self.all_rfu[self.active_wells]
+        self.rfu.attrs['deactivated_cells'] = ', '.join(
+            self.all_rfu[~self.active_wells].well.values)
         if hasattr(self, 'mean'):
             del self.mean
         if hasattr(self, 'std'):
@@ -311,17 +311,17 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        samples = pd.Series(self.plate.sample.data).unique()
+        samples = pd.Series(self.rfu.sample.data).unique()
         return xr.DataArray(
-            [self.plate.sel(sample=sample).mean(dim='content').data for sample in samples],
-            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-             'time': self.plate.time,
-             'seconds': self.plate.seconds,
-             'minutes': self.plate.minutes,
-             'hours': self.plate.hours},
+            [self.rfu.sel(sample=sample).mean(dim='content').data for sample in samples],
+            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
+             'time': self.rfu.time,
+             'seconds': self.rfu.seconds,
+             'minutes': self.rfu.minutes,
+             'hours': self.rfu.hours},
             dims=('content', 'time'),
-            attrs=self.plate.attrs,
-            name=self.plate.name
+            attrs=self.rfu.attrs,
+            name=self.rfu.name
         )
 
     @cached_property
@@ -333,19 +333,29 @@ class Assay:
         DataArray of fluorescence standard deviation of all active wells
         that belong to the same sample.
         """
-        samples = pd.Series(self.plate.sample.data).unique()
+        samples = pd.Series(self.rfu.sample.data).unique()
         return xr.DataArray(
             [self.plate.sel(sample=sample).std(ddof=1, dim='content').data
              for sample in samples],
-            {'content': self.plate.indexes['content'].droplevel('well').unique(),
-             'time': self.plate.time,
-             'seconds': self.plate.seconds,
-             'minutes': self.plate.minutes,
-             'hours': self.plate.hours},
+            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
+             'time': self.rfu.time,
+             'seconds': self.rfu.seconds,
+             'minutes': self.rfu.minutes,
+             'hours': self.rfu.hours},
             dims=('content', 'time'),
-            attrs=self.plate.attrs,
-            name=self.plate.name
+            attrs=self.rfu.attrs,
+            name=self.rfu.name
         )
+
+    @property
+    def plate(self):
+        warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead")
+        return self.rfu
+
+    @property
+    def full_plate(self):
+        warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead")
+        return self.all_rfu
 
     def plate_setup(self, conc: dict[str, float|Iterable]|None = None,
                     **kwargs: float|Iterable) -> xr.DataArray:
@@ -384,7 +394,7 @@ class Assay:
         conc.update(kwargs)
         array = xr.DataArray(
             dims=['content', 'species'],
-            coords={'content': self.plate.indexes['content'].droplevel('well').unique(),
+            coords={'content': self.rfu.indexes['content'].droplevel('well').unique(),
                     'species': list(conc.keys())})
         for species, values in conc.items():
             array.loc[..., species] = values
@@ -468,17 +478,17 @@ class Assay:
         pos_rfu = (
             pos_rfu
             if pos_rfu is not None
-            else self.plate[self.plate.sample.isin(pos_conc.sample)].mean(axis=0)
+            else self.rfu[self.rfu.sample.isin(pos_conc.sample)].mean(axis=0)
         )
         neg_rfu = (
             neg_rfu
             if neg_rfu is not None
-            else self.plate[self.plate.sample.isin(neg_conc.sample)].mean(axis=0)
+            else self.rfu[self.rfu.sample.isin(neg_conc.sample)].mean(axis=0)
         )
         error = error if error is not None else lambda rfu: 1.
 
-        controls = self.plate[self.plate.sample.isin(pos_rfu.sample)
-                              | self.plate.sample.isin(neg_rfu.sample)]
+        controls = self.rfu[self.rfu.sample.isin(pos_rfu.sample)
+                              | self.rfu.sample.isin(neg_rfu.sample)]
 
         def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
             if r_1 == r_2:
@@ -580,12 +590,12 @@ class Assay:
         pos_rfu = (
             pos_rfu
             if pos_rfu is not None
-            else self.plate[self.plate.sample.isin(pos_conc.sample)].mean(axis=0)
+            else self.rfu[self.rfu.sample.isin(pos_conc.sample)].mean(axis=0)
         )
         neg_rfu = (
             neg_rfu
             if neg_rfu is not None
-            else self.plate[self.plate.sample.isin(neg_conc.sample)].mean(axis=0)
+            else self.rfu[self.rfu.sample.isin(neg_conc.sample)].mean(axis=0)
         )
 
         pos_conc = pos_conc.mean(axis=pos_conc.get_axis_num('sample'))
@@ -610,8 +620,8 @@ class Assay:
         """Compute transforms between RFU values and concentrations
 
         E.g.
-        >>> from_rfu, to_rfu = assay.convert(assay.plate.sample=="Sample X1",
-                                             assay_plate.sample=="Sample X10")
+        >>> from_rfu, to_rfu = assay.convert(assay.rfu.sample=="Sample X1",
+                                             assay_rfu.sample=="Sample X10")
 
         Parameters
         ----------
