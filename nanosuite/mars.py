@@ -570,13 +570,17 @@ class Assay:
         neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
         neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
-        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)
+        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='control', fill_value=0.)  # FIXME: control ???
 
         def from_rfu(rfu) :
+            #return neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
             return (neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
                     ).transpose(*rfu.dims[:-1], *pos_conc.dims, rfu.dims[-1])
         def to_rfu(conc):
-            return neg + (pos-neg) * (conc-neg_conc)/(pos_conc-neg_conc)
+            fraction = (conc-neg_conc)/(pos_conc-neg_conc)
+            if 'species' in fraction.dims:
+                fraction = fraction.mean(dim='species')
+            return fraction*(pos-neg) + neg
         return from_rfu, to_rfu
 
     def convert_relaxation(
