@@ -358,7 +358,7 @@ class Assay:
         """
         samples = pd.Series(self.rfu.sample.data).unique()
         return xr.DataArray(
-            [self.plate.sel(sample=sample).std(ddof=1, dim='content').data
+            [self.rfu.sel(sample=sample).std(ddof=1, dim='content').data
              for sample in samples],
             {'content': self.rfu.indexes['content'].droplevel('well').unique(),
              'time': self.rfu.time,
