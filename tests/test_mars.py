@@ -52,24 +52,37 @@ def test_plate_setup():
 def test_convert_accepts_one_arg():
     """Ensure Assay.convert can be called with one argument for pos_rfu"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../nanosuite/examples/edc_RFU.xlsx'),
-                  {'positive': ['Sample X17', 'Sample X18']})
+                  groups={'positive': ['Sample X17', 'Sample X18']})
     from_rfu, to_rfu = assay.convert(assay.plate.sel(group="positive"))
+
+    coord = assay.plate_setup(Signal=5).sel(species="Signal")
+
+    assert from_rfu(assay.plate).dims == ('content', 'time')
+    assert to_rfu(coord).dims == ('content', 'time')
 
 def test_convert_accepts_two_args():
     """Ensure Assay.convert can be called with two arguments for pos_rfu and neg_rfu"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../nanosuite/examples/edc_RFU.xlsx'),
-                  {'negative': ['Sample X11', 'Sample X12'],
-                   'positive': ['Sample X17', 'Sample X18']})
+                  groups={'negative': ['Sample X11', 'Sample X12'],
+                          'positive': ['Sample X17', 'Sample X18']})
     from_rfu, to_rfu = assay.convert(assay.plate.sel(group="positive"),
                                      assay.plate.sel(group="negative"))
+
+    coord = assay.plate_setup(Signal=5).sel(species="Signal")
+
+    assert from_rfu(assay.plate).dims == ('content', 'time')
+    assert to_rfu(coord).dims == ('content', 'time')
 
 def test_convert_accepts_four_args():
     """Ensure Assay.convert can be called with four arguments"""
     assay = Assay(os.path.join(os.path.dirname(__file__), '../nanosuite/examples/edc_RFU.xlsx'),
-                  {'negative': ['Sample X11', 'Sample X12'],
-                   'positive': ['Sample X17', 'Sample X18']})
-    neg_conc = 1e-9*xr.DataArray([10], {'content': ['Probe']})
-    pos_conc = 1e-9*xr.DataArray([10], {'content': ['Signal']})
+                  groups={'negative': ['Sample X11', 'Sample X12'],
+                          'positive': ['Sample X17', 'Sample X18']})
+    neg_conc = 1e-9*xr.DataArray([10], {'species': ['Probe']})
+    pos_conc = 1e-9*xr.DataArray([10], {'species': ['Signal']})
     from_rfu, to_rfu = assay.convert(assay.plate.sel(group="positive"),
                                      assay.plate.sel(group="negative"),
                                      neg_conc, pos_conc)
+
+    assert from_rfu(assay.plate).dims == ('content', 'species', 'time')
+    assert to_rfu(assay.plate_setup(Signal=5)).dims == ('content', 'time')

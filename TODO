@@ -1,6 +1,7 @@
-- assay._repr_html_
-= feature/new-assay
+- experiment setup from excel
 - support assay.plate - assay.mean
+- improve CRN.fit(vary_t0) semantics
+- set sensible crn.params['t0'] bounds with injectors
 
 
 revamped CRN

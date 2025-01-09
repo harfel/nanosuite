@@ -203,7 +203,7 @@ def p_var_def(p):
         if p[1].startswith('_'):
             raise ValueError(f"Rate constant not allowed to start with underscore: {p[1]}.")
         if p[1] == 't0':
-            raise ValueError(f"Rate constant not allowed to be called 't0'.")
+            raise ValueError("Rate constant not allowed to be called 't0'.")
         if p[1] in p.parser.context and p.parser.context[p[1]].value != p[3]:
             raise ValueError("Inconsistent values for rate constant {p[1]}.")
         p.parser.context[p[1]] = lmfit.Parameter(p[1], value=p[3], min=0)
@@ -216,7 +216,7 @@ def p_var_def(p):
         if p[1].startswith('_'):
             raise ValueError(f"Rate constant not allowed to start with underscore: {name}.")
         if p[1] == 't0':
-            raise ValueError(f"Rate constant not allowed to be called 't0'.")
+            raise ValueError("Rate constant not allowed to be called 't0'.")
         if p[1] not in p.parser.context:
             p.parser.context[p[1]] = lmfit.Parameter(p[1], value=1, min=0)
         p[0] = p[1]

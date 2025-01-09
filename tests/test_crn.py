@@ -2,9 +2,10 @@
 """
 import math
 import pytest
+import lmfit
+import numpy as np
 import xarray as xr
 from nanosuite import crn
-import lmfit
 
 
 def test_params_add():
@@ -325,3 +326,42 @@ def test_perform_burst_reactions_works_with_multiple_samples():
     })
     traj = model.integrate(init)
     assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()
+
+@pytest.mark.parametrize("conc, extra_conc", [
+    (xr.DataArray([1, 2], {'species': ['A', 'B']}), {}),
+    ({'A': 1, 'B': 2},                              {}),
+    (xr.DataArray([1], {'species': ['A']}),         {'B': 2}),
+    ({'A': 1},                                      {'B': 2}),
+])
+def test_state_accepts_scalar_values(conc, extra_conc):
+    model = crn.from_string("A + B -> C")
+    state = model.state(conc, **extra_conc)
+    assert state.sel(species='A') == 1
+    assert state.sel(species='B') == 2
+
+@pytest.mark.parametrize("conc, extra_conc", [
+    (xr.DataArray([[1, 2], [1, 3]], {'samples': ['Sample X1', 'Sample X2'], 'species': ['A', 'B']}),
+     {}),
+    ({'A': 1, 'B': [2, 3]}, {}),
+    (xr.DataArray([1], {'species': ['A']}), {'B': [2, 3]}),
+    ({'A': 1}, {'B': [2, 3]}),
+    (None, {'A': 1, 'B': [2, 3]})
+])
+def test_state_accepts_value_sequences(conc, extra_conc):
+    model = crn.from_string("A + B -> C")
+    state = model.state(conc, **extra_conc)
+    assert (state.sel(species='A') == 1).all()
+    assert state.sel(species='B')[0] == 2
+    assert state.sel(species='B')[1] == 3
+
+@pytest.mark.parametrize("conc, extra_conc", [
+    ({'A': [1, 2, 3], 'B': np.logspace(0, 2, 3)}, {}),
+    ({'A': np.linspace(1, 3, 3), 'B': np.logspace(0, 2, 3)}, {}),
+    ({'A': np.linspace(1, 3, 3)}, {'B': np.logspace(0, 2, 3)}),
+    (None, {'A': np.linspace(1, 3, 3), 'B': np.logspace(0, 2, 3)}),
+])
+def test_state_accepts_numpy_spaces(conc, extra_conc):
+    model = crn.from_string("A + B -> C")
+    state = model.state(conc, **extra_conc)
+    assert all(state.sel(species='A') == (1, 2, 3))
+    assert all(state.sel(species='B') == (1, 10, 100))
