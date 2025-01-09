@@ -20,5 +20,6 @@ setup(name='Nanosuite',
         "xarray",
         "scipy",
         "lmfit",
+        "ply",
       ]
 )

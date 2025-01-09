@@ -1,0 +1,139 @@
+- experiment setup from excel
+- support assay.plate - assay.mean
+- improve CRN.fit(vary_t0) semantics
+- set sensible crn.params['t0'] bounds with injectors
+
+
+revamped CRN
+============
+
+CRN subspecies concept
+----------------------
+CRN species can be partitioned into subspecies. Simulation are performed on the subspecies
+level (so that for example the subspecies RNA_mutant can react different from RNA_wildtype).
+In contrast, interaction with the CRN, such as setting up simulations and reporting 
+results are by default done on the species level, unless explicitly asked for.
+
+From the user point of view, CRN.species should represent partitions, whereas computations
+are performed on CRN.subspecies. (this seems related to pandas MultiIndexes)
+
+So, I need a mapping (injection) from a CRN species state to subspecies to perform any simulation
+on the subspecies. I then need a projection back from subspecies to CRN species -- which is just
+adding up subspecies concentrations.
+
+I can hold species and subspecies concentrations in the same trajectory xarray, and update
+species concentrations after each simulation:
+
+>>> for species, subspecies in crn.species_definitions:
+...    traj[traj.species==species] = traj[traj.species.isin(subspecies)].sum(axis='species')
+
+
+Currently:
+
+>>> traj = crn.integrate(initial_state)
+>>> for conc in traj:
+...    plt.plot(species.time, conc)
+
+If I want this to iterate on the CRN species level, the return value of CRN.integrate
+(traj) needs to provide its own __iter__ and should otherwise behave like the original
+DataArray. A property traj.subspecies could return an alternative iterator:
+
+>>> traj = crn.integrate(initial_state)
+>>> for conc in traj.subspecies:
+...    plt.plot(species.time, conc)
+
+I need to learn how iteration is done in xarray and how it plays together with numpy views...
+
+
+CRN instantaneous reactions
+---------------------------
+    A + B -> X; k=inf
+    A + C -> Y; k
+
+da/dt = -a*b - a*c
+db/dt = -a*b
+dc/dt = -a*c
+dx/dt = a*b
+dy/dt = a*c
+
+for x = [ 1,    1,    3,   0,   0]
+d/dt =  [-4,   -1,   -3,   1,   3]
+        [-1, -.25, -.75, .25, .75]
+res =   [ 0,  .75. 2.25, .25, .75]
+
+CRN DSL
+-------
+
+    A contains imp1 with p=0.1 
+               imp2 with q=0.3
+
+    A -> X
+    A [imp1] -> Y; k=inf
+    A [imp2] -> Z; k=1
+
+
+
+    probe contains impure
+
+    probe + input -> intermediate + protector
+    probe [impure] + input -> stagnation
+
+
+taj.sel(species="probe")
+taj.sel(species="probe_impure")
+taj.sel(species="probe_rest")
+
+
+    input contains mutation rest wildtype
+
+    probe + input [mutation] -> intermediate_mu; k = 1e7
+    probe + input -> intermediate_wt; k = 1e6
+
+traj.sel(species="input")
+traj.sel(species="input_mutation")
+traj.sel(species="input_wildtype")
+
+
+
+
+new Assay thoughts
+==================
+
+I need a good treatment of errors to support quantitative fits. There are multiple sources of
+errors: (a) measurement errors, (b) repeat errors or intra-sample errors, (c) inter-sample errors
+or sample errors for short.
+
+Measurement errors are the measurement noise associated with the signal from a single well.
+They superimpose the signal and I can assume them to occur generally on a faster time scale than
+reactions
+
+Repeat errors are differences between multiple measurements obtained from the same sample, usually
+by distributing the sample into several wells.
+
+Sample errors are differences between different samples that ought to have the same content.
+
+
+Assay should accept URL or file handle
+
+Create property Assay.contents to declare plate layout.
+Assay.calibrate can then simply be called with a group or sample name.
+Assay.fit will should work with the default contents/calibration
+
+
+assay = Assay('path.xlsx')
+assay.contents = xr.DataArray(
+    [
+        ..
+    ],
+    { 'content': [...],
+      'species': [...]}
+)
+
+assay.calibrate(assay.plate.sel(sample="Sample X16"), assay.plate.sel(sample="Sample X2"))
+
+model = crn.from_string("""
+    A + B -> C
+""")
+
+fit = assay.fit(model, positive="Sample X23", negative="Sample X2")
+model.params = fit.params
