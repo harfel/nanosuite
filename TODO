@@ -1,3 +1,6 @@
+- provide CRN.stoichiometry_matrix property
+- write equilibration method
+= feature-crn-equilibrate
 - experiment setup from excel
 - support assay.plate - assay.mean
 - improve CRN.fit(vary_t0) semantics

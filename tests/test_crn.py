@@ -307,6 +307,63 @@ def test_integrate_teval_accepts_scalar_arrays():
     assert traj.time[-1] == 4
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+def test_equilibrate_reversible():
+    """Ensure equilibrium of reversible reactions is accurate"""
+    model = crn.from_string("A <=> B ; kf=2, kb=1")
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert eq.sum() == state.sum()
+    assert conc_ratio == pytest.approx(rate_ratio)
+
+def test_equilibration_irreversible():
+    """Ensure equilibrium of reversible reactions is accurate"""
+    model = crn.from_string("A -> B ; k=2")
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    assert eq.sel(species='A') == pytest.approx(0)
+    assert eq.sel(species='B') == pytest.approx(state.sel(species='A'))
+
+def test_equilibrate_burst():
+    """Ensure equilibrium works with burst reactions"""
+    model = crn.from_string("""
+        A -> B ; k=inf
+        B <=> C ; kf = 1, kb = 2
+    """)
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='C') / eq.sel(species='B')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert conc_ratio == pytest.approx(rate_ratio)
+
+def test_equilibrate_circular_burst():
+    """Ensure equilibrium refuses circular burst reactions"""
+    model = crn.from_string("A <=> B ; kf=inf, kb=inf")
+    state = model.state(A=10)
+
+    with pytest.raises(ValueError):
+        eq = model.equilibrate(state)
+
+def test_equilibrate_subspecies():
+    model = crn.from_string("""
+        A contains reactive with p_A = 0.5
+        A [reactive] <=> B ; kf = 1, kb = 2
+    """)
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / (0.5*eq.sel(species='A'))
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert conc_ratio == pytest.approx(rate_ratio)
+
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""
     model = crn.from_string("A + B -> C; k=inf")
