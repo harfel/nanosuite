@@ -119,7 +119,7 @@ def p_crn(p):
            | statement crn
     """
     species_defs = {} if len(p) == 2 else dict(p[2].species_defs)
-    if isinstance(p[1], (Reaction, BalancedReaction)):
+    if isinstance(p[1], Reaction):
         if len(p) == 2:
             p[0] = CrnDef([p[1]], species_defs)
         else:
@@ -152,17 +152,17 @@ def p_reaction(p):
     if len(p) == 4 and p[2] == t_RIGHT_ARROW:
         name = f'_k_{len(p.parser.context)+1}'
         p.parser.context[name] = lmfit.Parameter(name, value=1, min=0)
-        p[0] = Reaction(educts=p[1], products=p[3], rate=name)
+        p[0] = Reaction(educts=p[1], products=p[3], forward=name, backward=None)
     elif len(p) == 6:
-        p[0] = Reaction(educts=p[1], products=p[3], rate=p[5])
+        p[0] = Reaction(educts=p[1], products=p[3], forward=p[5], backward=None)
     elif len(p) == 4 and p[2] == t_DOUBLE_ARROW:
         fname = f'_k_{len(p.parser.context)+1}'
         bname = f'_k_{len(p.parser.context)+2}'
         p.parser.context[fname] = lmfit.Parameter(fname, value=1, min=0)
         p.parser.context[bname] = lmfit.Parameter(bname, value=1, min=0)
-        p[0] = BalancedReaction(educts=p[1], products=p[3], forward=fname, backward=bname)
+        p[0] = Reaction(educts=p[1], products=p[3], forward=fname, backward=bname)
     else:
-        p[0] = BalancedReaction(educts=p[1], products=p[3], forward=p[5], backward=p[7])
+        p[0] = Reaction(educts=p[1], products=p[3], forward=p[5], backward=p[7])
 
 def p_reactants(p):
     """reactants : species
@@ -281,9 +281,7 @@ def p_error(t):
 FractionDef = namedtuple('FractionDef', ['suffix', 'fraction'])
 SpeciesDef = namedtuple('SpeciesDef', ['species', 'subspecies', 'remains'])
 Species  =namedtuple('Species', ['name', 'suffix'])
-Reaction = namedtuple('Reaction', ['educts', 'products', 'rate'])
-BalancedReaction = namedtuple('BalancedReaction',
-                               ['educts', 'products', 'forward', 'backward'])
+Reaction = namedtuple('Reaction', ['educts', 'products', 'forward', 'backward'])
 CrnDef = namedtuple('CrnDef', ['reactions', 'species_defs'])
 
 
@@ -297,15 +295,12 @@ def replace_name_placeholders(crn_def, variables):
                   if (idx_str:=str(idx)) not in bound_nums]
 
     for reaction in crn_def.reactions:
-        if isinstance(reaction, Reaction):
-            if not reaction.rate.startswith('_'):
-                continue
-            variables[reaction.rate].name = f'k{free_nums.pop(0)}'
-        else:
-            if not reaction.forward.startswith('_'):
-                continue
-            num = free_nums.pop(0)
-            variables[reaction.forward].name = f'kf{num}'
+        if not any(name and name.startswith('_') for name in (reaction.forward, reaction.backward)):
+            continue
+        num = free_nums.pop(0)
+        if reaction.forward.startswith('_'):
+            variables[reaction.forward].name = f'kf{num}' if reaction.backward else f'k{num}'
+        if reaction.backward and reaction.backward.startswith('_'):
             variables[reaction.backward].name = f'kb{num}'
 
     for species_def in crn_def.species_defs.values():
@@ -346,10 +341,8 @@ def parse(string: str) -> CrnDef:
         )
 
     crn_def = CrnDef([Reaction(stratify_species(rct.educts), stratify_species(rct.products),
-                               parser.context[rct.rate])
-                      if isinstance(rct, Reaction) else
-                      BalancedReaction(stratify_species(rct.educts), stratify_species(rct.products),
-                                       parser.context[rct.forward], parser.context[rct.backward])
+                               parser.context[rct.forward],
+                               parser.context[rct.backward] if rct.backward else None)
                       for rct in crn_def.reactions],
                      {species: SpeciesDef(species,
                                           {f'{species}_{suffix}': parser.context[frac]

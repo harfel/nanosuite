@@ -20,6 +20,17 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
+def test_reversible_encoding():
+    ode1 = crn.from_string("""
+        A <=> B; kf, kb
+    """)
+    ode2 = crn.from_string("""
+        A -> B; kf
+        B -> A; kb
+    """)
+
+    assert ode1.reactions == ode2.reactions
+
 def test_repr_html():
     """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
@@ -32,18 +43,18 @@ def test_repr_html():
             <td style="text-align: right">A_pure + B</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">C</td>
-            <td style="text-align: left">k1 = 1.1</td>
+            <td style="text-align: left" colspan="2">k1 = 1.1</td>
         </tr>
         <tr>
             <td style="text-align: right">C + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">B + E</td>
-            <td style="text-align: left">k2 = 1.2</td>
+            <td style="text-align: left" colspan="2">k2 = 1.2</td>
         </tr><tr>
             <td style="text-align: right">A_impure + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">E</td>
-            <td style="text-align: left">k = inf</td>
+            <td style="text-align: left" colspan="2">k = inf</td>
         </tr></table>'''
     assert rep == ''.join(line.strip() for line in expected.split('\n'))
 
@@ -60,7 +71,7 @@ def test_from_string_reversible():
     test_crn = crn.from_string("""
         A + B <=> C
     """)
-    assert len(test_crn.reactions) == 2
+    assert len(test_crn.reactions) == 1
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
@@ -102,9 +113,9 @@ def test_from_string_repeated_reversible_rates():
         A + B <=> C; kf1 = 1e7, 1e3
         C + D <=> E; kf1, kb = 1e3
         """)
-    assert len(model.params) == 4
-    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)]
-    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)]
+    assert len(model.params) == 4  # three rate constants plus t0
+    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)][0]
+    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
 
 def test_implicit_rate_names():
@@ -237,7 +248,8 @@ def test_from_string_real_formats(value):
 
 def test_add_reaction_respects_catalysts():
     network = crn.CRN()
-    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)), rate=lmfit.Parameter('k'))
+    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)),
+                         forward_rate=lmfit.Parameter('k'))
     assert len(network.species) == 3
 
 def test_integrate_teval_is_optional():
