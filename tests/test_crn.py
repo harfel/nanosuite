@@ -58,6 +58,17 @@ def test_repr_html():
         </tr></table>'''
     assert rep == ''.join(line.strip() for line in expected.split('\n'))
 
+@pytest.mark.parametrize("reaction, stoichiometry_matrix", [
+    ("""A -> Z""", np.array([[-1, 1]])),
+    ("""2 A -> Z""", np.array([[-2, 1]])),
+    ("""2 A + B -> 3 A""", np.array([[1, -1]])),
+    ("""A -> B
+        B + C <=> Z""", np.array([[-1, 1, 0, 0],[0, -1, -1, 1]])),
+])
+def test_stoichiometry_matrix(reaction, stoichiometry_matrix):
+    test_crn = crn.from_string(reaction)
+    assert (test_crn.stoichiometry_matrix == stoichiometry_matrix).all()
+
 def test_from_string_irreversible():
     """Ensure correct parsing of irreversible reactions"""
     test_crn = crn.from_string("""

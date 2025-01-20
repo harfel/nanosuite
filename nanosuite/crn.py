@@ -122,6 +122,18 @@ class CRN:
         }
 
     @property
+    def stoichiometry_matrix(self) -> np.ndarray:
+        def stoichiometry(species, reactants):
+            for some_species, stoich in reactants:
+                if some_species == species:
+                    return stoich
+            else:
+                return 0
+        return np.array([[stoichiometry(species, products) - stoichiometry(species, educts)
+                          for species in self.species]
+                         for (educts, products) in self.reactions])
+
+    @property
     def complex_graph(self) -> np.ndarray:
         """Complex graph of the reaction network.
 
