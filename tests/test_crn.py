@@ -343,7 +343,7 @@ def test_equilibrate_reversible():
     assert conc_ratio == pytest.approx(rate_ratio)
 
 def test_equilibration_irreversible():
-    """Ensure equilibrium of reversible reactions is accurate"""
+    """Ensure equilibrium of irreversible reactions is accurate"""
     model = crn.from_string("A -> B ; k=2")
     state = model.state(A=10)
 

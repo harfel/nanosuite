@@ -4,11 +4,12 @@ from copy import deepcopy
 from typing import Callable, Iterable, Sequence
 from itertools import chain
 import warnings
-import xarray as xr                   # type: ignore
+import xarray as xr                      # type: ignore
 import numpy as np
-import pandas as pd                   # type: ignore
-from scipy.integrate import solve_ivp # type: ignore
-import lmfit                          # type: ignore
+import pandas as pd                      # type: ignore
+from scipy.integrate import solve_ivp    # type: ignore
+from scipy.optimize import basinhopping  # type: ignore
+import lmfit                             # type: ignore
 from . import crn_parser
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -123,15 +124,37 @@ class CRN:
 
     @property
     def stoichiometry_matrix(self) -> np.ndarray:
+        """Stoichiometry matrix of the reaction system
+
+        This returns an n x m matrix with one row for each reaction
+        (in the order they are stored in self.reactions). Each column
+        denotes the stoichiometric coefficient of a species (in the
+        order they are stored in self.species). Positive coefficients
+        denotes products whereas negative coefficients denote educts.
+        A coefficient of zero implies either that a species is not
+        involved in the reaction or that it acts catalytically.
+        """
         def stoichiometry(species, reactants):
             for some_species, stoich in reactants:
                 if some_species == species:
                     return stoich
-            else:
-                return 0
+            return 0
         return np.array([[stoichiometry(species, products) - stoichiometry(species, educts)
                           for species in self.species]
                          for (educts, products) in self.reactions])
+
+    @property
+    def equilibrium_constants(self) -> np.ndarray:
+        """Equilibrium constants of the reactions
+
+        This returns a vector of equilibrium constants for each
+        reaction. Irreversible reactions have an equilibrium constant
+        equal to infinity.
+        """
+        return np.array([
+            self.params[forward]/self.params[backward] if backward else float('inf')
+            for (forward, backward) in self.reactions.values()
+        ])
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -332,14 +355,40 @@ class CRN:
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
 
+        Uses gradient decent to find the equilibrium state for a given
+        initial condition. The implementation follows the procedure
+        discussed in https://chemistry.stackexchange.com/questions/153869/
+
         Parameters
         ----------
         initial_condition: xarray.DataArray
             state vector to equilibrate
         """
-        raise RuntimeError("FIXME: not implemented")
-        # See https://chemistry.stackexchange.com/questions/153869/numerically-solving-chemical-equilibrium-equations#answer-177284
-        # for a nice approach
+        # pylint: disable=invalid-name
+        C = self.state(initial_condition).values
+        N = self.stoichiometry_matrix
+        with np.errstate(divide='ignore', invalid='ignore'):
+            lnK = np.log(self.equilibrium_constants)
+
+        def equilib(X):
+            Y = N.T @ X + C
+            bounds = 0
+            for y in Y:
+                if y < 0:
+                    bounds += (1-y)*1e14
+            if bounds > 0:
+                return bounds
+            with np.errstate(divide='ignore', invalid='ignore'):
+                Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
+            Z = np.where(np.isnan(Z), 0, Z)
+            return np.linalg.norm(Z)
+
+        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxier': 1000}}
+        minimizer_kwargs.update(options)
+
+        result = basinhopping(equilib, np.zeros(N.shape[0],), niter=100,
+                              minimizer_kwargs = minimizer_kwargs)
+        return xr.DataArray(N.T @ result.x + C, {'species': self.species})
 
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable[float]|float|None = None,
