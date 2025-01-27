@@ -1,5 +1,5 @@
-- provide CRN.stoichiometry_matrix property
-- write equilibration method
+- equilibrate irreversible reactions
+- equilibrate burst reactions
 = feature-crn-equilibrate
 - experiment setup from excel
 - support assay.plate - assay.mean
