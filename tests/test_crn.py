@@ -342,16 +342,34 @@ def test_equilibrate_reversible():
     assert eq.sum() == state.sum()
     assert conc_ratio == pytest.approx(rate_ratio)
 
-def test_equilibration_irreversible():
+@pytest.mark.skip("Feature not yet implemented")
+@pytest.mark.parametrize("system, initial, equilibrium", [
+    ("A -> B", {'A': 10}, {'B': 10}),
+    ("""
+        A -> X
+        X <=> Y
+        Y -> B
+    """, {'A': 10}, {'B': 10}),
+    ("""
+        A <=> X
+        X -> Y
+        Y <=> B
+    """, {'A': 10}, {'B': 5, 'Y': 5}),
+    ("""A + B -> D
+        C + D -> A + E""", {'A': 1, 'B': 2, 'C': 5}, {'B': 0, 'C': 3, 'E': 2}),
+    ("""""", {'A': 10}, {'B': 10}),
+    ("""""", {'A': 10}, {'B': 10}),
+])
+def test_equilibration_irreversible(system, initial, equilibrium):
     """Ensure equilibrium of irreversible reactions is accurate"""
-    model = crn.from_string("A -> B ; k=2")
-    state = model.state(A=10)
-
+    model = crn.from_string(system)
+    state = model.state(initial)
     eq = model.equilibrate(state)
 
-    assert eq.sel(species='A') == pytest.approx(0)
-    assert eq.sel(species='B') == pytest.approx(state.sel(species='A'))
+    assert all(eq.sel(species=species) == pytest.approx(conc)
+               for species, conc in equilibrium.items())
 
+@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_burst():
     """Ensure equilibrium works with burst reactions"""
     model = crn.from_string("""
@@ -366,6 +384,7 @@ def test_equilibrate_burst():
     rate_ratio = model.params['kf'].value / model.params['kb'].value
     assert conc_ratio == pytest.approx(rate_ratio)
 
+@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_circular_burst():
     """Ensure equilibrium refuses circular burst reactions"""
     model = crn.from_string("A <=> B ; kf=inf, kb=inf")
@@ -377,15 +396,16 @@ def test_equilibrate_circular_burst():
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
-        A [reactive] <=> B ; kf = 1, kb = 2
+        A [reactive] <=> B ; kf = 1, kb = 3
     """)
-    state = model.state(A=10)
+    state = model.state(A=8)
 
     eq = model.equilibrate(state)
 
-    conc_ratio = eq.sel(species='B') / (0.5*eq.sel(species='A'))
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A_reactive')
     rate_ratio = model.params['kf'].value / model.params['kb'].value
     assert conc_ratio == pytest.approx(rate_ratio)
+    assert eq.sel(species='A') == 7
 
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""

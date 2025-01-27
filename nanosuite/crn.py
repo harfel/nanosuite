@@ -105,7 +105,8 @@ class CRN:
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left" colspan="2">{forward} = {self.params[forward].value:.2g}</td>
+                    <td style="text-align: left"
+                        colspan="2">{forward} = {self.params[forward].value:.2g}</td>
                 </tr>'''
                 for reaction, (forward, backward) in self.reactions.items()
             )
@@ -151,10 +152,11 @@ class CRN:
         reaction. Irreversible reactions have an equilibrium constant
         equal to infinity.
         """
-        return np.array([
-            self.params[forward]/self.params[backward] if backward else float('inf')
-            for (forward, backward) in self.reactions.values()
-        ])
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.array([
+                self.params[forward]/self.params[backward] if backward else float('inf')
+                for (forward, backward) in self.reactions.values()
+            ])
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -312,7 +314,7 @@ class CRN:
         elif isinstance(conc, dict) and conc:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
         elif isinstance(conc, dict):
-            state = xr.DataArray(len(self.species)*[0], {'species': self.species})
+            state = xr.DataArray(len(self.species)*[0.], {'species': self.species})
         elif conc.ndim == 1 and samples:
             state = conc.expand_dims({'sample': samples}, 0)
         else:
@@ -367,17 +369,15 @@ class CRN:
         # pylint: disable=invalid-name
         C = self.state(initial_condition).values
         N = self.stoichiometry_matrix
-        with np.errstate(divide='ignore', invalid='ignore'):
-            lnK = np.log(self.equilibrium_constants)
+        lnK = np.log(self.equilibrium_constants)
+
+        if np.isinf(lnK).any():
+            raise ValueError("Only fully reversible CRNs can be equilibrated.")
 
         def equilib(X):
             Y = N.T @ X + C
-            bounds = 0
-            for y in Y:
-                if y < 0:
-                    bounds += (1-y)*1e14
-            if bounds > 0:
-                return bounds
+            if out_of_bounds := Y[Y<0].sum():
+                return (1-out_of_bounds)*1e14
             with np.errstate(divide='ignore', invalid='ignore'):
                 Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
             Z = np.where(np.isnan(Z), 0, Z)
@@ -429,6 +429,7 @@ class CRN:
             2D or 3D DataArray of trajectories. See above.
         """
         def stratify_t_eval(times):
+            # pylint: disable=too-many-return-statements
             if isinstance(times, tuple):
                 return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
                                             dtype=float),
@@ -700,6 +701,14 @@ class PartitionedCRN(CRN):
               **extra_conc: float|Sequence[float]) -> xr.DataArray:
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
+
+    def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
+        initial = self.state(initial_condition)
+        initial_subspecies = xr.DataArray(initial.values @ self.split_species,
+                                          initial.coords)
+        eq_subspecies = super().equilibrate(initial_subspecies, **options)
+        return xr.DataArray(self.merge_subspecies @ eq_subspecies.values, eq_subspecies.coords,
+                            name=eq_subspecies.name)
 
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable|float|None = None,
