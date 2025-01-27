@@ -98,17 +98,16 @@ class CRN:
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&rlhar</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left">{forward} = {self.params[forward].value:.2g}</td>
-                    <td style="text-align: left">{backward} = {self.params[backward].value:.2g}</td>
-                </tr>''' if backward else
+                    <td style="text-align: left">{fw} = {self.params[fw].value:.2g}</td>
+                    <td style="text-align: left">{bw} = {self.params[bw].value:.2g}</td>
+                </tr>''' if bw else
                 f'''<tr>
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left"
-                        colspan="2">{forward} = {self.params[forward].value:.2g}</td>
+                    <td style="text-align: left" colspan="2">{fw} = {self.params[fw].value:.2g}</td>
                 </tr>'''
-                for reaction, (forward, backward) in self.reactions.items()
+                for reaction, (fw, bw) in self.reactions.items()
             )
             + '</table>'
         )
@@ -383,7 +382,7 @@ class CRN:
             Z = np.where(np.isnan(Z), 0, Z)
             return np.linalg.norm(Z)
 
-        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxier': 1000}}
+        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxiter': 1000}}
         minimizer_kwargs.update(options)
 
         result = basinhopping(equilib, np.zeros(N.shape[0],), niter=100,
