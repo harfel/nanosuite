@@ -49,10 +49,12 @@ class Assay:
     rfu: xr.DataArray
     injections: pd.Index
     setup: xr.DataArray|None = None
+    sample_map: pd.DataFrame|None = None
 
 
     def __init__(self, rfu_file: str, setup_file: str|None = None, *,
                  setup: xr.DataArray|None = None,
+                 sample_map: pd.DataFrame|None = None,
                  groups: dict[str, list[str]|slice]|None = None):
         """A plate reader assay
 
@@ -78,16 +80,20 @@ class Assay:
         self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
                                                                          groups or {})
 
+        self.sample_map = sample_map  # may be overwritten by setup_file
+
         # read assay setup if given
         if setup_file:
             if groups:
-                raise ValueError("Arguments setup and groups are mutually exclusive")
+                raise ValueError("Arguments setup_file and groups are mutually exclusive")
             if setup:
-                raise ValueError("Arguments setup and concentrations are mutually exclusive")
+                raise ValueError("Arguments setup_file and setup are mutually exclusive")
+            if sample_map:
+                raise ValueError("Arguemnts setup_file and sample_map are mutually exclusive")
             self.setup = self.read_setup(setup_file)
         elif isinstance(setup, xr.DataArray):
             if groups:
-                raise ValueError("Arguments concentrations and groups are mutually exclusive")
+                raise ValueError("Arguments setup and groups are mutually exclusive")
             self.setup = setup
         elif isinstance(setup, dict):
             self.setup = xr.DataArray(
@@ -134,17 +140,31 @@ class Assay:
         as chemical species. Concentrations of the latter can be provided in
         mM, uM, nM, pM or fM.
         """
-        df = pd.read_excel(setup_file, sheet_name="sample_preparations")
+        df = pd.read_excel(setup_file, sheet_name='assay_settings')
+        attrs = dict(df.to_dict('tight')['data'])
+
+        df = pd.read_excel(setup_file, sheet_name='sample_preparations')
         # generate groups
-        content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(),
-                                           names=['group', 'sample'])
-        # TODO: generate portmaps
+        content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
         units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
-        species = df.columns[-2*len(units)::2]
-        concs = df[df.columns[1-2*len(units)::2]]
+        self.sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
+        concs = df[df.columns[1-2*len(units)::2]].set_index(content)
+        concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         concs *= np.array([factors[u] for u in units])
-        return xr.DataArray(concs, {'content': content, 'species': species})
+        # FIXME: decide whether this is placed well here...
+        # self.abstract_species_classes = [cls for cls in self.sample_map.columns
+        #                                  if cls not in set(self.sample_map.values.flatten())]
+
+        for species_class in self.sample_map.columns:
+            alternatives = pd.Series(self.sample_map[species_class].unique())
+            for species in alternatives:
+                concs[species] = concs[self.sample_map[species_class]==species][species_class]
+        concs.fillna(0., inplace=True)
+
+        return xr.DataArray(concs,
+                            {'content': content, 'species': concs.columns},
+                            name='concentrations', attrs=attrs)
 
     def read_rfu(self, rfu_file: str,
                  groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu

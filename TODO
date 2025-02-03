@@ -1,9 +1,91 @@
-- portmap plate setup to CRN
+- implement parameter map
 - simplify RFU conversion
 - implement hierarchical indexing
 = feature/new-assay
+- CRN.equilibrate needs to accept the same types of state as CRN.integrate (i.e. multiple samples)
 - support assay.plate - assay.mean
 - improve CRN.fit(vary_t0) semantics
 - set sensible crn.params['t0'] bounds with injectors
 - complete feature-crn-equilibrate
 = 0.3.0
+
+
+Port mapping
+============
+
+Assay samples can use different "versions" of molecules. E.g. "Input" might be "Input_1" in
+sample group one, but "Input_2" in sample group two. I want to map both of these against
+"Input" where "Input" is given in a model.
+
+Consider the model
+
+model = ns.crn.from_string("Input + Probe -> Signal; k")
+
+For sample group one, this should translate into
+
+    "Input_1 + Probe -> Signal; k_1"
+
+and for group two, it should translate into
+
+    "Input_2 + Probe -> Signal; k_2"
+
+
+I need to determine how to map species names in the model to species in the assay (relatively easy)
+and I need to work out the extent of parameters, i.e. which parameters are equal among different
+samples (tricky).
+
+
+Four options
+============
+1. Assay.setup uses exact species
+    PROS
+        - Assay shows exactly what is in each well
+    CONS
+        - Need to convert to get the conceptual setup
+        - Leads to high dimensional state spaces
+
+2. Assay.setup uses species types
+    PROS
+        - Assay setup closer to a conceptual model
+    CONS
+        - Harder to programmatically detect differences between samples
+
+3. Assay.setup uses both exact species and species types combined
+    PROBABLY THE BEST
+    PROS
+        - Combines the advantages of 1 and 2 transparently
+        - Most convenient to access species information
+    CONS
+        - Difficult to get the physically relevant subset
+        - Most difficult to do integration and fitting
+
+4. Assay.setup uses both exact species and species types separately
+    PROBABLY THE WORST
+    PROS
+        - Access to both exact and conceptual plate setup
+    CONS
+        - Having two quite similar setup informations is confusing
+
+Option 3 is the best!
+
+
+CRNs should be fitted on the level of species_classes, where the CRN is defined.
+Assay.setup already provides the correct initial condition for the CRN integration.
+I need to introduce a mapping of reaction rate constant names to samples in the
+integration. This mapping is used in CRN.get_complex_adjacency.
+After integration, I need to set concrete species concentrations from the values
+of species_class concentrations.
+I need to make sure that this also occurs on the level of subspecies and
+subspecies_classes.
+
+The difficulty is that the information is partially spread over Assay and CRN:
+
+The Assay defines the boundaries of rate constants among content. The actual
+rate constants, however, are defined in CRN. The CRN defines subspecies_classes,
+but the actual subspecies come from Assay.sample_map.
+
+To solve this, I introduce ParameterMap objects which are defined over (Assay x CRN) combinations.
+ParameterMaps organise the allocation of CRN parameters to Assay samples. Currently,
+CRN.params contains a mapping from rate constant names to Parameter objects. I need a
+layer of indirection, similar to Assay.sample_map that maps rate_constant_class names to
+rate_constant names specific to samples.
