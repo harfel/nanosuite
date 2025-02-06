@@ -1,11 +1,13 @@
 """Unit tests for crn
 """
 import math
+from pathlib import Path
 import pytest
 import lmfit
 import numpy as np
 import xarray as xr
 from nanosuite import crn
+from nanosuite.mars import Assay
 
 
 def test_params_add():
@@ -465,3 +467,27 @@ def test_state_accepts_numpy_spaces(conc, extra_conc):
     state = model.state(conc, **extra_conc)
     assert all(state.sel(species='A') == (1, 2, 3))
     assert all(state.sel(species='B') == (1, 10, 100))
+
+def test_parameter_map():
+    "Assert that parameter map returns correct shape"
+    rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
+    setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
+    assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    system = crn.from_string("A <=> B; k1, k2")
+
+    mapping = system.parameter_map(assay)
+
+    assert mapping.shape == (len(assay.setup.content), len(system.params))
+    assert mapping.loc[("Responses", "Sample X1"), 'k1'].name == 'k1_a'
+    assert mapping.loc[("Responses", "Sample X7"), 'k1'].name == 'k1_b'
+    assert mapping.loc[("Negative", "Sample X10"), 'k1'].name == 'k1_a'
+
+
+"""
+CRN.parameter_map:
+- behaviour should be backward compatible if parameters are identical for all samples
+- any combination of species should by default introduce a boundary for all parameters
+
+Parameter map:
+- assign new rate constant/names
+"""

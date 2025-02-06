@@ -1,6 +1,7 @@
 """Chemical reaction networks
 """
 from copy import deepcopy
+import math
 from typing import Callable, Iterable, Sequence
 from itertools import chain
 import warnings
@@ -11,6 +12,7 @@ from scipy.integrate import solve_ivp    # type: ignore
 from scipy.optimize import basinhopping  # type: ignore
 import lmfit                             # type: ignore
 from . import crn_parser
+from .mars import Assay
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
@@ -325,6 +327,58 @@ class CRN:
         for species, val in extra_conc.items():
             state.loc[..., species] = val
         return state
+
+    def parameter_map(self, assay: Assay) -> pd.DataFrame:
+        """Map of parameters for assay samples
+
+        The method generates a DataFrame with specialized parameters
+        for each sample. Parameters are shared among samples that
+        have identical setup in the Assay.sample_map. If the sample_map
+        of two samples differ, they are assigned distinct parameters.
+        """
+        def generate_suffixes(samples):
+            length = int(math.log(len(samples), 26) + 1)
+            for idx, _ in enumerate(samples):
+                suff = []
+                for __ in range(length):
+                    suff.append(ord('a') + (idx % 26))
+                    idx //= 26
+                yield ''.join(chr(s) for s in reversed(suff))
+
+        if assay.setup is None:
+            raise ValueError("No setup is defined for the assay.")
+        if assay.sample_map is None:
+            # This path should never be taken...
+            raise RuntimeError("The assay does not define a sample_map.")
+
+        # FIXME: this does not work if samples differ only by medium or buffer
+        mapping = pd.DataFrame([[None for __ in self.params]
+                                for _ in assay.setup.content],
+                               columns=list(self.params),
+                               index=assay.setup.indexes['content'])
+
+        # generate parameter sets for each unique species combination
+        sample_sets = pd.DataFrame(assay.sample_map.drop_duplicates()).replace([None], [''])
+        sample_sets.loc[:, 'params'] = None
+        for sample, suffix in zip(sample_sets.index, generate_suffixes(sample_sets.index)):
+            params = lmfit.Parameters()
+            for name, value in self.params.items():
+                name = f'{name}_{suffix}'
+                params[name] = deepcopy(value)
+                params[name].name = name
+            sample_sets.at[sample, 'params'] = params
+
+        # assign parameter set to all matching samples
+        for _, setup in sample_sets.iterrows():
+            samples = (assay.sample_map.replace([None], [''])
+                       == setup[assay.sample_map.columns]).all(axis=1)
+            for sample in samples[samples == True].index:
+                for name, value in zip(self.params, setup['params'].values()):
+                    mapping.at[sample, name] = value
+
+        # t0 is reset to the model's t0 for all samples
+        mapping['t0'] = self.params['t0']
+        return mapping
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
