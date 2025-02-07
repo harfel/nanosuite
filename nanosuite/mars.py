@@ -8,11 +8,11 @@ from functools import cached_property
 import re
 from typing import cast, Callable, Iterable
 import warnings
-import lmfit # type: ignore
+import lmfit         # type: ignore
 import numpy as np
 import pandas as pd
-import scipy # type: ignore
-import xarray as xr
+import scipy         # type: ignore
+import xarray as xr  # type: ignore
 
 
 class Assay:

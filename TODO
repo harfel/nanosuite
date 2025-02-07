@@ -1,6 +1,8 @@
-- implement parameter map
+- apply parameter_maps in all numerical computations
+- allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
+= feature/parameter_classes
 - simplify RFU conversion
-- implement hierarchical indexing
+- implement better hierarchical indexing
 = feature/new-assay
 - CRN.equilibrate needs to accept the same types of state as CRN.integrate (i.e. multiple samples)
 - support assay.plate - assay.mean
@@ -89,3 +91,10 @@ ParameterMaps organise the allocation of CRN parameters to Assay samples. Curren
 CRN.params contains a mapping from rate constant names to Parameter objects. I need a
 layer of indirection, similar to Assay.sample_map that maps rate_constant_class names to
 rate_constant names specific to samples.
+
+Parameters are currently stored in an lmfit.Parameters dictionary under CRN.params.
+Their names are referenced in the values of CRN.reactions. Parameters are most importantly
+evaluated in CRN.get_complex_adjacency to compute the rate law (but they also appear in other
+places).
+
+When using a ParameterMap, 

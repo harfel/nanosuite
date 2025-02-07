@@ -469,18 +469,22 @@ def test_state_accepts_numpy_spaces(conc, extra_conc):
     assert all(state.sel(species='B') == (1, 10, 100))
 
 def test_parameter_map():
-    "Assert that parameter map returns correct shape"
+    """Assert that parameter map returns correct shape
+
+    The API in this test is still experimental and might change in future versions
+    """
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
     setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
     system = crn.from_string("A <=> B; k1, k2")
 
-    mapping = system.parameter_map(assay)
+    mapping = system.parameter_map(assay, k1=['Probe'])
 
     assert mapping.shape == (len(assay.setup.content), len(system.params))
-    assert mapping.loc[("Responses", "Sample X1"), 'k1'].name == 'k1_a'
-    assert mapping.loc[("Responses", "Sample X7"), 'k1'].name == 'k1_b'
-    assert mapping.loc[("Negative", "Sample X10"), 'k1'].name == 'k1_a'
+    assert mapping.loc[("Responses", "Sample X1"), 'k1'].name == 'k1_Probe_1'
+    assert mapping.loc[("Responses", "Sample X7"), 'k1'].name == 'k1_Probe_2'
+    assert mapping.loc[("Negative", "Sample X10"), 'k1'].name == 'k1_Probe_1'
+    assert mapping.loc[("Responses", "Sample X1"), 'k2'].name == 'k2'
 
 
 """

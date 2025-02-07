@@ -1,7 +1,6 @@
 """Chemical reaction networks
 """
 from copy import deepcopy
-import math
 from typing import Callable, Iterable, Sequence
 from itertools import chain
 import warnings
@@ -328,56 +327,48 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parameter_map(self, assay: Assay) -> pd.DataFrame:
+    def parameter_map(self, assay: Assay, **parameter_dependencies: list[str]) -> pd.DataFrame:
         """Map of parameters for assay samples
 
-        The method generates a DataFrame with specialized parameters
-        for each sample. Parameters are shared among samples that
-        have identical setup in the Assay.sample_map. If the sample_map
-        of two samples differ, they are assigned distinct parameters.
-        """
-        def generate_suffixes(samples):
-            length = int(math.log(len(samples), 26) + 1)
-            for idx, _ in enumerate(samples):
-                suff = []
-                for __ in range(length):
-                    suff.append(ord('a') + (idx % 26))
-                    idx //= 26
-                yield ''.join(chr(s) for s in reversed(suff))
+        Each keyword agument declares that named parameter is specialized
+        for each unique combination of species_classes as defined in the
+        Assay.sample_map of the provided Assay.
 
+        # TODO: The parameter_map currently does not respect buffer and media
+        or any descirptor other than chemical species.
+        """
         if assay.setup is None:
             raise ValueError("No setup is defined for the assay.")
         if assay.sample_map is None:
             # This path should never be taken...
             raise RuntimeError("The assay does not define a sample_map.")
 
-        # FIXME: this does not work if samples differ only by medium or buffer
-        mapping = pd.DataFrame([[None for __ in self.params]
+        # We define a mapping of sample indices to parameters
+        # the default behaviour is for all samples to reference the parameter in self.params
+        mapping = pd.DataFrame([self.params.values()
                                 for _ in assay.setup.content],
                                columns=list(self.params),
                                index=assay.setup.indexes['content'])
 
-        # generate parameter sets for each unique species combination
-        sample_sets = pd.DataFrame(assay.sample_map.drop_duplicates()).replace([None], [''])
-        sample_sets.loc[:, 'params'] = None
-        for sample, suffix in zip(sample_sets.index, generate_suffixes(sample_sets.index)):
-            params = lmfit.Parameters()
-            for name, value in self.params.items():
-                name = f'{name}_{suffix}'
-                params[name] = deepcopy(value)
-                params[name].name = name
-            sample_sets.at[sample, 'params'] = params
+        # For each rate with declared species_class dependencies, the subset of
+        # dependent species is determined from the assay.sample_map
+        # and partitioned into unique sample_sets
 
-        # assign parameter set to all matching samples
-        for _, setup in sample_sets.iterrows():
-            samples = (assay.sample_map.replace([None], [''])
-                       == setup[assay.sample_map.columns]).all(axis=1)
-            for sample in samples[samples == True].index:
-                for name, value in zip(self.params, setup['params'].values()):
-                    mapping.at[sample, name] = value
+        # For each of these sample_sets, we set the named rate parameter of the mapping
+        # to a new specialized parameter object. The parameter name is suffixed with the
+        # names of the dependencies (if k1 depends on Probe, the local parameters will
+        # be names k1_Probe_1, k1_Probe_2, etc.
+        for name, dependencies in parameter_dependencies.items():
+            mapping[name] = lmfit.Parameter('__default__', value=0)
+            sample_sets = assay.sample_map[dependencies].drop_duplicates().replace([None], [''])
 
-        # t0 is reset to the model's t0 for all samples
-        mapping['t0'] = self.params['t0']
+            for _, setup in sample_sets.iterrows():
+                suffix = '_'.join(dep.replace(' ', '_') for dep in setup)
+                param = deepcopy(self.params[name])
+                param.name = f'{name}_{suffix}'
+                samples = assay.sample_map[dependencies] == setup
+                for idx in samples[samples].dropna().index:
+                    mapping.at[idx, name] = param
         return mapping
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
