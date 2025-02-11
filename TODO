@@ -1,15 +1,12 @@
 - apply parameter_maps in all numerical computations
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
+* write tests!
 = feature/parameter_classes
 - simplify RFU conversion
-- implement better hierarchical indexing
-= feature/new-assay
-- CRN.equilibrate needs to accept the same types of state as CRN.integrate (i.e. multiple samples)
-- support assay.plate - assay.mean
-- improve CRN.fit(vary_t0) semantics
-- set sensible crn.params['t0'] bounds with injectors
-- complete feature-crn-equilibrate
+* make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
 = 0.3.0
+- set sensible crn.params['t0'] bounds with injectors
+- implement better hierarchical indexing, support assay.plate - assay.mean [stash On 0.2.5]
 
 
 Port mapping
@@ -32,43 +29,6 @@ and for group two, it should translate into
     "Input_2 + Probe -> Signal; k_2"
 
 
-I need to determine how to map species names in the model to species in the assay (relatively easy)
-and I need to work out the extent of parameters, i.e. which parameters are equal among different
-samples (tricky).
-
-
-Four options
-============
-1. Assay.setup uses exact species
-    PROS
-        - Assay shows exactly what is in each well
-    CONS
-        - Need to convert to get the conceptual setup
-        - Leads to high dimensional state spaces
-
-2. Assay.setup uses species types
-    PROS
-        - Assay setup closer to a conceptual model
-    CONS
-        - Harder to programmatically detect differences between samples
-
-3. Assay.setup uses both exact species and species types combined
-    PROBABLY THE BEST
-    PROS
-        - Combines the advantages of 1 and 2 transparently
-        - Most convenient to access species information
-    CONS
-        - Difficult to get the physically relevant subset
-        - Most difficult to do integration and fitting
-
-4. Assay.setup uses both exact species and species types separately
-    PROBABLY THE WORST
-    PROS
-        - Access to both exact and conceptual plate setup
-    CONS
-        - Having two quite similar setup informations is confusing
-
-Option 3 is the best!
 
 
 CRNs should be fitted on the level of species_classes, where the CRN is defined.
@@ -97,4 +57,17 @@ Their names are referenced in the values of CRN.reactions. Parameters are most i
 evaluated in CRN.get_complex_adjacency to compute the rate law (but they also appear in other
 places).
 
-When using a ParameterMap, 
+
+I want to support the following four scenarios:
+===============================================
+- 1D state with scalar parameters
+    a single ODE is integrated
+- 2D state with scalar parameters
+    the ODE is integrated with the same parameters for each state
+- 1D state with parameter map
+    the ODE is integrated with identical state for each parameter set
+- 2D state with parameter map
+    the ODE is integrate with unique parameters for each state
+
+Should I replace CRN.params by an array of parameters? This is not well supported by lmfit,
+but I could perform the mapping myself. How to do this with the least conceptual overhead?

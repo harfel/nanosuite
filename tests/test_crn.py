@@ -478,14 +478,14 @@ def test_parameter_map():
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
     system = crn.from_string("A <=> B; k1, k2")
 
-    mapping = system.parameter_map(assay, k1=['Probe'])
+    parameter_map = system.parameter_map(assay.sample_map, k1=['Probe'])
 
-    assert mapping.shape == (len(assay.setup.content), len(system.params))
-    assert mapping.loc[("Responses", "Sample X1"), 'k1'].name == 'k1_Probe_1'
-    assert mapping.loc[("Responses", "Sample X7"), 'k1'].name == 'k1_Probe_2'
-    assert mapping.loc[("Negative", "Sample X10"), 'k1'].name == 'k1_Probe_1'
-    assert mapping.loc[("Responses", "Sample X1"), 'k2'].name == 'k2'
-
+    assert parameter_map.mapping.shape == (len(assay.setup.content), len(system.params))
+    assert parameter_map.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert parameter_map.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert parameter_map.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert parameter_map.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(parameter_map.params) == 4
 
 """
 CRN.parameter_map:

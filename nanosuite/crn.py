@@ -1,17 +1,18 @@
 """Chemical reaction networks
 """
+from __future__ import annotations
 from copy import deepcopy
-from typing import Callable, Iterable, Sequence
+from dataclasses import dataclass
 from itertools import chain
+from typing import Callable, Iterable, Sequence
 import warnings
-import xarray as xr                      # type: ignore
+import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
 from scipy.integrate import solve_ivp    # type: ignore
 from scipy.optimize import basinhopping  # type: ignore
-import lmfit                             # type: ignore
+import xarray as xr                      # type: ignore
 from . import crn_parser
-from .mars import Assay
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
@@ -19,6 +20,46 @@ DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
 DEFAULT_MIN_T0 = -np.inf
+
+
+@dataclass(init=True)
+class ParameterMap:
+    """Mapping between samples and parameters
+
+    A ParameterMap establishes relationships between samples and
+    Parameter objects.
+
+    FIXME: document this.
+    """
+    original_params: lmfit.Parameters  # FIXME: is there a better name for this?
+    params: lmfit.Parameters
+    mapping: pd.DataFrame
+
+    def __init__(self, crn: CRN, sample_map: pd.DataFrame):
+        self.mapping = pd.DataFrame([crn.params.keys() for _ in sample_map.index],
+                                    columns=list(crn.params),
+                                    index=sample_map.index)
+        self.original_params = crn.params
+        self.params = lmfit.Parameters()
+        for name, param in crn.params.items():
+            self.params[name] = param
+
+    def specialize(self, samples: pd.Index, name: str, new_name: str) -> None:
+        """Overload generic parameter for specified samples
+
+        FIXME: document this
+        """
+        if all(self.mapping[name] == name):
+            self.mapping[name] = ""
+            self.params.pop(name)
+        if name not in self.mapping.columns:
+            self.mapping[name] = 0
+        param = deepcopy(self.original_params[name])
+        param.name = new_name
+        self.params[param.name] = param
+        for idx in samples:
+            self.mapping.at[idx, name] = new_name
+
 
 class CRN:
     """Chemical reaction network
@@ -116,6 +157,7 @@ class CRN:
     @property
     def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
         """Return subset of reactions with infinite rate constant"""
+        # FIXME: respect parametermap
         return {
             reaction: (foward_rate, backward_rate)
             for reaction, (foward_rate, backward_rate) in self.reactions.items()
@@ -152,6 +194,7 @@ class CRN:
         reaction. Irreversible reactions have an equilibrium constant
         equal to infinity.
         """
+        # FIXME: respect parametermap
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
                 self.params[forward]/self.params[backward] if backward else float('inf')
@@ -189,6 +232,7 @@ class CRN:
         A 2D numpy array denoting reaction rate constants among reaction
         complexes.
         """
+        # FIXME: respect parametermap
         n = len(self.complexes)
         rate_constants = np.zeros((n, n))
         for (educts, products), (forward, backward) in self.reactions.items():
@@ -211,6 +255,7 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
+        # FIXME: respect parametermap
         for reaction, (forward, backward) in self.reactions.items():
             self.params[forward].value *= scale_factor**(len(reaction[0])-1)
             self.params[backward].value *= scale_factor**(len(reaction[1])-1)
@@ -327,49 +372,40 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parameter_map(self, assay: Assay, **parameter_dependencies: list[str]) -> pd.DataFrame:
-        """Map of parameters for assay samples
+    def parameter_map(self, sample_map: pd.DataFrame,
+                      **parameter_dependencies: list[str]) -> ParameterMap:
+        """Map of parameters for a given sample_map
 
         Each keyword agument declares that named parameter is specialized
         for each unique combination of species_classes as defined in the
-        Assay.sample_map of the provided Assay.
+        sample_map of the provided Assay.
 
         # TODO: The parameter_map currently does not respect buffer and media
-        or any descirptor other than chemical species.
+        or any descriptor other than chemical species.
         """
-        if assay.setup is None:
-            raise ValueError("No setup is defined for the assay.")
-        if assay.sample_map is None:
-            # This path should never be taken...
-            raise RuntimeError("The assay does not define a sample_map.")
-
         # We define a mapping of sample indices to parameters
         # the default behaviour is for all samples to reference the parameter in self.params
-        mapping = pd.DataFrame([self.params.values()
-                                for _ in assay.setup.content],
-                               columns=list(self.params),
-                               index=assay.setup.indexes['content'])
+        parameters = ParameterMap(self, sample_map)
 
         # For each rate with declared species_class dependencies, the subset of
-        # dependent species is determined from the assay.sample_map
-        # and partitioned into unique sample_sets
+        # dependent species is determined from the sample_map and partitioned into
+        # unique sample_sets
 
         # For each of these sample_sets, we set the named rate parameter of the mapping
         # to a new specialized parameter object. The parameter name is suffixed with the
         # names of the dependencies (if k1 depends on Probe, the local parameters will
         # be names k1_Probe_1, k1_Probe_2, etc.
         for name, dependencies in parameter_dependencies.items():
-            mapping[name] = lmfit.Parameter('__default__', value=0)
-            sample_sets = assay.sample_map[dependencies].drop_duplicates().replace([None], [''])
+            sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
 
-            for _, setup in sample_sets.iterrows():
-                suffix = '_'.join(dep.replace(' ', '_') for dep in setup)
-                param = deepcopy(self.params[name])
-                param.name = f'{name}_{suffix}'
-                samples = assay.sample_map[dependencies] == setup
-                for idx in samples[samples].dropna().index:
-                    mapping.at[idx, name] = param
-        return mapping
+            for _, species in sample_sets.iterrows():
+                if not any(species):
+                    continue
+                suffix = '_'.join(dep.replace(' ', '_') for dep in species)
+                samples = (sample_map[dependencies]
+                                     [sample_map[dependencies] == species].dropna().index)
+                parameters.specialize(samples, name, f'{name}_{suffix}')
+        return parameters
 
     def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -505,6 +541,7 @@ class CRN:
         if any(param.value==float('inf') for param in self.params.values()):
             initial_condition = self.perform_burst_reactions(initial_condition)
 
+        # FIXME: respect parametermap
         kinetics = self.rate_law()
 
         result = xr.DataArray(np.zeros(initial_condition.shape + times.shape),
@@ -584,7 +621,7 @@ class CRN:
         conversion: optional function that converts concentrations to RFU values
             The conversion must accept DataArrays of concentrations
             over time and must return a DataArray of RFU values over
-            time. Can be obtained from mars.Assay.calibrate.
+            time. Can be obtained from mars.Assay.convert.
         error: optional xr.DataArray with rfu over time or float (default 1.)
             Standard deviations of measured data
         options:
@@ -600,7 +637,7 @@ class CRN:
                           "Set CRN.params['t0'].vary instead")
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
-        original = deepcopy(self.params)
+        original = self.params.copy()
         params = self.params
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):
