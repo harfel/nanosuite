@@ -226,7 +226,7 @@ class Assay:
         if self._std is None:
             samples = pd.Series(self.plate.sample.data).unique()
             self._std = xr.DataArray(
-                [self.plate.sel(sample=sample).std(dim='content').data
+                [self.plate.sel(sample=sample).std(ddof=1, dim='content').data
                  for sample in samples],
                 {'content': self.plate.indexes['content'].droplevel('well').unique(),
                  'time': self.plate.time,
