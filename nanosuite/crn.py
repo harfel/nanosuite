@@ -197,10 +197,10 @@ class CRN:
             kr = self.params.get(backward, 0.)
             if burst:
                 rate_constants[i, j] = 1 if kf.value == float('inf') else 0.
-                rate_constants[j, i] = 1 if kr and kr.value == float('inf') else 0.
+                rate_constants[j, i] = 1 if kr != 0 and kr.value == float('inf') else 0.
             else:
                 rate_constants[i, j] = val if (val := kf.value) != float('inf') else 0.
-                rate_constants[j, i] = val if kr and (val := kr.value) != float('inf') else 0.
+                rate_constants[j, i] = val if kr != 0 and (val := kr.value) != float('inf') else 0.
         return rate_constants
 
     def scale_concentration_unit(self, scale_factor: float):
