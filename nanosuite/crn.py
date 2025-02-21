@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import chain
+import logging
 from typing import Callable, Iterable, Sequence
 import warnings
 import lmfit                             # type: ignore
@@ -13,6 +14,7 @@ from scipy.integrate import solve_ivp    # type: ignore
 from scipy.optimize import basinhopping  # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
+from .mars import Assay
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
@@ -92,12 +94,14 @@ class CRN:
     reactions: mapping of complex pairs to a two-tuple of rate constant names
     params: lmfit.Parameters instance of rate constants
     """
+    # FIXME: document parameter_map
     # TODO: support open networks and buffered species
 
     species: pd.Index
     complexes: list[Reactants]
     reactions: dict[tuple[Reactants, Reactants], tuple[str, str]]
-    params: lmfit.Parameters
+    params: lmfit.Parameters    # FIXME: replace this entirely with parameter_map
+    parameter_map: ParameterMap|None
 
     def __init__(self,
                  reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
@@ -117,6 +121,7 @@ class CRN:
         self.complexes = []
         self.reactions = {}
         self.params = lmfit.Parameters()
+        self.parameter_map = None
         self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
         for reaction in reactions or []:
             self.add_reaction(*reaction)
@@ -157,12 +162,12 @@ class CRN:
     @property
     def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
         """Return subset of reactions with infinite rate constant"""
-        # FIXME: respect parametermap
         return {
-            reaction: (foward_rate, backward_rate)
-            for reaction, (foward_rate, backward_rate) in self.reactions.items()
-            if self.params[foward_rate].value == float('inf')
-            or (backward_rate and self.params[backward_rate].value == float('inf'))
+            reaction: (forward_rate, backward_rate)
+            for reaction, (forward_rate, backward_rate) in self.reactions.items()
+            if forward_rate in self.params and self.params[forward_rate].value == float('inf')
+            or (backward_rate and backward_rate in self.params
+                and self.params[backward_rate].value == float('inf'))
         }
 
     @property
@@ -221,7 +226,8 @@ class CRN:
             for name in self.species
         ])
 
-    def get_complex_adjacency(self, burst: bool=False) -> np.ndarray:
+    def get_complex_adjacency(self, params: dict[str, lmfit.Parameter],
+                              burst: bool=False) -> np.ndarray:
         """Augmented complex graph adjacency matrix.
 
         See van der Schaft et al. (2011) SIAM J Appl Math 73(2):953-973
@@ -232,20 +238,19 @@ class CRN:
         A 2D numpy array denoting reaction rate constants among reaction
         complexes.
         """
-        # FIXME: respect parametermap
         n = len(self.complexes)
         rate_constants = np.zeros((n, n))
         for (educts, products), (forward, backward) in self.reactions.items():
             j = self.complexes.index(educts)
             i = self.complexes.index(products)
-            kf = self.params[forward]
-            kr = self.params.get(backward, 0.)
+            kf = float(params[forward])
+            kr = float(params.get(backward, 0.))
             if burst:
-                rate_constants[i, j] = 1 if kf.value == float('inf') else 0.
-                rate_constants[j, i] = 1 if kr and kr.value == float('inf') else 0.
+                rate_constants[i, j] = 1 if kf == float('inf') else 0.
+                rate_constants[j, i] = 1 if kr == float('inf') else 0.
             else:
-                rate_constants[i, j] = val if (val := kf.value) != float('inf') else 0.
-                rate_constants[j, i] = val if kr and (val := kr.value) != float('inf') else 0.
+                rate_constants[i, j] = kf if kf != float('inf') else 0.
+                rate_constants[j, i] = kr if kr != 0 and kr != float('inf') else 0.
         return rate_constants
 
     def scale_concentration_unit(self, scale_factor: float):
@@ -372,20 +377,25 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parameter_map(self, sample_map: pd.DataFrame,
-                      **parameter_dependencies: list[str]) -> ParameterMap:
-        """Map of parameters for a given sample_map
+    def parametrize_for(self, assay: Assay, **parameter_dependencies: list[str]):
+        """Generate a ParameterMap for the given sample_map
 
-        Each keyword agument declares that named parameter is specialized
-        for each unique combination of species_classes as defined in the
-        sample_map of the provided Assay.
+        Keyword arguments are parameter names, which are to be specialized
+	following the sample_map of the provided assay dependent on the
+	species given as argument value.
+
+	>>> model = crn.from_string("A + B <=> C; k1, k2")
+	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
 
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
         """
-        # We define a mapping of sample indices to parameters
+        if assay.sample_map is None:
+            raise ValueError("Assay must define a sample_map.")
+
+        # We define a mapping of sample indices to parameter_map
         # the default behaviour is for all samples to reference the parameter in self.params
-        parameters = ParameterMap(self, sample_map)
+        self.parameter_map = ParameterMap(self, assay.sample_map)
 
         # For each rate with declared species_class dependencies, the subset of
         # dependent species is determined from the sample_map and partitioned into
@@ -393,21 +403,22 @@ class CRN:
 
         # For each of these sample_sets, we set the named rate parameter of the mapping
         # to a new specialized parameter object. The parameter name is suffixed with the
-        # names of the dependencies (if k1 depends on Probe, the local parameters will
+        # names of the dependencies (if k1 depends on Probe, the local parameter_map will
         # be names k1_Probe_1, k1_Probe_2, etc.
         for name, dependencies in parameter_dependencies.items():
-            sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
+            sample_sets = assay.sample_map[dependencies].drop_duplicates().replace([None], [''])
 
             for _, species in sample_sets.iterrows():
                 if not any(species):
                     continue
                 suffix = '_'.join(dep.replace(' ', '_') for dep in species)
-                samples = (sample_map[dependencies]
-                                     [sample_map[dependencies] == species].dropna().index)
-                parameters.specialize(samples, name, f'{name}_{suffix}')
-        return parameters
+                samples = (assay.sample_map[dependencies]
+                                           [assay.sample_map[dependencies] == species].dropna()
+                                                                                      .index)
+                self.parameter_map.specialize(samples, name, f'{name}_{suffix}')
+            self.params = self.parameter_map.params
 
-    def rate_law(self) -> Callable[[float, np.ndarray], np.ndarray]:
+    def rate_law(self) -> Callable[[float, np.ndarray, dict[str, lmfit.Parameter]], np.ndarray]:
         """Derive mass action kinetic rate function.
 
         Internally, this method uses the method of van der Schaft et al.
@@ -422,10 +433,10 @@ class CRN:
 
         # calculate graph Laplacian
         Z = self.complex_graph
-        A = self.get_complex_adjacency()
-        L = np.diag(np.sum(A, axis=0)) - A
 
-        def kinetics(_, state):
+        def kinetics(_, state, params: dict[str, lmfit.Parameter]):
+            A = self.get_complex_adjacency(params)
+            L = np.diag(np.sum(A, axis=0)) - A
             # Z.T @ log(state) with convention 0*inf = 0
             with np.errstate(divide='ignore', invalid='ignore'):
                 tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
@@ -546,20 +557,26 @@ class CRN:
 
         result = xr.DataArray(np.zeros(initial_condition.shape + times.shape),
                               [(dim, initial_condition.indexes[dim])
-                               for dim in initial_condition.dims]+[times])
+                               for dim in initial_condition.dims]+[times],
+                              name="concentration")
         if len(initial_condition.dims) == 1:
             result[0:] = solve_ivp(kinetics,
                                    (self.params['t0'], times[-1]),
                                    initial_condition,
-                                   t_eval=times, vectorized=True, **options).y
+                                   t_eval=times, vectorized=True,
+                                   args=(self.params,), **options).y
         else:
             for idx, initial in enumerate(initial_condition):
                 # TODO: parallelize using multiprocessing.Pool's
+                params = {p: self.params.get(q, 0)
+                          for p, q in zip(self.parameter_map.mapping.columns,
+                                          self.parameter_map.mapping.loc[initial.content.values])
+                           } if self.parameter_map is not None else self.params
                 result[idx, 0:] = solve_ivp(kinetics,
-                                            (self.params['t0'], times[-1]),
+                                            (params['t0'], times[-1]),
                                             initial,
-                                            t_eval=times, vectorized=True, **options).y
-        result.name = "concentration"
+                                            t_eval=times, vectorized=True,
+                                            args=(params,), **options).y
         return result
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
@@ -581,17 +598,23 @@ class CRN:
         """
         # pylint: disable=invalid-name
         Z = self.complex_graph
-        A = np.where(self.get_complex_adjacency(True), 1., 0)
-        L = np.diag(np.sum(A, axis=0)) - A
 
         iterations = 10*len(self.burst_reactions)
         for _ in range(iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
                 if len(state.dims) == 1:
+                    A = np.where(self.get_complex_adjacency(self.params, True), 1., 0)
+                    L = np.diag(np.sum(A, axis=0)) - A
                     rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
                     fraction = min(x/y for x, y in zip(state, rates)
                                    if y > 0).values if rates.any() else 0
                 else:
+                    params = {p: self.params.get(q, 0)
+                              for p, q in zip(self.parameter_map.mapping.columns,
+                                              self.parameter_map.mapping.loc[state.content.values])
+                               } if self.parameter_map is not None else self.params
+                    A = np.where(self.get_complex_adjacency(params, True), 1., 0)
+                    L = np.diag(np.sum(A, axis=0)) - A
                     tmp = np.zeros((L.shape[0], state.shape[0]))
                     for idx, row in enumerate(state.values):
                         tmp[:, idx] = np.nansum(Z.T*np.log(row), axis=1)
@@ -638,11 +661,13 @@ class CRN:
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
         original = self.params.copy()
+        # FIXME: respect parameter_map
         params = self.params
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):
             self.params = params
             model = conversion(self.integrate(initial, t_eval=data.time))
+            logging.debug(f"{data=}, {model=}")
             return (data-model)/error
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
@@ -715,15 +740,23 @@ class PartitionedCRN(CRN):
         for species_def in species_defs or []:
             self.define_subspecies(*species_def)
 
-    @property
-    def split_species(self):
-        """Split matrix distributing species into subspecies concentrations
-        """
+    def split_species(self, index: int = 0) -> np.ndarray: # FIXME: index: pd.Index instead?
+        """Split matrix distributing species into subspecies concentrations"""
         all_subspecies = set(chain(*self.subspecies.values()))
-        result = np.array([[(self.params[self.subspecies[species][subspecies]]
-                             if subspecies in self.subspecies[species] else 0.)
-                            if species in self.subspecies
-                            else int(species==subspecies and subspecies not in all_subspecies)
+
+        def partition(species, subspecies) -> float:
+            if species in self.subspecies:
+                if subspecies in self.subspecies[species]:
+                    name = self.subspecies[species][subspecies]
+                    if self.parameter_map:
+                        name = self.parameter_map.mapping[name].iloc[index]
+                    return self.params[name]
+                else:
+                    return 0.
+            else:
+                return int(species==subspecies and subspecies not in all_subspecies)
+
+        result = np.array([[partition(species, subspecies)
                             for subspecies in self.species]
                            for species in self.species])
         for subspecies, species in self.subspecies_rests.items():
@@ -736,7 +769,7 @@ class PartitionedCRN(CRN):
         return result
 
     @property
-    def merge_subspecies(self):
+    def merge_subspecies(self) -> np.ndarray:
         """Merge matrix adding up subspecies concentrations into species
         """
         result = np.array([[int(subspecies in self.subspecies[species]
@@ -781,11 +814,17 @@ class PartitionedCRN(CRN):
     def state(self, conc: xr.DataArray|dict[str, float|Sequence[float]]|None = None, /,
               **extra_conc: float|Sequence[float]) -> xr.DataArray:
         state = super().state(conc, **extra_conc)
-        return xr.DataArray(state.values @ self.split_species, state.coords)
+
+        if len(state.dims) == 1:
+            return xr.DataArray(state.values @ self.split_species(), state.coords)
+        else:
+            return xr.DataArray([state.values[idx] @ self.split_species(idx)
+                                 for idx, sample in enumerate(state)],
+                                state.coords)
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         initial = self.state(initial_condition)
-        initial_subspecies = xr.DataArray(initial.values @ self.split_species,
+        initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
                                           initial.coords)
         eq_subspecies = super().equilibrate(initial_subspecies, **options)
         return xr.DataArray(self.merge_subspecies @ eq_subspecies.values, eq_subspecies.coords,
@@ -801,7 +840,7 @@ class PartitionedCRN(CRN):
         back into total species concentrations.
         """
         initial = self.state(initial_condition)
-        initial_subspecies = xr.DataArray(initial.values @ self.split_species,
+        initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
                                           initial.coords)
         traj_subspecies = super().integrate(initial_subspecies, t_eval, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
