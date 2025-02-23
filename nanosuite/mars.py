@@ -132,9 +132,9 @@ class Assay:
         The excel file needs to contain a worksheet named
         "sample_preparations" with the following format:
 
-        Group | Sample ID | Buffer | Buffer % | ... | Gate  | Gate conc (nM) | ...
-        ------+-----------+--------+----------+-----+-------+----------------+-----
-        ...   | Sample X1 | TRIS   | 100      | ... | Gate1 | 100            | ...
+        Group | Sample ID | Negative  | Positive   | Buffer | Buffer % | ... | Gate  | Gate conc (nM) | ...
+        ------+-----------+-----------+------------+--------+----------+-----+-------+----------------+-----
+        ...   | Sample X1 | Sample X1 | Sample X24 |TRIS    | 100      | ... | Gate1 | 100            | ...
 
         There can be an arbitrary number of Buffer/Media components as well
         as chemical species. Concentrations of the latter can be provided in
@@ -146,17 +146,19 @@ class Assay:
         df = pd.read_excel(setup_file, sheet_name='sample_preparations')
         # generate groups
         content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
+        df.set_index(content, inplace=True)
+        df = df[df.columns[2:]]
         units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
         self.sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
         self.sample_map.replace([np.nan], [None], inplace=True)
-        concs = df[df.columns[1-2*len(units)::2]].set_index(content)
+        concs = df[df.columns[1-2*len(units)::2]].set_index(content)  # FIXME: this should be cast to float
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
-        concs *= np.array([factors[u] for u in units])
+        fac = np.array([factors[u] for u in units])
+        concs *= fac
         # FIXME: decide whether this is placed well here...
         # self.abstract_species_classes = [cls for cls in self.sample_map.columns
         #                                  if cls not in set(self.sample_map.values.flatten())]
-
         for species_class in self.sample_map.columns:
             alternatives = pd.Series(self.sample_map[species_class].unique())
             for species in alternatives:
@@ -165,9 +167,13 @@ class Assay:
                 concs[species] = concs[self.sample_map[species_class]==species][species_class]
         concs.fillna(0., inplace=True)
 
-        return xr.DataArray(concs,
-                            {'content': content, 'species': concs.columns},
-                            name='concentrations', attrs=attrs)
+        return xr.DataArray(
+            concs,
+            {'content': content, 'species': concs.columns},
+            attrs=attrs
+        ).assign_coords(positive=('content', df['Positive'].values),
+                        negative=('content', df['Negative'].values))  # FIXME: should controls be optional?
+
 
     def read_rfu(self, rfu_file: str,
                  groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu

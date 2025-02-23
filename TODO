@@ -1,3 +1,6 @@
+- fit only parameters within the parameter map of the data
+- inbuilt conversion against controls
+- make controls optional for some or all samples
 - apply parameter_maps in all numerical computations
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 * write tests!

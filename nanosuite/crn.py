@@ -36,8 +36,10 @@ class ParameterMap:
     original_params: lmfit.Parameters  # FIXME: is there a better name for this?
     params: lmfit.Parameters
     mapping: pd.DataFrame
+    sample_map: pd.DataFrame
 
     def __init__(self, crn: CRN, sample_map: pd.DataFrame):
+        self.sample_map = sample_map
         self.mapping = pd.DataFrame([crn.params.keys() for _ in sample_map.index],
                                     columns=list(crn.params),
                                     index=sample_map.index)
@@ -377,7 +379,7 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parametrize_for(self, assay: Assay, **parameter_dependencies: list[str]):
+    def parametrize_for(self, sample_map: pd.DataFrame, **parameter_dependencies: list[str]):
         """Generate a ParameterMap for the given sample_map
 
         Keyword arguments are parameter names, which are to be specialized
@@ -390,12 +392,9 @@ class CRN:
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
         """
-        if assay.sample_map is None:
-            raise ValueError("Assay must define a sample_map.")
-
         # We define a mapping of sample indices to parameter_map
         # the default behaviour is for all samples to reference the parameter in self.params
-        self.parameter_map = ParameterMap(self, assay.sample_map)
+        self.parameter_map = ParameterMap(self, sample_map)
 
         # For each rate with declared species_class dependencies, the subset of
         # dependent species is determined from the sample_map and partitioned into
@@ -406,17 +405,17 @@ class CRN:
         # names of the dependencies (if k1 depends on Probe, the local parameter_map will
         # be names k1_Probe_1, k1_Probe_2, etc.
         for name, dependencies in parameter_dependencies.items():
-            sample_sets = assay.sample_map[dependencies].drop_duplicates().replace([None], [''])
+            sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
 
             for _, species in sample_sets.iterrows():
                 if not any(species):
                     continue
                 suffix = '_'.join(dep.replace(' ', '_') for dep in species)
-                samples = (assay.sample_map[dependencies]
-                                           [assay.sample_map[dependencies] == species].dropna()
-                                                                                      .index)
+                samples = (sample_map[dependencies]
+                                     [sample_map[dependencies] == species].dropna()
+                                                                          .index)
                 self.parameter_map.specialize(samples, name, f'{name}_{suffix}')
-            self.params = self.parameter_map.params
+        self.params = self.parameter_map.params
 
     def rate_law(self) -> Callable[[float, np.ndarray, dict[str, lmfit.Parameter]], np.ndarray]:
         """Derive mass action kinetic rate function.
@@ -661,7 +660,6 @@ class CRN:
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
         original = self.params.copy()
-        # FIXME: respect parameter_map
         params = self.params
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):

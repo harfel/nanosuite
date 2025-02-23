@@ -478,7 +478,7 @@ def test_parameter_map():
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
     system = crn.from_string("A <=> B; k1, k2")
 
-    system.parametrize_for(assay, k1=['Probe'])
+    system.parametrize_for(assay.sample_map, k1=['Probe'])
 
     #assert system.parameter_map.mapping.shape == (len(assay.setup.content), len(system.params))
     assert system.parameter_map.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
@@ -487,7 +487,7 @@ def test_parameter_map():
     assert system.parameter_map.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
     assert len(system.parameter_map.params) == 4
 
-def test_parameter_map():
+def test_parameter_map_2():
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
     setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
@@ -496,7 +496,7 @@ def test_parameter_map():
 
         Probe -> Signal; k1
     """)
-    system.parametrize_for(assay, p_blank=['Probe'])
+    system.parametrize_for(assay.sample_map, p_blank=['Probe'])
 
     state = system.state(assay.setup)
 
