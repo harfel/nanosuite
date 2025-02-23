@@ -50,22 +50,30 @@ class FitProgress:
 
         fig = Figure()
         ax = fig.gca()
+        gap = len(traj.time)//15
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
             ax.plot(experiment.time, experiment, '-', c=color)
-            ax.plot(model.time, model, '--', c=color)
+            ax.plot(model.time[::gap], model[::gap], 'o', c=color)
         ax.set_xlabel('Time [s]')
         ax.set_ylabel('Concentration [M]')
+        ax.set_ylim(None, None)
         ax.grid()
 
         buf = io.BytesIO()
         fig.savefig(buf, format='png')
         buf.seek(0)
 
+        # TODO: improve display
+        # for long parameter lists the output is too long.
+        # I could use style="overflow-y: auto; height: 30em" to constrain the
+        # outer dimension. But for this to work I cannot update (recreate) the
+        # display HTML. Instead, I have to update the model of a persistent
+        # data view.
         self.hdisplay.update(HTML(f'''
         <div>
             <div>Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
-            <div style="displaY: inline-block">{params._repr_html_()}</div>
+            <div style="display: inline-block">{params._repr_html_()}</div>
         </div>
         '''))
 
