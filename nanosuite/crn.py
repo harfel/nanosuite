@@ -4,9 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from itertools import chain
-import logging
 from typing import Callable, Iterable, Sequence
-import warnings
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
@@ -14,7 +12,7 @@ from scipy.integrate import solve_ivp    # type: ignore
 from scipy.optimize import basinhopping  # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
-from .mars import Assay
+
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
@@ -205,7 +203,8 @@ class CRN:
         reaction. Irreversible reactions have an equilibrium constant
         equal to infinity.
         """
-        # FIXME: respect parametermap
+        if self.parameter_map:
+            raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
                 self.params[forward]/self.params[backward] if backward else float('inf')
@@ -266,7 +265,8 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
-        # FIXME: respect parametermap
+        if self.parameter_map:
+            raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
         for reaction, (forward, backward) in self.reactions.items():
             self.params[forward].value *= scale_factor**(len(reaction[0])-1)
             self.params[backward].value *= scale_factor**(len(reaction[1])-1)
@@ -437,7 +437,6 @@ class CRN:
         """
         # pylint: disable=invalid-name
 
-        # calculate graph Laplacian
         Z = self.complex_graph
 
         def kinetics(_, state, params: dict[str, lmfit.Parameter]):
@@ -638,7 +637,6 @@ class CRN:
             initial: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
-            vary_t0: bool|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -660,20 +658,18 @@ class CRN:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        if vary_t0 is not None:
-            warnings.warn("Argument vary_t0 to CRN.fit is no longer supported. "
-                          "Set CRN.params['t0'].vary instead")
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
         original = self.params
         params = original.copy()
 
-        data_param_map = self.parameter_map.mapping.loc[data.content]
-        used_params = set(chain(*(data_param_map[column].unique()
+        if self.parameter_map:
+            data_param_map = self.parameter_map.mapping.loc[data.content]
+            used_params = set(chain(*(data_param_map[column].unique()
                                   for column in data_param_map.columns)))
-        for pname in self.params:
-            if pname not in used_params:
-                params[pname].vary = False
+            for pname in self.params:
+                if pname not in used_params:
+                    params[pname].vary = False
 
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):
@@ -685,7 +681,7 @@ class CRN:
         return fit
 
     @staticmethod
-    def _render_reactants(multiset):
+    def _render_reactants(multiset) -> str:
         return ' + '.join(
             species if stoich == 1 else f'{stoich} {species}'
             for species, stoich in multiset
@@ -762,10 +758,8 @@ class PartitionedCRN(CRN):
                     if self.parameter_map:
                         name = self.parameter_map.mapping[name].iloc[index]
                     return self.params[name]
-                else:
-                    return 0.
-            else:
-                return int(species==subspecies and subspecies not in all_subspecies)
+                return 0.
+            return int(species==subspecies and subspecies not in all_subspecies)
 
         result = np.array([[partition(species, subspecies)
                             for subspecies in self.species]
@@ -828,8 +822,7 @@ class PartitionedCRN(CRN):
 
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
-        else:
-            return xr.DataArray([state.values[idx] @ self.split_species(idx)
+        return xr.DataArray([state.values[idx] @ self.split_species(idx)
                                  for idx, sample in enumerate(state)],
                                 state.coords)
 

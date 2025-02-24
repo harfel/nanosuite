@@ -84,15 +84,14 @@ class CRN(crn.CRN):
             initial: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray=1.,
-            vary_t0: bool|None = None,
             *,
             iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb:
-            return super().fit(data, initial, conversion, error, vary_t0,
+            return super().fit(data, initial, conversion, error,
                                iter_cb=iter_cb, **options)
         with FitProgress(self, data, initial, conversion, error) as progress:
-            return super().fit(data, initial, conversion, error, vary_t0,
+            return super().fit(data, initial, conversion, error,
                                iter_cb=progress, **options)
 
 class PartitionedCRN(crn.PartitionedCRN, CRN):
