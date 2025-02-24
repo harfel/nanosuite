@@ -1,13 +1,14 @@
-- fit only parameters within the parameter map of the data
 - inbuilt conversion against controls
 - make controls optional for some or all samples
 - apply parameter_maps in all numerical computations
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 * write tests!
 = feature/parameter_classes
+- speed up rate fitting: Jacobian and worker pools
 - simplify RFU conversion
 * make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
 = 0.3.0
+- CRN should be immutable and additive/extenable
 - set sensible crn.params['t0'] bounds with injectors
 - implement better hierarchical indexing, support assay.plate - assay.mean [stash On 0.2.5]
 

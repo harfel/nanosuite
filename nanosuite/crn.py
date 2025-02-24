@@ -29,11 +29,15 @@ class ParameterMap:
     """Mapping between samples and parameters
 
     A ParameterMap establishes relationships between samples and
-    Parameter objects.
+    Parameter objects. ParameterMap's are usually obtained by
+    calling CRN.parametrize_for. There should normally be no need
+    for the user to manually create a ParameterMap.
 
-    FIXME: document this.
+    ParameterMap.mapping is a dataframe that maps from generic
+    parameter names to sample-specific parameter names.
+    ParameterMap.params holds all parameter objects of the CRN.
     """
-    original_params: lmfit.Parameters  # FIXME: is there a better name for this?
+    original_params: lmfit.Parameters
     params: lmfit.Parameters
     mapping: pd.DataFrame
     sample_map: pd.DataFrame
@@ -49,10 +53,7 @@ class ParameterMap:
             self.params[name] = param
 
     def specialize(self, samples: pd.Index, name: str, new_name: str) -> None:
-        """Overload generic parameter for specified samples
-
-        FIXME: document this
-        """
+        """Overload generic parameter for specified samples"""
         if all(self.mapping[name] == name):
             self.mapping[name] = ""
             self.params.pop(name)
@@ -70,16 +71,19 @@ class CRN:
 
     CRN represents a chemical reaction network, i.e. reactions among
     multisets of species. Kinetics are assumed to follow mass action
-    kinetics. CRN supports only irreversible reactions. To model
-    reversible reactions, express them as two separate forward and
-    backward reactions.
+    kinetics.
+    There are several ways to create a new reaction network. As a
+    simple example, the reaction
 
-    There are several ways to create a new reaction network:
+        A + B <=> C
+
+    with forward rate constant k_forward and backward rate constant
+    k_backward can be created with:
 
     >>> from lmfit import Parameter
     >>> crn = CRN([
-    ...     ((("A", 1), ("B", 1)), (("C", 1),), Parameter('k_forward', 0.1)),
-    ...     ((("C", 1),), (("A", 1), ("B", 1)), Parameter('k_backward', 0.1)),
+    ...     ((("A", 1), ("B", 1)), (("C", 1),),
+    ...     Parameter('k_forward', 0.1), Parameter('k_backward', 0.1)),
     ... ])
 
     This is equivalent to the more convenient function:
@@ -95,14 +99,14 @@ class CRN:
     complexes: list of (species, stoichiomentry) pairs
     reactions: mapping of complex pairs to a two-tuple of rate constant names
     params: lmfit.Parameters instance of rate constants
+    parameter_map: optional ParameterMap
     """
-    # FIXME: document parameter_map
     # TODO: support open networks and buffered species
 
     species: pd.Index
     complexes: list[Reactants]
     reactions: dict[tuple[Reactants, Reactants], tuple[str, str]]
-    params: lmfit.Parameters    # FIXME: replace this entirely with parameter_map
+    params: lmfit.Parameters    # FIXME: replace this entirely with parameter_map?
     parameter_map: ParameterMap|None
 
     def __init__(self,
@@ -380,14 +384,17 @@ class CRN:
         return state
 
     def parametrize_for(self, sample_map: pd.DataFrame, **parameter_dependencies: list[str]):
-        """Generate a ParameterMap for the given sample_map
+        """Assign a parametrization for the given sample_map
 
         Keyword arguments are parameter names, which are to be specialized
-	following the sample_map of the provided assay dependent on the
-	species given as argument value.
+    	following the provided sample_map dependent on the species given
+        as argument value. For example:
 
-	>>> model = crn.from_string("A + B <=> C; k1, k2")
+    	>>> model = crn.from_string("A + B <=> C; k1, k2")
 	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
+
+        Calling the method sets a new model.parameter_map and model.params
+        for the given sample_map and parameter dependencies.
 
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
@@ -551,7 +558,6 @@ class CRN:
         if any(param.value==float('inf') for param in self.params.values()):
             initial_condition = self.perform_burst_reactions(initial_condition)
 
-        # FIXME: respect parametermap
         kinetics = self.rate_law()
 
         result = xr.DataArray(np.zeros(initial_condition.shape + times.shape),
@@ -659,13 +665,20 @@ class CRN:
                           "Set CRN.params['t0'].vary instead")
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
-        original = self.params.copy()
-        params = self.params
+        original = self.params
+        params = original.copy()
+
+        data_param_map = self.parameter_map.mapping.loc[data.content]
+        used_params = set(chain(*(data_param_map[column].unique()
+                                  for column in data_param_map.columns)))
+        for pname in self.params:
+            if pname not in used_params:
+                params[pname].vary = False
+
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
         def objective(params):
             self.params = params
             model = conversion(self.integrate(initial, t_eval=data.time))
-            logging.debug(f"{data=}, {model=}")
             return (data-model)/error
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
