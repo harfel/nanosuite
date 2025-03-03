@@ -3,6 +3,7 @@
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 * write tests!
 = feature/parameter_classes
+- allow to turn jupyter interactive mode on or off
 - inbuilt conversion against controls
 - speed up rate fitting: Jacobian and worker pools
 - simplify RFU conversion

@@ -1,10 +1,12 @@
 """Chemical reaction networks
 """
 from __future__ import annotations
+from concurrent import futures
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import wraps
 from itertools import chain
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
@@ -20,6 +22,90 @@ DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
 DEFAULT_MIN_T0 = -np.inf
+
+
+class Cache:
+    """LRU Cache for function calls
+
+    This is similar to functools.lru_cache with two major differents.
+    Firstly, Cache does not require function arguments to be immutable.
+    Secondly, the Cache needs to be created explicitly and independently
+    from the function one wants to cache.
+    """
+    def __init__(self, maxsize: int = -1):
+        self.maxsize = maxsize
+        self.dict: dict[str, Any] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def key(self, args: tuple[Any], opts: dict[str, Any]) -> str:
+        """Generate cache key for function parameters
+
+        The key value is based on the string representations of
+        the arguments.
+
+        Parameters
+        ----------
+        args, opts:
+            packed function arguments and keyword arguments
+
+        Returns
+        -------
+        A string representing the provided parameters
+        """
+        return f'{args}{opts}'
+
+    def compute(self, func: Callable[..., Any]) -> Callable[..., Any]:
+        """Decorate function for caching
+
+        Parameters
+        ----------
+        func: any python callable
+
+        Returns
+        -------
+        a caching version of the provided function
+        """
+        @wraps(func)
+        def wrapper(*args, **opts) -> Any:
+            key = self.key(args, opts)
+            if key not in self.dict:
+                self.dict[key] = func(*args, **opts)
+                self.misses += 1
+                while len(self.dict) > self.maxsize > -1:
+                    self.dict.pop(next(iter(self.dict)))
+            else:
+                self.hits += 1
+            return self.dict[key]
+        return wrapper
+
+
+def do_integration(crn, initial, times, options) -> np.ndarray:
+    """Integrate crn for initial condition at given times
+
+    Internally, this method uses the method of van der Schaft et al.
+    (2011) SIAM J Appl Math 73(2):953-973.
+    """
+    # pylint: disable=invalid-name
+    params = {p: crn.params.get(q, 0)
+              for p, q in zip(crn.parameter_map.mapping.columns,
+                              crn.parameter_map.mapping.loc[initial.content.values])
+               } if crn.parameter_map is not None else crn.params
+
+    Z = crn.complex_graph
+
+    def kinetics(_, state):
+        A = crn.get_complex_adjacency(params)
+        L = np.diag(np.sum(A, axis=0)) - A
+        # Z.T @ log(state) with convention 0*inf = 0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
+            tmp = np.nansum(Z*tmp, axis=0)
+        return -Z @ L @ np.exp(tmp)
+
+    traj = solve_ivp(kinetics, (params['t0'], times[-1]), initial, t_eval=times, vectorized=True,
+                     **options).y
+    return traj
 
 
 @dataclass(init=True)
@@ -62,6 +148,28 @@ class ParameterMap:
         self.params[param.name] = param
         for idx in samples:
             self.mapping.at[idx, name] = new_name
+
+    def parameters_for(self, samples: xr.DataArray) -> lmfit.Parameters:
+        """Fix all parameters that do not occur in the given samples
+
+        Parameters
+        ----------
+        samples: xarray.DataArray
+            samples to vary parameters for
+
+        Returns
+        -------
+        A copy of the parameters where any parameter that does not
+        occur in the Parameter map for the given samples is fixed.
+        """
+        params = self.params.copy()
+        data_param_map = self.mapping.loc[samples.content.values]
+        used_params = set(chain(*(data_param_map[column].unique()
+                              for column in data_param_map.columns)))
+        for pname in self.params:
+            if pname not in used_params:
+                params[pname].vary = False
+        return params
 
 
 class CRN:
@@ -119,7 +227,8 @@ class CRN:
         species: list of strings
             If species names are provided, they determine the order of
             the species in the state vector used in crn.integrate and
-            crn.rate_law.
+            crn.rate_law. If not provided, they are ordered as they occur
+            in the CRN definition.
         """
         self.species = pd.Index(species or [])
         self.complexes = []
@@ -255,7 +364,7 @@ class CRN:
                 rate_constants[j, i] = 1 if kr == float('inf') else 0.
             else:
                 rate_constants[i, j] = kf if kf != float('inf') else 0.
-                rate_constants[j, i] = kr if kr != 0 and kr != float('inf') else 0.
+                rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
 
     def scale_concentration_unit(self, scale_factor: float):
@@ -424,32 +533,6 @@ class CRN:
                 self.parameter_map.specialize(samples, name, f'{name}_{suffix}')
         self.params = self.parameter_map.params
 
-    def rate_law(self) -> Callable[[float, np.ndarray, dict[str, lmfit.Parameter]], np.ndarray]:
-        """Derive mass action kinetic rate function.
-
-        Internally, this method uses the method of van der Schaft et al.
-        (2011) SIAM J Appl Math 73(2):953-973.
-
-        Returns
-        -------
-        A function rate(time: float, state: xarray.DataArray) that
-        gives the mass action rate vector for the given state.
-        """
-        # pylint: disable=invalid-name
-
-        Z = self.complex_graph
-
-        def kinetics(_, state, params: dict[str, lmfit.Parameter]):
-            A = self.get_complex_adjacency(params)
-            L = np.diag(np.sum(A, axis=0)) - A
-            # Z.T @ log(state) with convention 0*inf = 0
-            with np.errstate(divide='ignore', invalid='ignore'):
-                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
-                tmp = np.nansum(Z*tmp, axis=0)
-            return -Z @ L @ np.exp(tmp)
-
-        return kinetics
-
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
 
@@ -486,9 +569,9 @@ class CRN:
                               minimizer_kwargs = minimizer_kwargs)
         return xr.DataArray(N.T @ result.x + C, {'species': self.species})
 
-    def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
+    def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None,
-                  **options) -> xr.DataArray:
+                  cache: Cache|None = None, **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
         If the initial condition is a 1D vector, this returns a
@@ -551,37 +634,38 @@ class CRN:
             return pd.Index(np.linspace(self.params['t0'].value, t_eval,
                                         DEFAULT_INTEGRATION_POINTS, dtype=float),
                             name="time")
-        times: pd.Index = stratify_t_eval(t_eval)
 
+        if not cache:
+            cache = Cache()
+
+        times: pd.Index = stratify_t_eval(t_eval)
         initial_condition = self.state(initial_condition)
         if any(param.value==float('inf') for param in self.params.values()):
             initial_condition = self.perform_burst_reactions(initial_condition)
 
-        kinetics = self.rate_law()
-
-        result = xr.DataArray(np.zeros(initial_condition.shape + times.shape),
-                              [(dim, initial_condition.indexes[dim])
-                               for dim in initial_condition.dims]+[times],
-                              name="concentration")
         if len(initial_condition.dims) == 1:
-            result[0:] = solve_ivp(kinetics,
-                                   (self.params['t0'], times[-1]),
-                                   initial_condition,
-                                   t_eval=times, vectorized=True,
-                                   args=(self.params,), **options).y
+            traj: Iterable = do_integration(self, initial_condition, times, options)
         else:
-            for idx, initial in enumerate(initial_condition):
-                # TODO: parallelize using multiprocessing.Pool's
-                params = {p: self.params.get(q, 0)
-                          for p, q in zip(self.parameter_map.mapping.columns,
-                                          self.parameter_map.mapping.loc[initial.content.values])
-                           } if self.parameter_map is not None else self.params
-                result[idx, 0:] = solve_ivp(kinetics,
-                                            (params['t0'], times[-1]),
-                                            initial,
-                                            t_eval=times, vectorized=True,
-                                            args=(params,), **options).y
-        return result
+            with futures.ProcessPoolExecutor() as executor:
+                @cache.compute
+                def schedule_computation(sample, _):
+                    return executor.submit(do_integration, self, sample, times, options)
+
+                def relevant_params_for(sample):
+                    sample = initial_condition[initial_condition.content == sample.content]
+                    params = self.parameter_map.parameters_for(sample)
+                    return {name: self.params[name] for name, par in params.items() if par.vary}
+
+                jobs = [schedule_computation(sample,
+                                             relevant_params_for(sample)
+                                             if self.parameter_map else self.params)
+                        for sample in initial_condition]
+                traj = [job.result() for job in jobs]
+
+
+        return xr.DataArray(traj, [(dim, initial_condition.indexes[dim])
+                                   for dim in initial_condition.dims] + [times],
+                            name="concentration")
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
@@ -661,20 +745,15 @@ class CRN:
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
         original = self.params
-        params = original.copy()
 
-        if self.parameter_map:
-            data_param_map = self.parameter_map.mapping.loc[data.content]
-            used_params = set(chain(*(data_param_map[column].unique()
-                                  for column in data_param_map.columns)))
-            for pname in self.params:
-                if pname not in used_params:
-                    params[pname].vary = False
+        params = self.parameter_map.parameters_for(data) if self.parameter_map else original.copy()
 
         params['t0'].max = float(data.time[0]) # FIXME: respect injections
+        cache = Cache(2*len(initial))
+
         def objective(params):
             self.params = params
-            model = conversion(self.integrate(initial, t_eval=data.time))
+            model = conversion(self.integrate(initial, t_eval=data.time, cache=cache))
             return (data-model)/error
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
@@ -836,7 +915,7 @@ class PartitionedCRN(CRN):
 
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable|float|None = None,
-                  **options) -> xr.DataArray:
+                  cache: Cache|None = None, **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
 
         This converts the given initial condition to subspecies concentrations
@@ -846,7 +925,7 @@ class PartitionedCRN(CRN):
         initial = self.state(initial_condition)
         initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
                                           initial.coords)
-        traj_subspecies = super().integrate(initial_subspecies, t_eval, **options)
+        traj_subspecies = super().integrate(initial_subspecies, t_eval, cache, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
                             name=traj_subspecies.name)
 
