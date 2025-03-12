@@ -3,15 +3,16 @@
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 * write tests!
 = feature/parameter_classes
+* maintain CRN reversibility when rate constants are initialized with 0
 - allow to turn jupyter interactive mode on or off
 - inbuilt conversion against controls
-- speed up rate fitting: Jacobian and worker pools
 - simplify RFU conversion
 * make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
 = 0.3.0
 - extended port mapping as described below
 - CRN should be immutable and additive/extenable
 - set sensible crn.params['t0'] bounds with injectors
+- integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
 - implement better hierarchical indexing, support assay.plate - assay.mean [stash On 0.2.5]
 
 
@@ -33,9 +34,6 @@ For sample group one, this should translate into
 and for group two, it should translate into
 
     "Input_2 + Probe -> Signal; k_2"
-
-
-
 
 CRNs should be fitted on the level of species_classes, where the CRN is defined.
 Assay.setup already provides the correct initial condition for the CRN integration.
@@ -64,8 +62,8 @@ evaluated in CRN.get_complex_adjacency to compute the rate law (but they also ap
 places).
 
 
-I want to support the following four scenarios:
-===============================================
+I want to support the following four scenarios
+----------------------------------------------
 - 1D state with scalar parameters
     a single ODE is integrated
 - 2D state with scalar parameters
@@ -77,3 +75,30 @@ I want to support the following four scenarios:
 
 Should I replace CRN.params by an array of parameters? This is not well supported by lmfit,
 but I could perform the mapping myself. How to do this with the least conceptual overhead?
+
+
+ParameterMaps
+=============
+With the current implementation I face the issue that parameters are spread over CRN.params,
+CRN.parameter_map.params, CRN.parameter_map.original_params, and a couple of temporary dictionaries.
+It is very difficult to maintain or reassign parameters correctly over the course of a couple
+of function executions, and make sure that objects in these various dictionaries reference identical
+or distinct parameter objects.
+
+The ParameterMap should
+- give access to all parameters (generic and specialization)
+- hold a mapping of sample indices to parameter names (specializations)
+- allow to specialize a generic parameter for a subset of samples
+- allow to fix parameter specializations not used in a subset of samples
+- give the subset of parameter specializations in a subset of samples
+
+CRN.parametrize_for(samples, **dependencies) is the main mechanism to assign a new
+parameter map to a CRN. It should be possible to call the method as often as desired.
+
+Fitting does not change CRN parameters. Instead, it returns a new fit.params instance.
+It should be *very* simple to assign the fit.params to the fitted CRN, ideally via
+a property
+crn.params = fit.params
+or crn.params.update(fit.params)
+
+

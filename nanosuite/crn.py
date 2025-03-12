@@ -3,10 +3,10 @@
 from __future__ import annotations
 from concurrent import futures
 from copy import deepcopy
-from dataclasses import dataclass
 from functools import wraps
 from itertools import chain
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
+import warnings
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
@@ -39,7 +39,7 @@ class Cache:
         self.misses = 0
 
     def key(self, args: tuple[Any], opts: dict[str, Any]) -> str:
-        """Generate cache key for function parameters
+        """Generate cache key for function arguments
 
         The key value is based on the string representations of
         the arguments.
@@ -79,37 +79,37 @@ class Cache:
             return self.dict[key]
         return wrapper
 
-
-def do_integration(crn, initial, times, options) -> np.ndarray:
+def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, times: pd.Index,
+                   options: dict) -> np.ndarray:
     """Integrate crn for initial condition at given times
 
     Internally, this method uses the method of van der Schaft et al.
     (2011) SIAM J Appl Math 73(2):953-973.
     """
     # pylint: disable=invalid-name
-    params = {p: crn.params.get(q, 0)
-              for p, q in zip(crn.parameter_map.mapping.columns,
-                              crn.parameter_map.mapping.loc[initial.content.values])
-               } if crn.parameter_map is not None else crn.params
 
     Z = crn.complex_graph
+    A = crn.get_complex_adjacency(params)
+    L = np.diag(np.sum(A, axis=0)) - A
 
     def kinetics(_, state):
-        A = crn.get_complex_adjacency(params)
-        L = np.diag(np.sum(A, axis=0)) - A
         # Z.T @ log(state) with convention 0*inf = 0
         with np.errstate(divide='ignore', invalid='ignore'):
             tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
-            tmp = np.nansum(Z*tmp, axis=0)
+            tmp = np.nansum(Z.T*tmp, axis=1)
         return -Z @ L @ np.exp(tmp)
 
-    traj = solve_ivp(kinetics, (params['t0'], times[-1]), initial, t_eval=times, vectorized=True,
-                     **options).y
-    return traj
+    if 'atol' not in options:
+        options['atol'] = 1e-8*initial.max() or 1e-8
+    if 'rtol' not in options:
+        options['rtol'] = 1e-8
 
+    result = solve_ivp(kinetics, (params['t0'], times[-1]), initial, t_eval=times, **options)
+    if not result.success:
+        raise RuntimeError(result.message)
+    return result.y
 
-@dataclass(init=True)
-class ParameterMap:
+class ParameterMap(lmfit.Parameters):
     """Mapping between samples and parameters
 
     A ParameterMap establishes relationships between samples and
@@ -117,60 +117,102 @@ class ParameterMap:
     calling CRN.parametrize_for. There should normally be no need
     for the user to manually create a ParameterMap.
 
-    ParameterMap.mapping is a dataframe that maps from generic
+    ParameterMap.mapping is a dataframe that maps from general
     parameter names to sample-specific parameter names.
-    ParameterMap.params holds all parameter objects of the CRN.
+    ParameterMap.general_params holds the original parameters.
     """
-    original_params: lmfit.Parameters
-    params: lmfit.Parameters
     mapping: pd.DataFrame
-    sample_map: pd.DataFrame
+    general_params: dict[str, lmfit.Parameter]
 
-    def __init__(self, crn: CRN, sample_map: pd.DataFrame):
-        self.sample_map = sample_map
-        self.mapping = pd.DataFrame([crn.params.keys() for _ in sample_map.index],
-                                    columns=list(crn.params),
-                                    index=sample_map.index)
-        self.original_params = crn.params
-        self.params = lmfit.Parameters()
-        for name, param in crn.params.items():
-            self.params[name] = param
+    def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
+        super().__init__(usersyms)
 
-    def specialize(self, samples: pd.Index, name: str, new_name: str) -> None:
-        """Overload generic parameter for specified samples"""
+        index = sample_map.index if sample_map is not None else pd.Index([])
+        self.mapping = pd.DataFrame([], index=index)
+        self.general_params = {}
+
+    def __reduce__(self) -> tuple:
+        # Pickling causes issues with lmfit.Parameters.__reduce__
+        raise RuntimeError("Not implemented yet.")
+
+    def update(self, other: ParameterMap):
+        if (self.mapping.shape != other.mapping.shape
+            or (self.mapping.values != other.mapping.values).any()):
+            raise ValueError("Can only update from parameter maps with equal sample map.")
+        super().update(other)
+        self.general_params.update(other.general_params)
+
+    def __deepcopy__(self, memo: Any) -> ParameterMap:
+        result = super().__deepcopy__(memo)
+        result.mapping = deepcopy(self.mapping)
+        result.general_params = deepcopy(self.general_params)
+        return result
+
+    def __setitem__(self, name: str, value: lmfit.Parameter|None) -> None:
+        super().__setitem__(name, value)
+        if isinstance(name, lmfit.Parameter):
+            name = name.name
+        if name not in self.mapping.values:
+            # only add a column to the mapping if name is a general parameter
+            self.mapping[name] = name
+
+    def __add__(self, other: ParameterMap) -> ParameterMap:
+        raise RuntimeError("Not implemented yet.")
+
+    def set(self, **kwds: int|float|lmfit.Parameter) -> None:
+        raise RuntimeError("Not implemented yet.")
+
+    def specify(self, samples: pd.Index, name: str, new_name: str) -> None:
+        """Overload general parameter for specific samples"""
         if all(self.mapping[name] == name):
             self.mapping[name] = ""
-            self.params.pop(name)
+            self.general_params[name] = self.pop(name)
         if name not in self.mapping.columns:
             self.mapping[name] = 0
-        param = deepcopy(self.original_params[name])
+
+        param = deepcopy(self.general_params[name])
         param.name = new_name
-        self.params[param.name] = param
+        self[new_name] = param
+        self.mapping.drop(columns=[new_name], inplace=True)
         for idx in samples:
             self.mapping.at[idx, name] = new_name
 
-    def parameters_for(self, samples: xr.DataArray) -> lmfit.Parameters:
+    def specification_for(self, sample: xr.DataArray) -> dict[str, lmfit.Parameter]:
+        """Return specific parameters for a given sample
+
+        Parameters
+        ----------
+        samples: xarray.DataArray
+            sample for the requested parameter specialization
+
+        Returns
+        -------
+            A dictionary that maps general parameter names
+            to the specific parameters defined for the given sample
+        """
+        # FIXME: this does not work: all samples are 1D, just some have an extra coord
+        #if samples.ndim == 1:
+        #    return self
+        if len(self.mapping) == 0:
+            return self
+        content_dim = next(iter(sample.coords))
+        specification = self.mapping.loc[sample.coords[content_dim].values]
+        return {general: self.get(specification[general], 0)
+                for general in self.mapping.columns}
+
+    def fix_outside(self, samples: xr.DataArray) -> None:
         """Fix all parameters that do not occur in the given samples
 
         Parameters
         ----------
         samples: xarray.DataArray
             samples to vary parameters for
-
-        Returns
-        -------
-        A copy of the parameters where any parameter that does not
-        occur in the Parameter map for the given samples is fixed.
         """
-        params = self.params.copy()
-        data_param_map = self.mapping.loc[samples.content.values]
-        used_params = set(chain(*(data_param_map[column].unique()
-                              for column in data_param_map.columns)))
-        for pname in self.params:
-            if pname not in used_params:
-                params[pname].vary = False
-        return params
-
+        content_dim = next(iter(samples.coords))
+        subset = self.mapping.loc[samples.coords[content_dim]].values
+        for name in self:
+            if name not in subset:
+                self[name].vary = False
 
 class CRN:
     """Chemical reaction network
@@ -204,16 +246,14 @@ class CRN:
         species names in state vector
     complexes: list of (species, stoichiomentry) pairs
     reactions: mapping of complex pairs to a two-tuple of rate constant names
-    params: lmfit.Parameters instance of rate constants
-    parameter_map: optional ParameterMap
+    params: ParameterMap
     """
     # TODO: support open networks and buffered species
 
     species: pd.Index
     complexes: list[Reactants]
     reactions: dict[tuple[Reactants, Reactants], tuple[str, str]]
-    params: lmfit.Parameters    # FIXME: replace this entirely with parameter_map?
-    parameter_map: ParameterMap|None
+    params: ParameterMap
 
     def __init__(self,
                  reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
@@ -233,8 +273,7 @@ class CRN:
         self.species = pd.Index(species or [])
         self.complexes = []
         self.reactions = {}
-        self.params = lmfit.Parameters()
-        self.parameter_map = None
+        self.params = ParameterMap()
         self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
         for reaction in reactions or []:
             self.add_reaction(*reaction)
@@ -274,7 +313,11 @@ class CRN:
 
     @property
     def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
-        """Return subset of reactions with infinite rate constant"""
+        """Return subset of reactions with infinite rate constant
+
+        DEPRECATED: This property has been deprecated in version 0.3.0
+        """
+        warnings.warn("CRN.burst_reactions has been deprecated and will be removed.")
         return {
             reaction: (forward_rate, backward_rate)
             for reaction, (forward_rate, backward_rate) in self.reactions.items()
@@ -312,7 +355,8 @@ class CRN:
         reaction. Irreversible reactions have an equilibrium constant
         equal to infinity.
         """
-        if self.parameter_map:
+        # This does not use parameter maps at all yet.
+        if self.params.mapping:
             raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
@@ -374,7 +418,10 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
-        if self.parameter_map:
+        # FIXME: This does not use parameter maps at all yet.
+        # Once it does, I can simply use the parameter_map to scale all specifications
+        # of the general parameters stored in self.reactions.
+        if self.params:
             raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
         for reaction, (forward, backward) in self.reactions.items():
             self.params[forward].value *= scale_factor**(len(reaction[0])-1)
@@ -500,7 +547,7 @@ class CRN:
         as argument value. For example:
 
     	>>> model = crn.from_string("A + B <=> C; k1, k2")
-	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
+    	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
 
         Calling the method sets a new model.parameter_map and model.params
         for the given sample_map and parameter dependencies.
@@ -510,7 +557,8 @@ class CRN:
         """
         # We define a mapping of sample indices to parameter_map
         # the default behaviour is for all samples to reference the parameter in self.params
-        self.parameter_map = ParameterMap(self, sample_map)
+        parameter_map = ParameterMap(sample_map)
+        parameter_map.add_many(*self.params.values())
 
         # For each rate with declared species_class dependencies, the subset of
         # dependent species is determined from the sample_map and partitioned into
@@ -519,7 +567,7 @@ class CRN:
         # For each of these sample_sets, we set the named rate parameter of the mapping
         # to a new specialized parameter object. The parameter name is suffixed with the
         # names of the dependencies (if k1 depends on Probe, the local parameter_map will
-        # be names k1_Probe_1, k1_Probe_2, etc.
+        # be named k1_Probe_1, k1_Probe_2, etc.
         for name, dependencies in parameter_dependencies.items():
             sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
 
@@ -530,8 +578,8 @@ class CRN:
                 samples = (sample_map[dependencies]
                                      [sample_map[dependencies] == species].dropna()
                                                                           .index)
-                self.parameter_map.specialize(samples, name, f'{name}_{suffix}')
-        self.params = self.parameter_map.params
+                parameter_map.specify(samples, name, f'{name}_{suffix}')
+        self.params = parameter_map
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
@@ -644,24 +692,17 @@ class CRN:
             initial_condition = self.perform_burst_reactions(initial_condition)
 
         if len(initial_condition.dims) == 1:
-            traj: Iterable = do_integration(self, initial_condition, times, options)
+            traj: Iterable = do_integration(self, initial_condition, self.params, times, options)
         else:
             with futures.ProcessPoolExecutor() as executor:
                 @cache.compute
-                def schedule_computation(sample, _):
-                    return executor.submit(do_integration, self, sample, times, options)
+                def schedule_computation(sample, params):
+                    return executor.submit(do_integration, self, sample, params, times, options)
 
-                def relevant_params_for(sample):
-                    sample = initial_condition[initial_condition.content == sample.content]
-                    params = self.parameter_map.parameters_for(sample)
-                    return {name: self.params[name] for name, par in params.items() if par.vary}
-
-                jobs = [schedule_computation(sample,
-                                             relevant_params_for(sample)
-                                             if self.parameter_map else self.params)
+                jobs = [schedule_computation(sample, self.params.specification_for(sample))
                         for sample in initial_condition]
-                traj = [job.result() for job in jobs]
 
+                traj = [job.result() for job in jobs]
 
         return xr.DataArray(traj, [(dim, initial_condition.indexes[dim])
                                    for dim in initial_condition.dims] + [times],
@@ -691,17 +732,14 @@ class CRN:
         for _ in range(iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
                 if len(state.dims) == 1:
-                    A = np.where(self.get_complex_adjacency(self.params, True), 1., 0)
+                    A = self.get_complex_adjacency(self.params, True)
                     L = np.diag(np.sum(A, axis=0)) - A
                     rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
                     fraction = min(x/y for x, y in zip(state, rates)
                                    if y > 0).values if rates.any() else 0
                 else:
-                    params = {p: self.params.get(q, 0)
-                              for p, q in zip(self.parameter_map.mapping.columns,
-                                              self.parameter_map.mapping.loc[state.content.values])
-                               } if self.parameter_map is not None else self.params
-                    A = np.where(self.get_complex_adjacency(params, True), 1., 0)
+                    params = self.params.specification_for(state)
+                    A = self.get_complex_adjacency(params, True)
                     L = np.diag(np.sum(A, axis=0)) - A
                     tmp = np.zeros((L.shape[0], state.shape[0]))
                     for idx, row in enumerate(state.values):
@@ -744,17 +782,18 @@ class CRN:
         """
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         initial = initial[initial.sample.isin(data.sample)]
-        original = self.params
 
-        params = self.parameter_map.parameters_for(data) if self.parameter_map else original.copy()
-
-        params['t0'].max = float(data.time[0]) # FIXME: respect injections
         cache = Cache(2*len(initial))
 
         def objective(params):
             self.params = params
             model = conversion(self.integrate(initial, t_eval=data.time, cache=cache))
             return (data-model)/error
+
+        original = self.params
+        params = self.params.copy()
+        params.fix_outside(data)
+        params['t0'].max = float(data.time[0]) # TODO: respect injections
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
         return fit
@@ -765,7 +804,6 @@ class CRN:
             species if stoich == 1 else f'{stoich} {species}'
             for species, stoich in multiset
         )
-
 
 class PartitionedCRN(CRN):
     """CRN with subspecies partitioning
@@ -826,7 +864,7 @@ class PartitionedCRN(CRN):
         for species_def in species_defs or []:
             self.define_subspecies(*species_def)
 
-    def split_species(self, index: int = 0) -> np.ndarray: # FIXME: index: pd.Index instead?
+    def split_species(self, index: int = -1) -> np.ndarray: # FIXME: index: pd.Index instead?
         """Split matrix distributing species into subspecies concentrations"""
         all_subspecies = set(chain(*self.subspecies.values()))
 
@@ -834,8 +872,8 @@ class PartitionedCRN(CRN):
             if species in self.subspecies:
                 if subspecies in self.subspecies[species]:
                     name = self.subspecies[species][subspecies]
-                    if self.parameter_map:
-                        name = self.parameter_map.mapping[name].iloc[index]
+                    if index != -1 and len(self.params.mapping):
+                        name = self.params.mapping[name].iloc[index]
                     return self.params[name]
                 return 0.
             return int(species==subspecies and subspecies not in all_subspecies)
@@ -847,8 +885,7 @@ class PartitionedCRN(CRN):
             i = self.species.tolist().index(species)
             j = self.species.tolist().index(subspecies)
             result[...,j] = 0.
-            result[i, j] = (
-                1 - result[i].sum())
+            result[i, j] = 1 - result[i].sum()
             result[i, i] = 1.
         return result
 
@@ -923,12 +960,9 @@ class PartitionedCRN(CRN):
         back into total species concentrations.
         """
         initial = self.state(initial_condition)
-        initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
-                                          initial.coords)
-        traj_subspecies = super().integrate(initial_subspecies, t_eval, cache, **options)
+        traj_subspecies = super().integrate(initial, t_eval, cache, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
                             name=traj_subspecies.name)
-
 
 def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:
     """Construct a chemical reaction network from a string representation.

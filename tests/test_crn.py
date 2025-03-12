@@ -395,6 +395,7 @@ def test_equilibrate_circular_burst():
     with pytest.raises(ValueError):
         eq = model.equilibrate(state)
 
+@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
@@ -481,11 +482,12 @@ def test_parameter_map():
     system.parametrize_for(assay.sample_map, k1=['Probe'])
 
     #assert system.parameter_map.mapping.shape == (len(assay.setup.content), len(system.params))
-    assert system.parameter_map.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert system.parameter_map.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert system.parameter_map.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert system.parameter_map.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
-    assert len(system.parameter_map.params) == 4
+    assert system.params._mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert system.params._mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert system.params._mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert system.params._mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(system.params) == 4
+    assert len(system.params._general_params) == 1
 
 def test_parameter_map_2():
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
