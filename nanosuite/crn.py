@@ -132,8 +132,16 @@ class ParameterMap(lmfit.Parameters):
         self.general_params = {}
 
     def __reduce__(self) -> tuple:
-        # Pickling causes issues with lmfit.Parameters.__reduce__
-        raise RuntimeError("Not implemented yet.")
+        return self.__class__, (), {'mapping': self.mapping,
+                                    'general': self.general_params,
+                                    'params': super().__reduce__()}
+
+    def __setstate__(self, state):
+        # I first need to set self.mapping, so that specialized parameters
+        # are not added as mapping columns when setting lmfit.Parameters
+        self.mapping = state['mapping']
+        self.general_params = state['general']
+        return super().__setstate__(state['params'][2])
 
     def update(self, other: ParameterMap):
         if (self.mapping.shape != other.mapping.shape
@@ -356,7 +364,7 @@ class CRN:
         equal to infinity.
         """
         # This does not use parameter maps at all yet.
-        if self.params.mapping:
+        if not self.params.mapping.empty:
             raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
@@ -728,7 +736,7 @@ class CRN:
         # pylint: disable=invalid-name
         Z = self.complex_graph
 
-        iterations = 10*len(self.burst_reactions)
+        iterations = 10*len(self.reactions)
         for _ in range(iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
                 if len(state.dims) == 1:
