@@ -269,7 +269,8 @@ class CRN:
 
         DEPRECATED: This property has been deprecated in version 0.3.0
         """
-        warnings.warn("CRN.burst_reactions has been deprecated and will be removed.")
+        warnings.warn("CRN.burst_reactions is deprecated and will be removed.",
+                      DeprecationWarning, stacklevel=2)
         return {
             reaction: (forward_rate, backward_rate)
             for reaction, (forward_rate, backward_rate) in self.reactions.items()

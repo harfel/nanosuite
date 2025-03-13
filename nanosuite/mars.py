@@ -378,12 +378,14 @@ class Assay:
 
     @property
     def plate(self):
-        warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead")
+        warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead",
+                      DeprecationWarning, stacklevel=2)
         return self.rfu
 
     @property
     def full_plate(self):
-        warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead")
+        warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead",
+                      DeprecationWarning, stacklevel=2)
         return self.all_rfu
 
     def plate_setup(self, conc: dict[str, float|Iterable]|None = None,
@@ -418,7 +420,8 @@ class Assay:
         provided in the method arguments.
         """
         warnings.warn("Assay.plate_setup is deprecated."
-                      " Initial concentrations are stored in Assay.setup")
+                      " Initial concentrations are stored in Assay.setup",
+                      DeprecationWarning, stacklevel=2)
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
@@ -461,7 +464,8 @@ class Assay:
         See documentation of the specialized calibration methods for detail.
         """
         warnings.warn("Assay.calibrate is deprecated and will be removed in a future "
-                      "version of nanosuite. Change your code to use Assay.convert.")
+                      "version of nanosuite. Change your code to use Assay.convert.",
+                      DeprecationWarning, stacklevel=2)
 
         if method == 'direct':
             if error is not None:
