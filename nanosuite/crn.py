@@ -3,7 +3,6 @@
 from __future__ import annotations
 from concurrent import futures
 from copy import deepcopy
-from functools import wraps
 from itertools import chain
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import warnings
@@ -14,6 +13,7 @@ from scipy.integrate import solve_ivp    # type: ignore
 from scipy.optimize import basinhopping  # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
+from .utils import Cache
 
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -23,61 +23,6 @@ DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
 DEFAULT_MIN_T0 = -np.inf
 
-
-class Cache:
-    """LRU Cache for function calls
-
-    This is similar to functools.lru_cache with two major differents.
-    Firstly, Cache does not require function arguments to be immutable.
-    Secondly, the Cache needs to be created explicitly and independently
-    from the function one wants to cache.
-    """
-    def __init__(self, maxsize: int = -1):
-        self.maxsize = maxsize
-        self.dict: dict[str, Any] = {}
-        self.hits = 0
-        self.misses = 0
-
-    def key(self, args: tuple[Any], opts: dict[str, Any]) -> str:
-        """Generate cache key for function arguments
-
-        The key value is based on the string representations of
-        the arguments.
-
-        Parameters
-        ----------
-        args, opts:
-            packed function arguments and keyword arguments
-
-        Returns
-        -------
-        A string representing the provided parameters
-        """
-        return f'{args}{opts}'
-
-    def compute(self, func: Callable[..., Any]) -> Callable[..., Any]:
-        """Decorate function for caching
-
-        Parameters
-        ----------
-        func: any python callable
-
-        Returns
-        -------
-        a caching version of the provided function
-        """
-        @wraps(func)
-        def wrapper(*args, **opts) -> Any:
-            key = self.key(args, opts)
-            if key not in self.dict:
-                self.dict[key] = func(*args, **opts)
-                self.misses += 1
-                while len(self.dict) > self.maxsize > -1:
-                    self.dict.pop(next(iter(self.dict)))
-            else:
-                self.hits += 1
-            return self.dict[key]
-        return wrapper
 
 def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, times: pd.Index,
                    options: dict) -> np.ndarray:
@@ -108,6 +53,7 @@ def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, ti
     if not result.success:
         raise RuntimeError(result.message)
     return result.y
+
 
 class ParameterMap(lmfit.Parameters):
     """Mapping between samples and parameters
@@ -218,6 +164,7 @@ class ParameterMap(lmfit.Parameters):
         for name in self:
             if name not in subset:
                 self[name].vary = False
+
 
 class CRN:
     """Chemical reaction network
@@ -969,6 +916,7 @@ class PartitionedCRN(CRN):
         traj_subspecies = super().integrate(initial, t_eval, cache, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
                             name=traj_subspecies.name)
+
 
 def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:
     """Construct a chemical reaction network from a string representation.
