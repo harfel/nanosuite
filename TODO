@@ -1,4 +1,3 @@
-- apply parameter_maps in all numerical computations
 - make controls optional for some or all samples
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 * write tests!
@@ -8,6 +7,7 @@
 - inbuilt conversion against controls
 - simplify RFU conversion
 * make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
+- fix doctests
 = 0.3.0
 - extended port mapping as described below
 - CRN should be immutable and additive/extenable

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import lmfit
 import numpy as np
+import pandas as pd
 import xarray as xr
 from nanosuite import crn
 from nanosuite.mars import Assay
@@ -130,6 +131,40 @@ def test_from_string_repeated_reversible_rates():
     k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)][0]
     k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
+
+def test_scale_concentration_unit():
+    system = crn.from_string("""
+        A -> X;         k_1 = 0.1
+        A + B -> Y;     k_2 = 0.1
+        A + B + C -> Z; k_3 = 0.1
+    """)
+
+    system.scale_concentration_unit(10)
+
+    assert system.params['k_1'] == 0.1
+    assert system.params['k_2'] == 1
+    assert system.params['k_3'] == 10
+
+def test_scale_concentration_unit_with_parameter_map():
+    system = crn.from_string("""
+        A -> X;         k1 = 0.1
+        A + B -> Y;     k2 = 0.1
+        A + B + C -> Z; k3 = 0.1
+    """)
+    sample_map = pd.DataFrame([
+        ['Aa', 'B', 'C', 'X', 'Y', 'Z'],
+        ['Ab', 'B', 'C', 'X', 'Y', 'Z'],
+    ], columns=['A', 'B', 'C', 'X', 'Y', 'Z'])
+    system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
+
+    system.scale_concentration_unit(1e3)
+
+    assert system.params['k1_Aa'] == 0.1
+    assert system.params['k1_Ab'] == 0.1
+    assert system.params['k2_Aa'] == 100
+    assert system.params['k2_Ab'] == 100
+    assert system.params['k3_Aa'] == 100_000
+    assert system.params['k3_Ab'] == 100_000
 
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""

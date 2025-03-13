@@ -198,9 +198,6 @@ class ParameterMap(lmfit.Parameters):
             A dictionary that maps general parameter names
             to the specific parameters defined for the given sample
         """
-        # FIXME: this does not work: all samples are 1D, just some have an extra coord
-        #if samples.ndim == 1:
-        #    return self
         if len(self.mapping) == 0:
             return self
         content_dim = next(iter(sample.coords))
@@ -363,9 +360,8 @@ class CRN:
         reaction. Irreversible reactions have an equilibrium constant
         equal to infinity.
         """
-        # This does not use parameter maps at all yet.
         if not self.params.mapping.empty:
-            raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
+            raise RuntimeError("TODO: CRN.parameter_map's are not supported yet.")
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
                 self.params[forward]/self.params[backward] if backward else float('inf')
@@ -426,14 +422,16 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
-        # FIXME: This does not use parameter maps at all yet.
-        # Once it does, I can simply use the parameter_map to scale all specifications
-        # of the general parameters stored in self.reactions.
-        if self.params:
-            raise RuntimeError("FIXME: CRN.parameter_map's are not supported yet.")
-        for reaction, (forward, backward) in self.reactions.items():
-            self.params[forward].value *= scale_factor**(len(reaction[0])-1)
-            self.params[backward].value *= scale_factor**(len(reaction[1])-1)
+        for (f_reaction, b_reaction), (f_rate, b_rate) in self.reactions.items():
+            for reaction, param in [(f_reaction, f_rate), (b_reaction, b_rate)]:
+                if not param:
+                    continue
+                factor = scale_factor**(len(reaction)-1)
+                if not self.params.mapping.empty and param in self.params.mapping:
+                    for specific in self.params.mapping[param]:
+                        self.params[specific].value *= factor
+                else:
+                    self.params[param].value *= factor
 
     def add_reaction(self, educts: Reactants, products: Reactants,
                      forward_rate: lmfit.Parameter, backward_rate: lmfit.Parameter|None = None):
