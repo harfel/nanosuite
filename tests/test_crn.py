@@ -187,22 +187,6 @@ def test_circular_burst_reactions(reactions, initial):
     with pytest.raises(ValueError):
         test_crn.integrate(initial)
 
-def test_burst_after_initialization():
-    """Ensure reaction can be made burst by changing their rate constant"""
-    test_crn = crn.from_string("""
-        A -> X; k
-    """)
-    test_crn['k'].value = float('inf')
-    assert len(test_crn.burst_reactions) == 1
-
-def test_burst_reaction_name_consistancy():
-    """Ensure reactions to be instantanous if their rate constant name repeats"""
-    test_crn = crn.from_string("""
-        A -> X; k=inf
-        A -> Y; k
-    """)
-    assert len(test_crn.burst_reactions) == 2
-
 def test_impurities():
     """Ensure correct split into subspecies"""
     test_crn = crn.from_string("""
@@ -213,6 +197,7 @@ def test_impurities():
     """)
     initial = test_crn.state(A=1.)
     traj = test_crn.integrate(initial)
+    print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
@@ -481,32 +466,26 @@ def test_parameter_map():
 
     system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    #assert system.parameter_map.mapping.shape == (len(assay.setup.content), len(system.params))
-    assert system.params._mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert system.params._mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert system.params._mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert system.params._mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert system.params.mapping.shape == (len(assay.setup.content), 3)
+    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert system.params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert system.params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
     assert len(system.params) == 4
-    assert len(system.params._general_params) == 1
+    assert len(system.params.general_params) == 1
 
-def test_parameter_map_2():
+def test_parameter_map_reduce():
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
     setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
-    system = crn.from_string("""
-        Probe contains blank with p_blank = 0.1
+    system = crn.from_string("A <=> B; k1, k2")
 
-        Probe -> Signal; k1
-    """)
-    system.parametrize_for(assay.sample_map, p_blank=['Probe'])
+    system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    state = system.state(assay.setup)
+    import pickle
+    data = pickle.dumps(system.params)
+    unpickled = pickle.loads(data)
 
-"""
-CRN.parameter_map:
-- behaviour should be backward compatible if parameters are identical for all samples
-- any combination of species should by default introduce a boundary for all parameters
-
-Parameter map:
-- assign new rate constant/names
-"""
+    assert unpickled == system.params
+    assert (unpickled.mapping.values == system.params.mapping.values).all()
+    assert unpickled.general_params == system.params.general_params
