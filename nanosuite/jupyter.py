@@ -5,7 +5,7 @@ This module requires IPython and matplotlib
 import base64
 from copy import deepcopy
 import io
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Sequence
 from IPython.display import display, HTML  # type: ignore
 import lmfit                               # type: ignore
 from matplotlib import colormaps           # type: ignore
@@ -14,10 +14,11 @@ import xarray as xr                        # type: ignore
 from . import crn, mars
 
 
-def gradient(dataset):
+def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
+    """Color gradient for a given sequence"""
     size = len(dataset)
     for idx, _ in enumerate(dataset):
-        yield colormaps['rainbow'](idx/size)
+        yield colormaps[cmap](idx/size)
 
 
 ####################################################################################################
@@ -50,22 +51,30 @@ class FitProgress:
 
         fig = Figure()
         ax = fig.gca()
+        gap = len(traj.time)//15
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
             ax.plot(experiment.time, experiment, '-', c=color)
-            ax.plot(model.time, model, '--', c=color)
+            ax.plot(model.time[::gap], model[::gap], 'o', c=color)
         ax.set_xlabel('Time [s]')
         ax.set_ylabel('Concentration [M]')
+        ax.set_ylim(None, None)
         ax.grid()
 
         buf = io.BytesIO()
         fig.savefig(buf, format='png')
         buf.seek(0)
 
+        # TODO: improve display
+        # for long parameter lists the output is too long.
+        # I could use style="overflow-y: auto; height: 30em" to constrain the
+        # outer dimension. But for this to work I cannot update (recreate) the
+        # display HTML. Instead, I have to update the model of a persistent
+        # data view.
         self.hdisplay.update(HTML(f'''
         <div>
             <div>Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
-            <div style="displaY: inline-block">{params._repr_html_()}</div>
+            <div style="display: inline-block">{params._repr_html_()}</div>
         </div>
         '''))
 
@@ -76,15 +85,14 @@ class CRN(crn.CRN):
             initial: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray=1.,
-            vary_t0: bool|None = None,
             *,
             iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb:
-            return super().fit(data, initial, conversion, error, vary_t0,
+            return super().fit(data, initial, conversion, error,
                                iter_cb=iter_cb, **options)
         with FitProgress(self, data, initial, conversion, error) as progress:
-            return super().fit(data, initial, conversion, error, vary_t0,
+            return super().fit(data, initial, conversion, error,
                                iter_cb=progress, **options)
 
 class PartitionedCRN(crn.PartitionedCRN, CRN):
@@ -111,7 +119,7 @@ class Assay(mars.Assay):
         ax = fig.gca()
         ax.set_xlabel("Time [min]")
         ax.set_ylabel("RFU")
-        ax.set_title(self.plate.attrs["Test Name"])
+        ax.set_title(self.rfu.attrs["Test Name"])
         for sample, err, color in zip(self.mean, self.std, gradient(self.mean)):
             ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
             ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
@@ -125,7 +133,8 @@ class Assay(mars.Assay):
         return buf.read()
 
     def _repr_html_(self, **kwargs) -> str:
-        return f'<img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">'
+        data = base64.b64encode(self._repr_png_(**kwargs)).decode()
+        return f'<img src="data:image/png;base64,{data}">'
 
 # monkey patches
 mars.Assay = Assay                   # type: ignore

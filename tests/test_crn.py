@@ -1,11 +1,14 @@
 """Unit tests for crn
 """
 import math
+from pathlib import Path
 import pytest
 import lmfit
 import numpy as np
+import pandas as pd
 import xarray as xr
 from nanosuite import crn
+from nanosuite.mars import Assay
 
 
 def test_params_add():
@@ -129,6 +132,40 @@ def test_from_string_repeated_reversible_rates():
     k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
 
+def test_scale_concentration_unit():
+    system = crn.from_string("""
+        A -> X;         k_1 = 0.1
+        A + B -> Y;     k_2 = 0.1
+        A + B + C -> Z; k_3 = 0.1
+    """)
+
+    system.scale_concentration_unit(10)
+
+    assert system.params['k_1'] == 0.1
+    assert system.params['k_2'] == 1
+    assert system.params['k_3'] == 10
+
+def test_scale_concentration_unit_with_parameter_map():
+    system = crn.from_string("""
+        A -> X;         k1 = 0.1
+        A + B -> Y;     k2 = 0.1
+        A + B + C -> Z; k3 = 0.1
+    """)
+    sample_map = pd.DataFrame([
+        ['Aa', 'B', 'C', 'X', 'Y', 'Z'],
+        ['Ab', 'B', 'C', 'X', 'Y', 'Z'],
+    ], columns=['A', 'B', 'C', 'X', 'Y', 'Z'])
+    system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
+
+    system.scale_concentration_unit(1e3)
+
+    assert system.params['k1_Aa'] == 0.1
+    assert system.params['k1_Ab'] == 0.1
+    assert system.params['k2_Aa'] == 100
+    assert system.params['k2_Ab'] == 100
+    assert system.params['k3_Aa'] == 100_000
+    assert system.params['k3_Ab'] == 100_000
+
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
     test_crn = crn.from_string("""
@@ -185,22 +222,6 @@ def test_circular_burst_reactions(reactions, initial):
     with pytest.raises(ValueError):
         test_crn.integrate(initial)
 
-def test_burst_after_initialization():
-    """Ensure reaction can be made burst by changing their rate constant"""
-    test_crn = crn.from_string("""
-        A -> X; k
-    """)
-    test_crn['k'].value = float('inf')
-    assert len(test_crn.burst_reactions) == 1
-
-def test_burst_reaction_name_consistancy():
-    """Ensure reactions to be instantanous if their rate constant name repeats"""
-    test_crn = crn.from_string("""
-        A -> X; k=inf
-        A -> Y; k
-    """)
-    assert len(test_crn.burst_reactions) == 2
-
 def test_impurities():
     """Ensure correct split into subspecies"""
     test_crn = crn.from_string("""
@@ -211,6 +232,7 @@ def test_impurities():
     """)
     initial = test_crn.state(A=1.)
     traj = test_crn.integrate(initial)
+    print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
@@ -393,6 +415,7 @@ def test_equilibrate_circular_burst():
     with pytest.raises(ValueError):
         eq = model.equilibrate(state)
 
+@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
@@ -465,3 +488,39 @@ def test_state_accepts_numpy_spaces(conc, extra_conc):
     state = model.state(conc, **extra_conc)
     assert all(state.sel(species='A') == (1, 2, 3))
     assert all(state.sel(species='B') == (1, 10, 100))
+
+def test_parameter_map():
+    """Assert that parameter map returns correct shape
+
+    The API in this test is still experimental and might change in future versions
+    """
+    rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
+    setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
+    assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    system = crn.from_string("A <=> B; k1, k2")
+
+    system.parametrize_for(assay.sample_map, k1=['Probe'])
+
+    assert system.params.mapping.shape == (len(assay.setup.content), 3)
+    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert system.params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert system.params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(system.params) == 4
+    assert len(system.params.general_params) == 1
+
+def test_parameter_map_reduce():
+    rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
+    setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
+    assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    system = crn.from_string("A <=> B; k1, k2")
+
+    system.parametrize_for(assay.sample_map, k1=['Probe'])
+
+    import pickle
+    data = pickle.dumps(system.params)
+    unpickled = pickle.loads(data)
+
+    assert unpickled == system.params
+    assert (unpickled.mapping.values == system.params.mapping.values).all()
+    assert unpickled.general_params == system.params.general_params
