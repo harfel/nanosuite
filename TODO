@@ -1,7 +1,6 @@
-* maintain CRN reversibility when rate constants are initialized with 0
-- simplify RFU conversion -- supporting multiple controls
-* make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
 - simplify assignment of specialized parameters, e.g. from value sequence
+* make CRN.equilibrate accept the same argument types as CRN.integrate [feature-crn-equilibrate]
+- simplify RFU conversion -- supporting multiple controls
 - allow to turn jupyter interactive mode on or off
 - fix doctests
 = 0.3.0
