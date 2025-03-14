@@ -20,6 +20,17 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
+def test_reversible_encoding():
+    ode1 = crn.from_string("""
+        A <=> B; kf, kb
+    """)
+    ode2 = crn.from_string("""
+        A -> B; kf
+        B -> A; kb
+    """)
+
+    assert ode1.reactions == ode2.reactions
+
 def test_repr_html():
     """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
@@ -32,20 +43,31 @@ def test_repr_html():
             <td style="text-align: right">A_pure + B</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">C</td>
-            <td style="text-align: left">k1 = 1.1</td>
+            <td style="text-align: left" colspan="2">k1 = 1.1</td>
         </tr>
         <tr>
             <td style="text-align: right">C + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">B + E</td>
-            <td style="text-align: left">k2 = 1.2</td>
+            <td style="text-align: left" colspan="2">k2 = 1.2</td>
         </tr><tr>
             <td style="text-align: right">A_impure + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">E</td>
-            <td style="text-align: left">k = inf</td>
+            <td style="text-align: left" colspan="2">k = inf</td>
         </tr></table>'''
     assert rep == ''.join(line.strip() for line in expected.split('\n'))
+
+@pytest.mark.parametrize("reaction, stoichiometry_matrix", [
+    ("""A -> Z""", np.array([[-1, 1]])),
+    ("""2 A -> Z""", np.array([[-2, 1]])),
+    ("""2 A + B -> 3 A""", np.array([[1, -1]])),
+    ("""A -> B
+        B + C <=> Z""", np.array([[-1, 1, 0, 0],[0, -1, -1, 1]])),
+])
+def test_stoichiometry_matrix(reaction, stoichiometry_matrix):
+    test_crn = crn.from_string(reaction)
+    assert (test_crn.stoichiometry_matrix == stoichiometry_matrix).all()
 
 def test_from_string_irreversible():
     """Ensure correct parsing of irreversible reactions"""
@@ -60,7 +82,7 @@ def test_from_string_reversible():
     test_crn = crn.from_string("""
         A + B <=> C
     """)
-    assert len(test_crn.reactions) == 2
+    assert len(test_crn.reactions) == 1
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
@@ -102,9 +124,9 @@ def test_from_string_repeated_reversible_rates():
         A + B <=> C; kf1 = 1e7, 1e3
         C + D <=> E; kf1, kb = 1e3
         """)
-    assert len(model.params) == 4
-    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)]
-    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)]
+    assert len(model.params) == 4  # three rate constants plus t0
+    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)][0]
+    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
 
 def test_implicit_rate_names():
@@ -237,7 +259,8 @@ def test_from_string_real_formats(value):
 
 def test_add_reaction_respects_catalysts():
     network = crn.CRN()
-    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)), rate=lmfit.Parameter('k'))
+    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)),
+                         forward_rate=lmfit.Parameter('k'))
     assert len(network.species) == 3
 
 def test_integrate_teval_is_optional():
@@ -306,6 +329,83 @@ def test_integrate_teval_accepts_scalar_arrays():
     assert traj.time[0] == -1
     assert traj.time[-1] == 4
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
+
+def test_equilibrate_reversible():
+    """Ensure equilibrium of reversible reactions is accurate"""
+    model = crn.from_string("A <=> B ; kf=2, kb=1")
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert eq.sum() == state.sum()
+    assert conc_ratio == pytest.approx(rate_ratio)
+
+@pytest.mark.skip("Feature not yet implemented")
+@pytest.mark.parametrize("system, initial, equilibrium", [
+    ("A -> B", {'A': 10}, {'B': 10}),
+    ("""
+        A -> X
+        X <=> Y
+        Y -> B
+    """, {'A': 10}, {'B': 10}),
+    ("""
+        A <=> X
+        X -> Y
+        Y <=> B
+    """, {'A': 10}, {'B': 5, 'Y': 5}),
+    ("""A + B -> D
+        C + D -> A + E""", {'A': 1, 'B': 2, 'C': 5}, {'B': 0, 'C': 3, 'E': 2}),
+    ("""""", {'A': 10}, {'B': 10}),
+    ("""""", {'A': 10}, {'B': 10}),
+])
+def test_equilibration_irreversible(system, initial, equilibrium):
+    """Ensure equilibrium of irreversible reactions is accurate"""
+    model = crn.from_string(system)
+    state = model.state(initial)
+    eq = model.equilibrate(state)
+
+    assert all(eq.sel(species=species) == pytest.approx(conc)
+               for species, conc in equilibrium.items())
+
+@pytest.mark.skip("Feature not yet implemented")
+def test_equilibrate_burst():
+    """Ensure equilibrium works with burst reactions"""
+    model = crn.from_string("""
+        A -> B ; k=inf
+        B <=> C ; kf = 1, kb = 2
+    """)
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='C') / eq.sel(species='B')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert conc_ratio == pytest.approx(rate_ratio)
+
+@pytest.mark.skip("Feature not yet implemented")
+def test_equilibrate_circular_burst():
+    """Ensure equilibrium refuses circular burst reactions"""
+    model = crn.from_string("A <=> B ; kf=inf, kb=inf")
+    state = model.state(A=10)
+
+    with pytest.raises(ValueError):
+        eq = model.equilibrate(state)
+
+def test_equilibrate_subspecies():
+    model = crn.from_string("""
+        A contains reactive with p_A = 0.5
+        A [reactive] <=> B ; kf = 1, kb = 3
+    """)
+    state = model.state(A=8)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A_reactive')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert conc_ratio == pytest.approx(rate_ratio)
+    assert eq.sel(species='A') == 7
 
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""

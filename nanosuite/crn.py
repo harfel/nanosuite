@@ -4,11 +4,12 @@ from copy import deepcopy
 from typing import Callable, Iterable, Sequence
 from itertools import chain
 import warnings
-import xarray as xr                   # type: ignore
+import xarray as xr                      # type: ignore
 import numpy as np
-import pandas as pd                   # type: ignore
-from scipy.integrate import solve_ivp # type: ignore
-import lmfit                          # type: ignore
+import pandas as pd                      # type: ignore
+from scipy.integrate import solve_ivp    # type: ignore
+from scipy.optimize import basinhopping  # type: ignore
+import lmfit                             # type: ignore
 from . import crn_parser
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -46,20 +47,20 @@ class CRN:
     species: pandas.Index
         species names in state vector
     complexes: list of (species, stoichiomentry) pairs
-    reactions: mapping of complex pairs to rate constant names
+    reactions: mapping of complex pairs to a two-tuple of rate constant names
     params: lmfit.Parameters instance of rate constants
     """
     # TODO: support open networks and buffered species
 
     species: pd.Index
     complexes: list[Reactants]
-    reactions: dict[tuple[Reactants, Reactants], str]
+    reactions: dict[tuple[Reactants, Reactants], tuple[str, str]]
     params: lmfit.Parameters
 
     def __init__(self,
                  reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
                  species: Iterable[str]|None = None):
-        """Create an chemical reaction network.
+        """Create a chemical reaction network.
 
         Parameters
         ----------
@@ -79,11 +80,15 @@ class CRN:
             self.add_reaction(*reaction)
 
     def __str__(self) -> str:
-        def render(complexes, name):
+        def render(complexes: tuple[Reactants, Reactants], forward: str, backward: str = '') -> str:
             educts = self._render_reactants(complexes[0])
             products = self._render_reactants(complexes[1])
-            return f"{educts} -> {products}; {name}={self.params[name].value}"
-        return '\n'.join(render(reaction, name) for reaction, name in self.reactions.items())
+            if backward:
+                return (f"{educts} <=> {products}; "
+                        + f"{forward}={self.params[forward].value}, "
+                        + f"{backward}={self.params[backward].value}")
+            return f"{educts} -> {products}; {forward}={self.params[forward].value}"
+        return '\n'.join(render(reaction, *name) for reaction, name in self.reactions.items())
 
     def _repr_html_(self) -> str:
         return (
@@ -91,23 +96,66 @@ class CRN:
             + '\n'.join(
                 f'''<tr>
                     <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
+                    <td style="text-align: center">&rlhar</td>
+                    <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
+                    <td style="text-align: left">{fw} = {self.params[fw].value:.2g}</td>
+                    <td style="text-align: left">{bw} = {self.params[bw].value:.2g}</td>
+                </tr>''' if bw else
+                f'''<tr>
+                    <td style="text-align: right">{self._render_reactants(reaction[0])}</td>
                     <td style="text-align: center">&LongRightArrow;</td>
                     <td style="text-align: left">{self._render_reactants(reaction[1])}</td>
-                    <td style="text-align: left">{name} = {self.params[name].value:.2g}</td>
+                    <td style="text-align: left" colspan="2">{fw} = {self.params[fw].value:.2g}</td>
                 </tr>'''
-                for reaction, name in self.reactions.items()
+                for reaction, (fw, bw) in self.reactions.items()
             )
             + '</table>'
         )
 
     @property
-    def burst_reactions(self) -> dict[tuple[Reactants, Reactants], str]:
+    def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
         """Return subset of reactions with infinite rate constant"""
         return {
-            reaction: rate
-            for reaction, rate in self.reactions.items()
-            if self.params[rate].value == float('inf')
+            reaction: (foward_rate, backward_rate)
+            for reaction, (foward_rate, backward_rate) in self.reactions.items()
+            if self.params[foward_rate].value == float('inf')
+            or (backward_rate and self.params[backward_rate].value == float('inf'))
         }
+
+    @property
+    def stoichiometry_matrix(self) -> np.ndarray:
+        """Stoichiometry matrix of the reaction system
+
+        This returns an n x m matrix with one row for each reaction
+        (in the order they are stored in self.reactions). Each column
+        denotes the stoichiometric coefficient of a species (in the
+        order they are stored in self.species). Positive coefficients
+        denotes products whereas negative coefficients denote educts.
+        A coefficient of zero implies either that a species is not
+        involved in the reaction or that it acts catalytically.
+        """
+        def stoichiometry(species, reactants):
+            for some_species, stoich in reactants:
+                if some_species == species:
+                    return stoich
+            return 0
+        return np.array([[stoichiometry(species, products) - stoichiometry(species, educts)
+                          for species in self.species]
+                         for (educts, products) in self.reactions])
+
+    @property
+    def equilibrium_constants(self) -> np.ndarray:
+        """Equilibrium constants of the reactions
+
+        This returns a vector of equilibrium constants for each
+        reaction. Irreversible reactions have an equilibrium constant
+        equal to infinity.
+        """
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.array([
+                self.params[forward]/self.params[backward] if backward else float('inf')
+                for (forward, backward) in self.reactions.values()
+            ])
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -140,20 +188,20 @@ class CRN:
         A 2D numpy array denoting reaction rate constants among reaction
         complexes.
         """
-        def get_rate_constant(educts, products):
-            value = (self.params[name]
-                     if (name := self.reactions.get((educts, products), ''))
-                     else 0.)
+        n = len(self.complexes)
+        rate_constants = np.zeros((n, n))
+        for (educts, products), (forward, backward) in self.reactions.items():
+            j = self.complexes.index(educts)
+            i = self.complexes.index(products)
+            kf = self.params[forward]
+            kr = self.params.get(backward, 0.)
             if burst:
-                return 1 if value == float('inf') else 0.
-            return 0 if value == float('inf') else value
-        return np.array([
-            [
-                get_rate_constant(educts, products)
-                for educts in self.complexes
-            ]
-            for products in self.complexes
-        ])
+                rate_constants[i, j] = 1 if kf.value == float('inf') else 0.
+                rate_constants[j, i] = 1 if kr != 0 and kr.value == float('inf') else 0.
+            else:
+                rate_constants[i, j] = val if (val := kf.value) != float('inf') else 0.
+                rate_constants[j, i] = val if kr != 0 and (val := kr.value) != float('inf') else 0.
+        return rate_constants
 
     def scale_concentration_unit(self, scale_factor: float):
         """Scale reaction rate constants to new concentration unit.
@@ -162,10 +210,12 @@ class CRN:
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
-        for reaction, name in self.reactions.items():
-            self.params[name].value *= scale_factor**(len(reaction[0])-1)
+        for reaction, (forward, backward) in self.reactions.items():
+            self.params[forward].value *= scale_factor**(len(reaction[0])-1)
+            self.params[backward].value *= scale_factor**(len(reaction[1])-1)
 
-    def add_reaction(self, educts: Reactants, products: Reactants, rate: lmfit.Parameter):
+    def add_reaction(self, educts: Reactants, products: Reactants,
+                     forward_rate: lmfit.Parameter, backward_rate: lmfit.Parameter|None = None):
         """Add a reaction to the network.
 
         Any novel species that occur among the reactants are automatically
@@ -175,23 +225,32 @@ class CRN:
         ----------
         educts: tuple of species name, stoichiometry tuples
         products: tuple of species name, stoichiometry tuples
-        rate: lmfit.Parameter of the rate constant
+        forward_rate: lmfit.Parameter of the forward rate constant
+        backward_rate: optional lmfit.Paramter of the backward rate constant (default: None)
         """
         # collect species and complexes
-        for reactants in [educts, products]:
-            self.species = self.species.append(pd.Index([
-                name for name, _ in reactants
-                if name not in self.species
-            ]))
+        if (products, educts) in self.reactions:
+            self.reactions[products, educts] = (self.reactions[products, educts][0],
+                                                forward_rate.name)
 
-        for compl in [educts, products]:
-            if compl not in self.complexes:
-                self.complexes.append(compl)
+        else:
+            for reactants in [educts, products]:
+                self.species = self.species.append(pd.Index([
+                    name for name, _ in reactants
+                    if name not in self.species
+                ]))
 
-        self.reactions[educts, products] = rate.name
+            for compl in [educts, products]:
+                if compl not in self.complexes:
+                    self.complexes.append(compl)
 
-        if rate.name not in self.params:
-            self.params.add(rate)
+            self.reactions[educts, products] = (forward_rate.name,
+                                                (backward_rate.name if backward_rate else None))
+
+        if forward_rate.name not in self.params:
+            self.params.add(forward_rate)
+        if backward_rate and backward_rate.name not in self.params:
+            self.params.add(backward_rate)
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
         return self.params[name]
@@ -254,7 +313,7 @@ class CRN:
         elif isinstance(conc, dict) and conc:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
         elif isinstance(conc, dict):
-            state = xr.DataArray(len(self.species)*[0], {'species': self.species})
+            state = xr.DataArray(len(self.species)*[0.], {'species': self.species})
         elif conc.ndim == 1 and samples:
             state = conc.expand_dims({'sample': samples}, 0)
         else:
@@ -293,6 +352,42 @@ class CRN:
             return -Z @ L @ np.exp(tmp)
 
         return kinetics
+
+    def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
+        """Equilibrium state of the reaction network
+
+        Uses gradient decent to find the equilibrium state for a given
+        initial condition. The implementation follows the procedure
+        discussed in https://chemistry.stackexchange.com/questions/153869/
+
+        Parameters
+        ----------
+        initial_condition: xarray.DataArray
+            state vector to equilibrate
+        """
+        # pylint: disable=invalid-name
+        C = self.state(initial_condition).values
+        N = self.stoichiometry_matrix
+        lnK = np.log(self.equilibrium_constants)
+
+        if np.isinf(lnK).any():
+            raise ValueError("Only fully reversible CRNs can be equilibrated.")
+
+        def equilib(X):
+            Y = N.T @ X + C
+            if out_of_bounds := Y[Y<0].sum():
+                return (1-out_of_bounds)*1e14
+            with np.errstate(divide='ignore', invalid='ignore'):
+                Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
+            Z = np.where(np.isnan(Z), 0, Z)
+            return np.linalg.norm(Z)
+
+        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxiter': 1000}}
+        minimizer_kwargs.update(options)
+
+        result = basinhopping(equilib, np.zeros(N.shape[0],), niter=100,
+                              minimizer_kwargs = minimizer_kwargs)
+        return xr.DataArray(N.T @ result.x + C, {'species': self.species})
 
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable[float]|float|None = None,
@@ -333,6 +428,7 @@ class CRN:
             2D or 3D DataArray of trajectories. See above.
         """
         def stratify_t_eval(times):
+            # pylint: disable=too-many-return-statements
             if isinstance(times, tuple):
                 return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
                                             dtype=float),
@@ -605,6 +701,14 @@ class PartitionedCRN(CRN):
         state = super().state(conc, **extra_conc)
         return xr.DataArray(state.values @ self.split_species, state.coords)
 
+    def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
+        initial = self.state(initial_condition)
+        initial_subspecies = xr.DataArray(initial.values @ self.split_species,
+                                          initial.coords)
+        eq_subspecies = super().equilibrate(initial_subspecies, **options)
+        return xr.DataArray(self.merge_subspecies @ eq_subspecies.values, eq_subspecies.coords,
+                            name=eq_subspecies.name)
+
     def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
                   t_eval: Iterable|float|None = None,
                   **options) -> xr.DataArray:
@@ -651,10 +755,6 @@ def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedC
         crn = CRN(species=species)
 
     for reaction in crn_def.reactions:
-        if isinstance(reaction, crn_parser.Reaction):
-            crn.add_reaction(*reaction)
-        else:
-            crn.add_reaction(reaction.educts, reaction.products, reaction.forward)
-            crn.add_reaction(reaction.products, reaction.educts, reaction.backward)
+        crn.add_reaction(reaction.educts, reaction.products, reaction.forward, reaction.backward)
 
     return crn

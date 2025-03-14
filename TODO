@@ -2,7 +2,8 @@
 - support assay.plate - assay.mean
 - improve CRN.fit(vary_t0) semantics
 - set sensible crn.params['t0'] bounds with injectors
-
+- complete feature-crn-equilibrate
+= 0.2.5
 
 revamped CRN
 ============
