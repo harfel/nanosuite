@@ -509,8 +509,8 @@ class CRN:
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
         """
-        # We define a mapping of sample indices to parameter_map
-        # the default behaviour is for all samples to reference the parameter in self.params
+        # We define a mapping of sample indices to parameters
+        # the default behaviour is for all samples to reference the general parameter
         parameter_map = ParameterMap(sample_map)
         parameter_map.add_many(*self.params.values())
 
@@ -818,7 +818,7 @@ class PartitionedCRN(CRN):
         for species_def in species_defs or []:
             self.define_subspecies(*species_def)
 
-    def split_species(self, index: int = -1) -> np.ndarray: # FIXME: index: pd.Index instead?
+    def split_species(self, index: pd.Index|None = None) -> np.ndarray:
         """Split matrix distributing species into subspecies concentrations"""
         all_subspecies = set(chain(*self.subspecies.values()))
 
@@ -826,8 +826,8 @@ class PartitionedCRN(CRN):
             if species in self.subspecies:
                 if subspecies in self.subspecies[species]:
                     name = self.subspecies[species][subspecies]
-                    if index != -1 and len(self.params.mapping):
-                        name = self.params.mapping[name].iloc[index]
+                    if index is not None and len(self.params.mapping):
+                        name = str(self.params.mapping[name].loc[index])
                     return self.params[name]
                 return 0.
             return int(species==subspecies and subspecies not in all_subspecies)
@@ -892,8 +892,9 @@ class PartitionedCRN(CRN):
 
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
-        return xr.DataArray([state.values[idx] @ self.split_species(idx)
-                                 for idx, sample in enumerate(state)],
+        content_dim = next(iter(state.coords))
+        return xr.DataArray([sample.values @ self.split_species(state.coords[content_dim].data)
+                                 for sample in state],
                                 state.coords)
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:

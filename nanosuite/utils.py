@@ -1,3 +1,4 @@
+"""Utilities for nanosuite"""
 from typing import Any, Callable
 from functools import wraps
 

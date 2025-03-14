@@ -89,7 +89,7 @@ class Assay:
             if setup:
                 raise ValueError("Arguments setup_file and setup are mutually exclusive")
             if sample_map:
-                raise ValueError("Arguemnts setup_file and sample_map are mutually exclusive")
+                raise ValueError("Arguments setup_file and sample_map are mutually exclusive")
             self.setup = self.read_setup(setup_file)
         elif isinstance(setup, xr.DataArray):
             if groups:
@@ -132,9 +132,9 @@ class Assay:
         The excel file needs to contain a worksheet named
         "sample_preparations" with the following format:
 
-        Group | Sample ID | Negative  | Positive   | Buffer | Buffer % | ... | Gate  | Gate conc (nM) | ...
-        ------+-----------+-----------+------------+--------+----------+-----+-------+----------------+-----
-        ...   | Sample X1 | Sample X1 | Sample X24 |TRIS    | 100      | ... | Gate1 | 100            | ...
+        Group | Sample ID | Negative  | Positive   | ... | Gate  | Gate conc (nM) | ...
+        ------+-----------+-----------+------------+-----+-------+----------------+-----
+        ...   | Sample X1 | Sample X1 | Sample X24 | ... | Gate1 | 100            | ...
 
         There can be an arbitrary number of Buffer/Media components as well
         as chemical species. Concentrations of the latter can be provided in
@@ -152,13 +152,10 @@ class Assay:
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
         self.sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
         self.sample_map.replace([np.nan], [None], inplace=True)
-        concs = df[df.columns[1-2*len(units)::2]].set_index(content)  # FIXME: this should be cast to float
+        concs = df[df.columns[1-2*len(units)::2]].set_index(content)
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         fac = np.array([factors[u] for u in units])
         concs *= fac
-        # FIXME: decide whether this is placed well here...
-        # self.abstract_species_classes = [cls for cls in self.sample_map.columns
-        #                                  if cls not in set(self.sample_map.values.flatten())]
         for species_class in self.sample_map.columns:
             alternatives = pd.Series(self.sample_map[species_class].unique())
             for species in alternatives:
@@ -167,13 +164,13 @@ class Assay:
                 concs[species] = concs[self.sample_map[species_class]==species][species_class]
         concs.fillna(0., inplace=True)
 
+        # TODO: should controls be optional?
         return xr.DataArray(
             concs,
             {'content': content, 'species': concs.columns},
             attrs=attrs
         ).assign_coords(positive=('content', df['Positive'].values),
-                        negative=('content', df['Negative'].values))  # FIXME: should controls be optional?
-
+                        negative=('content', df['Negative'].values))
 
     def read_rfu(self, rfu_file: str,
                  groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu
@@ -378,12 +375,14 @@ class Assay:
 
     @property
     def plate(self):
+        """Deprecated: use Assay.rfu instead"""
         warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.rfu
 
     @property
     def full_plate(self):
+        """Deprecated: use Assay.all_rfu instead"""
         warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.all_rfu
@@ -432,7 +431,7 @@ class Assay:
             array.loc[..., species] = values
         return array
 
-    def calibrate(
+    def calibrate(  # pylint: disable=too-many-arguments
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         pos_rfu: xr.DataArray|None = None,
         neg_rfu: xr.DataArray|None = None, *,
@@ -476,7 +475,7 @@ class Assay:
         raise ValueError(f"""Unsupported calibration method: '{method}'
         Needs to be one of: direct [default], relaxation""")
 
-    def calibrate_relaxation(
+    def calibrate_relaxation(   # pylint: disable=too-many-arguments
         self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
         pos_rfu: xr.DataArray|None = None,
         neg_rfu: xr.DataArray|None = None, *,

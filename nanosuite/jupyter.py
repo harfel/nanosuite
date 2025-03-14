@@ -5,7 +5,7 @@ This module requires IPython and matplotlib
 import base64
 from copy import deepcopy
 import io
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Sequence
 from IPython.display import display, HTML  # type: ignore
 import lmfit                               # type: ignore
 from matplotlib import colormaps           # type: ignore
@@ -14,10 +14,11 @@ import xarray as xr                        # type: ignore
 from . import crn, mars
 
 
-def gradient(dataset):
+def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
+    """Color gradient for a given sequence"""
     size = len(dataset)
     for idx, _ in enumerate(dataset):
-        yield colormaps['rainbow'](idx/size)
+        yield colormaps[cmap](idx/size)
 
 
 ####################################################################################################
@@ -132,7 +133,8 @@ class Assay(mars.Assay):
         return buf.read()
 
     def _repr_html_(self, **kwargs) -> str:
-        return f'<img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">'
+        data = base64.b64encode(self._repr_png_(**kwargs)).decode()
+        return f'<img src="data:image/png;base64,{data}">'
 
 # monkey patches
 mars.Assay = Assay                   # type: ignore
