@@ -249,7 +249,7 @@ class CRN:
 
         if forward_rate.name not in self.params:
             self.params.add(forward_rate)
-        if backward_rate and backward_rate.name not in self.params:
+        if backward_rate is not None and backward_rate.name not in self.params:
             self.params.add(backward_rate)
 
     def __getitem__(self, name: str) -> lmfit.Parameter:

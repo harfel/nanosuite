@@ -129,6 +129,11 @@ def test_from_string_repeated_reversible_rates():
     k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
 
+def test_reversible_backward_can_be_zero():
+    system = crn.from_string("A <=> B; k_plus=1, k_minus=0")
+    assert system.params['k_minus'] == 0.
+    assert len(system.params) == 3
+
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
     test_crn = crn.from_string("""
