@@ -931,7 +931,7 @@ class PartitionedCRN(CRN):
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
         content_dim = next(iter(state.coords))
-        return xr.DataArray([sample.values @ self.split_species(state.coords[content_dim].data)
+        return xr.DataArray([sample.values @ self.split_species(sample.coords[content_dim].data)
                                  for sample in state],
                                 state.coords)
 
