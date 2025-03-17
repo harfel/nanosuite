@@ -529,3 +529,30 @@ def test_parameter_map_reduce():
     assert unpickled == system.params
     assert (unpickled.mapping.values == system.params.mapping.values).all()
     assert unpickled.general_params == system.params.general_params
+
+def test_parameter_map_assign_sequence():
+    model = crn.from_string("""
+        A + B <=> C; k1, k2
+    """)
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ], columns=["A", "B", "C"])
+    model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+    model.params['t0'].value = 10
+    model.params['k1'].value = [1, 10, 100, 1, 10, 100]
+    model.params['k2'].value = 10
+
+    assert model.params['t0'].value == 10
+    assert model.params['k1_A1'].value == 1
+    assert model.params['k1_A2'].value == 10
+    assert model.params['k1_A3'].value == 100
+    assert model.params['k2_A1'].value == 10
+    assert model.params['k2_A2'].value == 10
+    assert model.params['k2_A3'].value == 10
+
+    with pytest.raises(ValueError):
+        model.params['k1'].value = [1, 10, 100]

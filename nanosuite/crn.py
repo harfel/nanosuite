@@ -69,6 +69,34 @@ class ParameterMap(lmfit.Parameters):
     """
     mapping: pd.DataFrame
     general_params: dict[str, lmfit.Parameter]
+    zero: lmfit.Parameter
+
+    class ParameterProxy:
+        """A proxy object to access all specialized parameters
+
+        ParameterProxy's are returned by ParameterMap.__getitem__ when accessing
+        a general parameter that is overloaded with specializations. The proxy
+        allows to set attributes of all specializations of the general parameter
+        either from a sequence of values or from a single value.
+        """
+        # pylint: disable=too-few-public-methods
+        params: ParameterMap
+        specializations: pd.Series
+
+        def __init__(self, parameter_map: ParameterMap, specializations: pd.Series):
+            self.__dict__.update(specializations=specializations, params=parameter_map)
+
+        def __setattr__(self, attr: str, val: Any) -> None:
+            if isinstance(val, xr.DataArray):
+                val = val.data
+            if isinstance(val, Sequence|np.ndarray):
+                if len(val) != len(self.specializations):
+                    raise ValueError(f"Must provide {len(self.specializations)} values")
+                for special, value in zip(self.specializations, val):
+                    setattr(self.params[special], attr, value)
+            else:
+                for special in self.specializations:
+                    setattr(self.params[special], attr, val)
 
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
@@ -76,6 +104,7 @@ class ParameterMap(lmfit.Parameters):
         index = sample_map.index if sample_map is not None else pd.Index([])
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
+        self.zero = lmfit.Parameter('__ZERO')
 
     def __reduce__(self) -> tuple:
         return self.__class__, (), {'mapping': self.mapping,
@@ -88,6 +117,15 @@ class ParameterMap(lmfit.Parameters):
         self.mapping = state['mapping']
         self.general_params = state['general']
         return super().__setstate__(state['params'][2])
+
+    def __getitem__(self, key: str) -> lmfit.Parameter:
+        if key in self:
+            return super().__getitem__(key)
+        if key in self.general_params:
+            return self.ParameterProxy(self, self.mapping[key])
+        if not key:
+            return self.zero
+        raise KeyError(key)
 
     def update(self, other: ParameterMap):
         if (self.mapping.shape != other.mapping.shape
