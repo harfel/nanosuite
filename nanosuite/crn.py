@@ -582,18 +582,23 @@ class CRN:
 
         Parameters
         ----------
-        initial_condition: xarray.DataArray
+        initial_condition: 1D or 2D xarray.DataArray
             state vector to equilibrate
+
+        Returns
+        -------
+        A 1D or 2D xarray.DataArray with the equilibrium corresponding to
+        the initial state
         """
         # pylint: disable=invalid-name
-        C = self.state(initial_condition).values
+        initial_condition = self.state(initial_condition)
         N = self.stoichiometry_matrix
         lnK = np.log(self.equilibrium_constants)
 
         if np.isinf(lnK).any():
             raise ValueError("Only fully reversible CRNs can be equilibrated.")
 
-        def equilib(X):
+        def equilib(X, C):
             Y = N.T @ X + C
             if out_of_bounds := Y[Y<0].sum():
                 return (1-out_of_bounds)*1e14
@@ -602,12 +607,25 @@ class CRN:
             Z = np.where(np.isnan(Z), 0, Z)
             return np.linalg.norm(Z)
 
-        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxiter': 1000}}
+        minimizer_kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
+                                            'options': {'xatol': 1e-21, 'maxiter': 100}}
         minimizer_kwargs.update(options)
 
-        result = basinhopping(equilib, np.zeros(N.shape[0],), niter=100,
-                              minimizer_kwargs = minimizer_kwargs)
-        return xr.DataArray(N.T @ result.x + C, {'species': self.species})
+        if initial_condition.ndim == 1:
+            C = initial_condition.values
+            minimizer_kwargs['args'] = (C,)
+            result = basinhopping(equilib, np.zeros(N.shape[0]), niter=100,
+                                  minimizer_kwargs = minimizer_kwargs)
+            return xr.DataArray(N.T @ result.x + C, initial_condition.coords)
+        elif initial_condition.ndim == 2:
+            equilibrium = []
+            for C in initial_condition.values:
+                minimizer_kwargs['args'] = (C,)
+                result = basinhopping(equilib, np.zeros(N.shape[0]), niter=100,
+                                      minimizer_kwargs = minimizer_kwargs)
+                equilibrium.append(N.T @ result.x + C)
+            return xr.DataArray(equilibrium, initial_condition.coords)
+        raise ValueError("Intiail condition mut be 1 or 2 dimensional")
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None,

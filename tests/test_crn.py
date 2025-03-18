@@ -396,6 +396,20 @@ def test_equilibration_irreversible(system, initial, equilibrium):
     assert all(eq.sel(species=species) == pytest.approx(conc)
                for species, conc in equilibrium.items())
 
+def test_equilibration_multiple_state():
+    """Permit equilbrium to be calculated for multiple states"""
+    model = crn.from_string("A + B <=> C; kf, kb")
+    initial = model.state(A=[1, 10, 100], B=1)
+    A0 = initial.sel(species='A')
+    B0 = initial.sel(species='B')
+    K = model.params['kf'].value / model.params['kb'].value
+    Ceq = (A0+B0+1/K)/2 - ((A0-B0)**2 + 2*(A0+B0)/K + 1/K**2)**0.5/2
+
+    equilibrium = model.equilibrate(initial)
+
+    assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
+
+
 @pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_burst():
     """Ensure equilibrium works with burst reactions"""
