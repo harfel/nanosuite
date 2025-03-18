@@ -54,6 +54,22 @@ def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, ti
         raise RuntimeError(result.message)
     return result.y
 
+def dist_to_equilib(X, N, C, lnK):
+    """Compute distance to equilibrium distribution
+
+    This is used by CRN.equilibrate to minimize the
+    distance to the equilibrium in an iterative
+    gradient decent.
+    """
+    # pylint: disable=invalid-name
+    Y = N.T @ X + C
+    if out_of_bounds := Y[Y<0].sum():
+        return (1-out_of_bounds)*1e14
+    with np.errstate(divide='ignore', invalid='ignore'):
+        Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
+    Z = np.where(np.isnan(Z), 0, Z)
+    return np.linalg.norm(Z)
+
 
 class ParameterMap(lmfit.Parameters):
     """Mapping between samples and parameters
@@ -598,33 +614,30 @@ class CRN:
         if np.isinf(lnK).any():
             raise ValueError("Only fully reversible CRNs can be equilibrated.")
 
-        def equilib(X, C):
-            Y = N.T @ X + C
-            if out_of_bounds := Y[Y<0].sum():
-                return (1-out_of_bounds)*1e14
-            with np.errstate(divide='ignore', invalid='ignore'):
-                Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
-            Z = np.where(np.isnan(Z), 0, Z)
-            return np.linalg.norm(Z)
-
-        minimizer_kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
-                                            'options': {'xatol': 1e-21, 'maxiter': 100}}
-        minimizer_kwargs.update(options)
+        kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
+                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
+        kwargs.update(options)
 
         if initial_condition.ndim == 1:
             C = initial_condition.values
-            minimizer_kwargs['args'] = (C,)
-            result = basinhopping(equilib, np.zeros(N.shape[0]), niter=100,
-                                  minimizer_kwargs = minimizer_kwargs)
+            kwargs['args'] = (N, C, lnK)
+            result = basinhopping(dist_to_equilib, np.zeros(N.shape[0]), niter=100,
+                                  minimizer_kwargs = kwargs)
             return xr.DataArray(N.T @ result.x + C, initial_condition.coords)
-        elif initial_condition.ndim == 2:
-            equilibrium = []
-            for C in initial_condition.values:
-                minimizer_kwargs['args'] = (C,)
-                result = basinhopping(equilib, np.zeros(N.shape[0]), niter=100,
-                                      minimizer_kwargs = minimizer_kwargs)
-                equilibrium.append(N.T @ result.x + C)
+
+        if initial_condition.ndim == 2:
+            with futures.ProcessPoolExecutor() as executor:
+                def schedule_computation(C):
+                    return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
+                                           niter=100,
+                                           minimizer_kwargs = kwargs | {'args': (N, C, lnK)})
+
+                jobs = [schedule_computation(C) for C in initial_condition.values]
+                equilibrium = [N.T @ job.result().x + C
+                               for job, C in zip(jobs, initial_condition.values)]
+
             return xr.DataArray(equilibrium, initial_condition.coords)
+
         raise ValueError("Intiail condition mut be 1 or 2 dimensional")
 
     def integrate(self, initial_condition: xr.DataArray|dict,
