@@ -570,3 +570,21 @@ def test_parameter_map_assign_sequence():
 
     with pytest.raises(ValueError):
         model.params['k1'].value = [1, 10, 100]
+
+def test_parameter_map_respects_expressions():
+    model = crn.from_string("""
+        A <=> B; kf = 1, kb
+    """)
+    model.params.add('dG', value=0)
+    model.params['kb'].expr = 'kf*exp(dG)'
+
+    sample_map = pd.DataFrame([["A1", "B", "M1"],
+                               ["A2", "B", "M2"],
+                               ["A3", "B", "M1"]], columns=["A", "B", "M"])
+    model.parametrize_for(sample_map, dG=["A"], kf=["M"])
+
+    model.params['dG'].value = [-10, 0, 10]
+
+    assert model.params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
+    assert model.params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
+    assert model.params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'

@@ -557,8 +557,8 @@ class CRN:
     	>>> model = crn.from_string("A + B <=> C; k1, k2")
     	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
 
-        Calling the method sets a new model.parameter_map and model.params
-        for the given sample_map and parameter dependencies.
+        Calling the method sets new model.params for the given sample_map and
+        parameter dependencies.
 
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
@@ -576,7 +576,27 @@ class CRN:
         # to a new specialized parameter object. The parameter name is suffixed with the
         # names of the dependencies (if k1 depends on Probe, the local parameter_map will
         # be named k1_Probe_1, k1_Probe_2, etc.
+
+        # If a parameter gets specialized, it might require to also specialize
+        # parameters that depend on it via expressions. E.g. if k_back is constrained
+        # to equal k_forward / exp(-dG) and dG becomes specialized, then
+        # k_back needs to become specialized too -- and the equation for each
+        # k_back needs to be rewritten to use the specialized dG parameter.
+        # This could even happen iteratively, if a third parameter expression
+        # depends on k_back...
+        # We first add all these implicit dependencies to the parameter_dependencies
+
+        while True:
+            indirect = {par.name: list(set.union(*[set(parameter_dependencies[n]) for n in dep]))
+                        for par in self.params.values()
+                        if par.name not in parameter_dependencies
+                        and (dep := set(par._expr_deps) & set(parameter_dependencies))}
+            if not indirect:
+                break
+            parameter_dependencies.update(indirect)
+
         for name, dependencies in parameter_dependencies.items():
+            dependencies = sorted(dependencies)
             sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
 
             for _, species in sample_sets.iterrows():
@@ -587,6 +607,19 @@ class CRN:
                                      [sample_map[dependencies] == species].dropna()
                                                                           .index)
                 parameter_map.specify(samples, name, f'{name}_{suffix}')
+
+        # Now we go back and rewrite parameter expressions to use specialized parameters 
+        expr_deps = [(par.name, list(dep)) for par in parameter_map.general_params.values()
+                     if (dep := set(par._expr_deps) & set(parameter_dependencies))]
+        for name, deps in expr_deps:
+            expr = [parameter_map.general_params[name].expr
+                    for sample in parameter_map.mapping.index]
+            substitutions = parameter_map.mapping[deps]
+            for general in substitutions:
+                expr = [ex.replace(general, special)
+                        for ex, special in zip(expr, substitutions[general])]
+            parameter_map[name].expr = expr
+
         self.params = parameter_map
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
