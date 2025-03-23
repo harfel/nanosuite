@@ -140,10 +140,12 @@ class Assay:
         as chemical species. Concentrations of the latter can be provided in
         mM, uM, nM, pM or fM.
         """
-        df = pd.read_excel(setup_file, sheet_name='assay_settings')
-        attrs = dict(df.to_dict('tight')['data'])
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=UserWarning)
+            df = pd.read_excel(setup_file, sheet_name='assay_settings')
+            attrs = dict(df.to_dict('tight')['data'])
+            df = pd.read_excel(setup_file, sheet_name='sample_preparations')
 
-        df = pd.read_excel(setup_file, sheet_name='sample_preparations')
         # generate groups
         content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
         df.set_index(content, inplace=True)
