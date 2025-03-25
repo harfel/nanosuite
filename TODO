@@ -6,7 +6,8 @@
 - extended port mapping as described below
 - CRN should be immutable and additive/extenable
 - set sensible crn.params['t0'] bounds with injectors
-- integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
+- can I automatically assign new coordinates to all xarrays?
+? integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
 - implement better hierarchical indexing, support assay.plate - assay.mean [stash On 0.2.5]
 
 

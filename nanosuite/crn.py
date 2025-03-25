@@ -214,7 +214,7 @@ class ParameterMap(lmfit.Parameters):
             samples to vary parameters for
         """
         content_dim = next(iter(samples.coords))
-        subset = self.mapping.loc[samples.coords[content_dim]].values
+        subset = self.mapping.loc[samples.coords[content_dim].data].values
         for name in self:
             if name not in subset:
                 self[name].vary = False
