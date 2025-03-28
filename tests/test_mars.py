@@ -183,3 +183,27 @@ def test_convert_accepts_four_args():
 
     assert from_rfu(assay.rfu).dims == ('content', 'species', 'time')
     assert to_rfu(assay.setup).dims == ('content', 'time')
+
+def test_to_concentrations_accepts_scalar_pos_conc():
+    assay = Assay(rfu_file, setup_file)
+    concs = assay.to_concentrations(1e-6)
+    assert (concs < 1e-6).all()
+
+def test_to_concentrations_accepts_vector_pos_conc():
+    assay = Assay(rfu_file, setup_file)
+    pos = xr.DataArray([1, 0.5, 0.25], {'species': ['A', 'B', 'C']})
+    concs = assay.to_concentrations(pos)
+    assert (concs < 1).all()
+
+def test_to_concentrations_accepts_vector_oncs():
+    assay = Assay(rfu_file, setup_file)
+    neg = xr.DataArray([0, 0.5, 0.75], {'species': ['A', 'B', 'C']})
+    pos = xr.DataArray([1, 0.5, 0.25], {'species': ['A', 'B', 'C']})
+    concs = assay.to_concentrations(pos, neg)
+    assert (concs < 1).all()
+
+def test_to_concentrations_does_not_convert_controls():
+    assay = Assay(rfu_file, setup_file)
+    concs = assay.to_concentrations()
+    assert len(concs.sample) == 14
+

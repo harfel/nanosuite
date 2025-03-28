@@ -377,14 +377,18 @@ class Assay:
 
     @property
     def plate(self):
-        """Deprecated: use Assay.rfu instead"""
+        """Fluorescence values of all active wells and time points
+
+        *Deprecated since 0.3.0*: use Assay.rfu instead"""
         warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.rfu
 
     @property
     def full_plate(self):
-        """Deprecated: use Assay.all_rfu instead"""
+        """Fluorescence values of all wells and time points
+
+        *Deprecated since 0.3.0*: use Assay.all_rfu instead"""
         warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.all_rfu
@@ -393,7 +397,7 @@ class Assay:
                     **kwargs: float|Iterable) -> xr.DataArray:
         """Define plate setup
 
-        DEPRECATED: Use Assay.setup
+        *Deprecated since 0.3.0*: Use Assay.setup
 
         This method generates a correctly indexed xr.DataArray that
         describes the plate setup in terms of concentrations of chemical
@@ -442,7 +446,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert
+        *Deprecated since 0.2.4*: Use Assay.convert
 
         Parameters
         ----------
@@ -485,7 +489,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert_relexation
+        Deprecated since 0.2.4: Use Assay.convert_relexation
 
         Parameters
         ----------
@@ -584,7 +588,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert_direct
+        Deprecated since 0.2.4: Use Assay.convert_direct
 
         Transforms are based on the linear relations
 
@@ -796,6 +800,51 @@ class Assay:
                                       fit.params['P0'], fit.params['P1'], fit.params['Pinf'])
 
         return self.convert_direct(pos_model, neg_model, pos_conc, neg_conc)
+
+    def to_concentrations(self, pos_conc: xr.DataArray|float = 1,
+                          neg_conc: xr.DataArray|float = 0) -> xr.DataArray:
+        """Convert RFU to concentrations
+
+        This uses direct conversion to map Assay.rfu to concentrations using
+        the controls associated in Assay.setup. The return value is a
+        linear interpolation between the provided neg_conc and pos_conc.
+
+        Parameters
+        ----------
+        neg_conc, pos_conc: xarray.DataArray or float (optional)
+            Either scalar concentration values or DataArrays with
+            a coordinate species, which is expected to be a subset
+            of Assay.setup.species. If neg_conc is not provided
+            it defaults to 0. If pos_conc is not provided it
+            defaults to 1.
+
+        Returns
+        -------
+        An xarray.DataArray with dimensions (content, species) with
+        interpolated concentration values.
+        """
+        # TODO: allow missing negative controls
+        # TODO: could return dataset with mean and std
+        if self.setup is None:
+            raise ValueError('to_concentrations requires Assay.setup')
+
+        pos_controls = self.setup.positive.dropna('content')
+        neg_controls = self.setup.negative.dropna('content')
+
+        if not pos_controls.content.equals(neg_controls.content):
+            # TODO: just warn and proceed with overlap
+            raise ValueError("Some samples do not define positive and negative controls.")
+
+        controls = xr.concat([pos_controls, neg_controls],
+                             pd.Index(['positive', 'negative'], name='control'))
+
+        rfu = self.mean.reset_index(["group"], drop=True)
+        neg_rfu = rfu.loc[controls.sel(control='negative')]
+        pos_rfu = rfu.loc[controls.sel(control='positive')]
+        from_rfu, _ = self.convert_direct(pos_rfu, neg_rfu, pos_conc, neg_conc)
+        concs = from_rfu(self.mean.sel(content=controls.content))
+        concs.name = 'contentation'
+        return concs.drop_vars(['control'])
 
     def compute_power_variance_model(self) -> Callable[[float], float]:
         """Compute power variance model
