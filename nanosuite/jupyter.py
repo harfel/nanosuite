@@ -16,13 +16,6 @@ import xarray as xr                        # type: ignore
 from . import crn, mars
 
 
-def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
-    """Color gradient for a given sequence"""
-    size = len(dataset)
-    for idx, _ in enumerate(dataset):
-        yield colormaps[cmap](idx/size)
-
-
 ####################################################################################################
 #
 # crn enhancements
@@ -46,6 +39,11 @@ class FitProgress:
         pass # self.hdisplay.update(HTML('<div/>'))
 
     def __call__(self, params, num_it, residuals, *args, **kwargs):
+        def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
+            size = len(dataset)
+            for idx, _ in enumerate(dataset):
+                yield colormaps[cmap](idx/size)
+
         original = deepcopy(self.crn.params)
         self.crn.params = params
         traj = self.conversion(self.crn.integrate(self.initial, t_eval=self.data.time))
@@ -55,6 +53,7 @@ class FitProgress:
         ax = fig.gca()
         gap = len(traj.time)//15
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
+            # TODO: it would be nice if this could use Assay colors
             ax.plot(experiment.time, experiment, '-', c=color)
             ax.plot(model.time[::gap], model[::gap], 'o', c=color)
         ax.set_xlabel('Time [s]')
@@ -112,6 +111,7 @@ crn.PartitionedCRN = PartitionedCRN  # type: ignore
 #
 ####################################################################################################
 class Assay(mars.Assay):
+    """Assay class with graphical representation"""
     __doc__ = mars.Assay.__doc__
 
     def __init__(self, *args, **opts):
@@ -133,42 +133,44 @@ class Assay(mars.Assay):
         return buf.read()
 
     def _repr_html_(self, **kwargs) -> str:
+        # pylint: disable=protected-access
         assay_img = base64.b64encode(self._repr_png_(**kwargs)).decode()
         return f"""
-            <script>
-                function openTab(evt, id) {{
-                  let tab_group = evt.currentTarget.parentNode.parentNode;
-                  tab_group.querySelectorAll('.tabcontent').forEach(
-                    tab => tab.style.display = 'none'
-                  );
-                  tab_group.querySelectorAll('.tab button').forEach(
-                    link => link.classList.remove('active')
-                  );
-                  tab_group.querySelector('.'+id).style.display = 'block';
-                  evt.currentTarget.classList.add('active');
-                }}
-            </script>
-            
             <div>
+                <script>
+                    function openTab(evt, id) {{
+                      let tab_group = evt.currentTarget.parentNode.parentNode;
+                      tab_group.querySelectorAll('.tabcontent').forEach(
+                        tab => tab.style.display = 'none'
+                      );
+                      tab_group.querySelectorAll('.tab button').forEach(
+                        link => link.classList.remove('active')
+                      );
+                      tab_group.querySelector('.'+id).style.display = 'block';
+                      evt.currentTarget.classList.add('active');
+                    }}
+                </script>
+
                 <div class="tab">
                     <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
                     <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
                     <button onclick="openTab(event, 'samplemap')" style="border: 1px solid grey">Sample Map</button>
                 </div>
-            
-                <div id="rfu" class="rfu tabcontent">
+
+                <div class="rfu tabcontent">
                   <img src="data:image/png;base64,{assay_img}">
                 </div>
-                <div id="setup" class="setup tabcontent" style="display: none">
+                <div class="setup tabcontent" style="display: none">
                   {self.setup._repr_html_() if self.setup is not None else 'No setup provided'}
                 </div>
-                <div id="samplemap" class="samplemap tabcontent" style="display: none">
-                  {self.sample_map._repr_html_() if self.sample_map is not None else 'No sample map provided'}
+                <div class="samplemap tabcontent" style="display: none; font-size: 0.75rem">
+                  {self.sample_map._repr_html_ if self.sample_map is not None else 'No sample map provided'}
                 </div>
             </div>
         """
 
     def set_default_palette(self):
+        """Set distinct gradients for each sample group"""
         positive = np.unique(self.setup.positive)
         negative = np.unique(self.setup.negative)
         controls = np.concatenate([positive, negative])
@@ -183,9 +185,14 @@ class Assay(mars.Assay):
                 self.palette.loc[sample.content, :] = np.array(gradient(idx/samples))
 
     def set_palette(self, color_by, colormap: str = 'brg', portion: tuple[float, float] = (0,1)):
+        """Set distinct gradient for each sample group."""
+        if self.sample_map is None:
+            raise ValueError("Assay.set_palette requires Assay.sample_map to be defined.")
+
         start, end = portion
         group_colors = colormaps[colormap]
         groups = self.sample_map.groupby(by=color_by, sort=False)
+
         for group_idx, (_, group) in enumerate(groups):
             f = start + group_idx/len(groups)*(end-start)
             primary = np.array(group_colors(f))
@@ -196,6 +203,7 @@ class Assay(mars.Assay):
                 self.palette.loc[{'content': content}] = color
 
     def plot(self) -> Figure:
+        """Visualize assay as matplotlib figure"""
         fig = Figure()
         ax = fig.gca()
         ax.set_xlabel("Time [min]")

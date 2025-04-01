@@ -2,8 +2,9 @@
 """
 import math
 from pathlib import Path
+import pickle
 import pytest
-import lmfit
+import lmfit  # type: ignore
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -432,7 +433,7 @@ def test_equilibrate_circular_burst():
     state = model.state(A=10)
 
     with pytest.raises(ValueError):
-        eq = model.equilibrate(state)
+        model.equilibrate(state)
 
 @pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_subspecies():
@@ -536,7 +537,6 @@ def test_parameter_map_reduce():
 
     system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    import pickle
     data = pickle.dumps(system.params)
     unpickled = pickle.loads(data)
 

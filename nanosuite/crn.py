@@ -590,7 +590,7 @@ class CRN:
             indirect = {par.name: list(set.union(*[set(parameter_dependencies[n]) for n in dep]))
                         for par in self.params.values()
                         if par.name not in parameter_dependencies
-                        and (dep := set(par._expr_deps) & set(parameter_dependencies))}
+                        and (dep := set(par._expr_deps) & set(parameter_dependencies))}  # pylint: disable=protected-access
             if not indirect:
                 break
             parameter_dependencies.update(indirect)
@@ -608,9 +608,9 @@ class CRN:
                                                                           .index)
                 parameter_map.specify(samples, name, f'{name}_{suffix}')
 
-        # Now we go back and rewrite parameter expressions to use specialized parameters 
+        # Now we go back and rewrite parameter expressions to use specialized parameters
         expr_deps = [(par.name, list(dep)) for par in parameter_map.general_params.values()
-                     if (dep := set(par._expr_deps) & set(parameter_dependencies))]
+                     if (dep := set(par._expr_deps) & set(parameter_dependencies))]  # pylint: disable=protected-access
         for name, deps in expr_deps:
             expr = [parameter_map.general_params[name].expr
                     for sample in parameter_map.mapping.index]
