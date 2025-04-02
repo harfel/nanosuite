@@ -1,6 +1,7 @@
 - allow to turn jupyter interactive mode on or off
 - make CRN.parametrize_for idempotent
 - fix doctests
+- add LICENSE
 = 0.3.0
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 - extended port mapping as described below
