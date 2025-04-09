@@ -135,6 +135,11 @@ class Assay(mars.Assay):
     def _repr_html_(self, **kwargs) -> str:
         # pylint: disable=protected-access
         assay_img = base64.b64encode(self._repr_png_(**kwargs)).decode()
+        setup = self.setup._repr_html_() if self.setup is not None else 'No setup provided'
+        sample_map = (self.sample_map._repr_html_()  # type: ignore
+                      if self.sample_map is not None
+                      else 'No sample map provided')
+
         return f"""
             <div>
                 <script>
@@ -161,13 +166,13 @@ class Assay(mars.Assay):
                   <img src="data:image/png;base64,{assay_img}">
                 </div>
                 <div class="setup tabcontent" style="display: none">
-                  {self.setup._repr_html_() if self.setup is not None else 'No setup provided'}
+                  {setup}
                 </div>
                 <div class="samplemap tabcontent" style="display: none; font-size: 0.75rem">
-                  {self.sample_map._repr_html_ if self.sample_map is not None else 'No sample map provided'}
+                  {sample_map}
                 </div>
             </div>
-        """
+        """  # type: ignore 
 
     def set_default_palette(self):
         """Set distinct gradients for each sample group"""
