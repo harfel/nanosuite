@@ -184,6 +184,14 @@ def test_convert_accepts_four_args():
     assert from_rfu(assay.rfu).dims == ('content', 'species', 'time')
     assert to_rfu(assay.setup).dims == ('content', 'time')
 
+def test_convert_average():
+    assay = Assay(rfu_file, setup_file)
+    control = assay.rfu.sel(group='Positive')
+    from_rfu, to_rfu = assay.convert(control, method='average', transient=assay.rfu.time[-1]//2)
+
+    assert from_rfu(assay.rfu).dims == ('content', 'time')
+    assert to_rfu(assay.setup).dims == ('content', 'time')
+
 def test_to_concentrations_accepts_scalar_pos_conc():
     assay = Assay(rfu_file, setup_file)
     concs = assay.to_concentrations(1e-6)
@@ -195,7 +203,7 @@ def test_to_concentrations_accepts_vector_pos_conc():
     concs = assay.to_concentrations(pos)
     assert (concs < 1).all()
 
-def test_to_concentrations_accepts_vector_oncs():
+def test_to_concentrations_accepts_vector_concs():
     assay = Assay(rfu_file, setup_file)
     neg = xr.DataArray([0, 0.5, 0.75], {'species': ['A', 'B', 'C']})
     pos = xr.DataArray([1, 0.5, 0.25], {'species': ['A', 'B', 'C']})
@@ -206,3 +214,9 @@ def test_to_concentrations_does_not_convert_controls():
     assay = Assay(rfu_file, setup_file)
     concs = assay.to_concentrations()
     assert len(concs.sample) == 14
+
+@pytest.mark.skip("TODO: add this feature")
+def test_to_concentrations_works_with_average_conversions():
+    assay = Assay(rfu_file, setup_file)
+    concs = assay.to_concentrations(1e-8, method='average')
+    assert not xr.ufuncs.isinf(concs).any()
