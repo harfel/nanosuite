@@ -1,12 +1,15 @@
-- allow to turn jupyter interactive mode on or off
-- make CRN.parametrize_for idempotent
 - fix doctests
 - add LICENSE
+- update and add nanosuite/examples
+- pass skipped tests
 = 0.3.0
+- make CRN.parametrize_for idempotent
+- permit scalar pos_rfu, neg_rfu arguments in addition to 1D/2D arrays
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
-- extended port mapping as described below
-- CRN should be immutable and additive/extenable
-- set sensible crn.params['t0'] bounds with injectors
-- can I automatically assign new coordinates to all xarrays?
+- allow to turn jupyter interactive mode on or off
+- set sensible crn.params['t0'] bounds for/from injectors
+- extended port mapping: allow rate constant definitions such as "; k = [1, 1e1, 1e2, 1e3]"
+- can I automatically assign new coordinates (e.g. systems) to both setup and sample_map?
+? CRN could be immutable and additive/extenable
 ? integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
-- implement better hierarchical indexing, support assay.plate - assay.mean [stash On 0.2.5]
+- implement better hierarchical indexing, support assay.plate - assay.mean

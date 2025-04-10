@@ -490,7 +490,8 @@ class CRN:
         returns a 2D DataArray wich species concentrations for the provided
         number of distinct samples.
 
-        >>> initial = crn.state(A=100, B=100)
+        >>> model = from_string("A + B <=> C; k1, k2")
+        >>> initial = model.state(A=100, B=100)
 
         Parameters
         ----------
@@ -554,8 +555,8 @@ class CRN:
     	following the provided sample_map dependent on the species given
         as argument value. For example:
 
-    	>>> model = crn.from_string("A + B <=> C; k1, k2")
-    	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
+        >>> model = from_string("A + B <=> C; k1, k2")
+        >>> model.parametrize_for(assay.sample_map, k1=['A', 'B'], k2=['A'])  # doctest: +SKIP
 
         Calling the method sets new model.params for the given sample_map and
         parameter dependencies.

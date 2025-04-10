@@ -18,38 +18,50 @@ Installation
 $ pip install git+https://github.com/harfel/nanosuite.git
 ```
 
-See available github branches for access to developer versions.
+Check out available github branches for access to developer and early release versions.
+The project adopts a gitflow branching model
 
 
 Getting started
 ---------------
 
-The following code demonstrates how to define a reaction model and simulate it for a range of initial conditions:
-
+Nanosuite allows you to easily define chemical reaction networks using an intuitive notation:
 ```python
 import nanosuite as ns
-from matplotlib import pyplot as plt
 
-
-# Define a chemical reaction network via a simple language
 model = ns.crn.from_string("""
+
         Sensor + Target -> Intermediate           ; k1=10
     Intermediate + Fuel -> Signal + Sensor + Waste; k2=3
-""")
 
-# Set up initial states with varying concentrations of target
+""")
+```
+
+We can then simulate the reaction kinetics for a set of initial states, such as a serial
+dilution of the target: 
+```
 initial = model.state(Sensor=10,
                       Fuel=10,
                       Target=[0.001, 0.01, 0.1, 1])
 
-# And simulate the system for 100 time units
-traj = model.simulate(initial, 100)
 
+traj = model.simulate(initial, 100)
+```
+The resulting trajectory is 3D indexed array (using the xarray framework) with
+domensions `content`, `specises` and `time`. This allows you to investigate the
+system behavior in versatile ways.
+
+```python
 # Plot signal concentration over time
+from matplotlib import pyplot as plt
+
 plt.xlabel("Time")
 lpt.ylabel("Concentration [mM]")
-for conc, sample in zip(initial.sel(species='Target'), traj.sel(species='Signal')):
-    plt.plot(sample.time, sample, label=f"{str(conc.data)} mM")
+
+for sample in traj.sel(species='Signal')
+    conc = initial.sel(content=sample.content, species='Target')
+    plt.plot(sample.time, sample, label=f'{str(conc.data)} mM')
+
 plt.legend()
 plt.show()
 ```
