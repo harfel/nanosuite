@@ -1,3 +1,4 @@
+- have CRN.parametrize_for return a new ParameterMap rather than changing CRN.params
 - fix doctests
 - add LICENSE
 - update and add nanosuite/examples
@@ -13,3 +14,10 @@
 ? CRN could be immutable and additive/extenable
 ? integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
 - implement better hierarchical indexing, support assay.plate - assay.mean
+
+Conversion
+==========
+
+Assay.setup associates samples with their negative and positive controls. Those should be used
+to convert RFU averages to concentrations following different conversion methods (direct,
+relaxation and average).

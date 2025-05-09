@@ -114,6 +114,10 @@ class ParameterMap(lmfit.Parameters):
                 for special in self.specializations:
                     setattr(self.params[special], attr, val)
 
+        def __getattr__(self, attr: str) -> np.ndarray:
+            return np.array([getattr(self.params[special], attr)
+                            for special in self.specializations])
+
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
 
@@ -163,6 +167,7 @@ class ParameterMap(lmfit.Parameters):
         if name not in self.mapping.values:
             # only add a column to the mapping if name is a general parameter
             self.mapping[name] = name
+            self.mapping = self.mapping.copy()
 
     def __add__(self, other: ParameterMap) -> ParameterMap:
         raise RuntimeError("Not implemented yet.")
