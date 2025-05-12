@@ -127,5 +127,6 @@ class Assay(mars.Assay):
     def _repr_html_(self, **kwargs) -> str:
         return f'<img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">'
 
+
 # monkey patches
 mars.Assay = Assay                   # type: ignore

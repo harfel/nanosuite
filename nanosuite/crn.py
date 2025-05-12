@@ -1,7 +1,7 @@
 """Chemical reaction networks
 """
 from copy import deepcopy
-from typing import Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 from itertools import chain
 import warnings
 import xarray as xr                      # type: ignore
