@@ -17,8 +17,10 @@ mypy
 pytest
 pylint
 pandas-stubs
+ipykernel
 
-# Optional packages:
+# Computational Environment
+matplotlib
+jupyter-lab
+ipympl
 
-# ipykernel
-# ipympl 

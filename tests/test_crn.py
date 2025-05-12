@@ -1,11 +1,15 @@
 """Unit tests for crn
 """
 import math
+from pathlib import Path
+import pickle
 import pytest
-import lmfit
+import lmfit  # type: ignore
 import numpy as np
+import pandas as pd
 import xarray as xr
 from nanosuite import crn
+from nanosuite.mars import Assay
 
 
 def test_params_add():
@@ -20,6 +24,17 @@ def test_params_add():
     assert 'dG' in params
     assert params['k_b'].value == params['k_f']/math.exp(-params['dG'].value)
 
+def test_reversible_encoding():
+    ode1 = crn.from_string("""
+        A <=> B; kf, kb
+    """)
+    ode2 = crn.from_string("""
+        A -> B; kf
+        B -> A; kb
+    """)
+
+    assert ode1.reactions == ode2.reactions
+
 def test_repr_html():
     """Ensure correct HTML representation"""
     test_crn = crn.from_string("""
@@ -32,20 +47,31 @@ def test_repr_html():
             <td style="text-align: right">A_pure + B</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">C</td>
-            <td style="text-align: left">k1 = 1.1</td>
+            <td style="text-align: left" colspan="2">k1 = 1.1</td>
         </tr>
         <tr>
             <td style="text-align: right">C + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">B + E</td>
-            <td style="text-align: left">k2 = 1.2</td>
+            <td style="text-align: left" colspan="2">k2 = 1.2</td>
         </tr><tr>
             <td style="text-align: right">A_impure + D</td>
             <td style="text-align: center">&LongRightArrow;</td>
             <td style="text-align: left">E</td>
-            <td style="text-align: left">k = inf</td>
+            <td style="text-align: left" colspan="2">k = inf</td>
         </tr></table>'''
     assert rep == ''.join(line.strip() for line in expected.split('\n'))
+
+@pytest.mark.parametrize("reaction, stoichiometry_matrix", [
+    ("""A -> Z""", np.array([[-1, 1]])),
+    ("""2 A -> Z""", np.array([[-2, 1]])),
+    ("""2 A + B -> 3 A""", np.array([[1, -1]])),
+    ("""A -> B
+        B + C <=> Z""", np.array([[-1, 1, 0, 0],[0, -1, -1, 1]])),
+])
+def test_stoichiometry_matrix(reaction, stoichiometry_matrix):
+    test_crn = crn.from_string(reaction)
+    assert (test_crn.stoichiometry_matrix == stoichiometry_matrix).all()
 
 def test_from_string_irreversible():
     """Ensure correct parsing of irreversible reactions"""
@@ -60,7 +86,7 @@ def test_from_string_reversible():
     test_crn = crn.from_string("""
         A + B <=> C
     """)
-    assert len(test_crn.reactions) == 2
+    assert len(test_crn.reactions) == 1
     assert 'kf1' in test_crn.params
     assert 'kb1' in test_crn.params
 
@@ -102,10 +128,49 @@ def test_from_string_repeated_reversible_rates():
         A + B <=> C; kf1 = 1e7, 1e3
         C + D <=> E; kf1, kb = 1e3
         """)
-    assert len(model.params) == 4
-    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)]
-    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)]
+    assert len(model.params) == 4  # three rate constants plus t0
+    k1 = model.reactions[(('A', 1), ('B', 1)), (('C', 1),)][0]
+    k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
+
+def test_reversible_backward_can_be_zero():
+    system = crn.from_string("A <=> B; k_plus=1, k_minus=0")
+    assert system.params['k_minus'] == 0.
+    assert len(system.params) == 3
+
+def test_scale_concentration_unit():
+    system = crn.from_string("""
+        A -> X;         k_1 = 0.1
+        A + B -> Y;     k_2 = 0.1
+        A + B + C -> Z; k_3 = 0.1
+    """)
+
+    params = system.scale_concentration_unit(10)
+
+    assert params['k_1'] == 0.1
+    assert params['k_2'] == 1
+    assert params['k_3'] == 10
+
+def test_scale_concentration_unit_with_parameter_map():
+    system = crn.from_string("""
+        A -> X;         k1 = 0.1
+        A + B -> Y;     k2 = 0.1
+        A + B + C -> Z; k3 = 0.1
+    """)
+    sample_map = pd.DataFrame([
+        ['Aa', 'B', 'C', 'X', 'Y', 'Z'],
+        ['Ab', 'B', 'C', 'X', 'Y', 'Z'],
+    ], columns=['A', 'B', 'C', 'X', 'Y', 'Z'])
+    system.params = system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
+
+    params = system.scale_concentration_unit(1e3)
+
+    assert params['k1_Aa'] == 0.1
+    assert params['k1_Ab'] == 0.1
+    assert params['k2_Aa'] == 100
+    assert params['k2_Ab'] == 100
+    assert params['k3_Aa'] == 100_000
+    assert params['k3_Ab'] == 100_000
 
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
@@ -148,8 +213,11 @@ def test_burst_reactions(reactions, initial, outcome):
     traj = test_crn.integrate(initial)
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
+def test_burst_must_not_be_reversible():
+    with pytest.raises(ValueError):
+        crn.from_string("A <=> B; inf, 1")
+
 @pytest.mark.parametrize("reactions, initial", [
-    ("""A <=> B; kf=inf, kb=inf""", [1., 0.]),
     ("""A -> B; k=inf
         B -> A; k=inf""", [1., 0.]),
     ("""A -> B; k=inf
@@ -163,22 +231,6 @@ def test_circular_burst_reactions(reactions, initial):
     with pytest.raises(ValueError):
         test_crn.integrate(initial)
 
-def test_burst_after_initialization():
-    """Ensure reaction can be made burst by changing their rate constant"""
-    test_crn = crn.from_string("""
-        A -> X; k
-    """)
-    test_crn['k'].value = float('inf')
-    assert len(test_crn.burst_reactions) == 1
-
-def test_burst_reaction_name_consistancy():
-    """Ensure reactions to be instantanous if their rate constant name repeats"""
-    test_crn = crn.from_string("""
-        A -> X; k=inf
-        A -> Y; k
-    """)
-    assert len(test_crn.burst_reactions) == 2
-
 def test_impurities():
     """Ensure correct split into subspecies"""
     test_crn = crn.from_string("""
@@ -189,6 +241,7 @@ def test_impurities():
     """)
     initial = test_crn.state(A=1.)
     traj = test_crn.integrate(initial)
+    print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
@@ -237,7 +290,8 @@ def test_from_string_real_formats(value):
 
 def test_add_reaction_respects_catalysts():
     network = crn.CRN()
-    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)), rate=lmfit.Parameter('k'))
+    network.add_reaction(educts=(('A', 1), ('C', 1)), products=(('Z', 1), ('C', 1)),
+                         forward_rate=lmfit.Parameter('k'))
     assert len(network.species) == 3
 
 def test_integrate_teval_is_optional():
@@ -307,6 +361,45 @@ def test_integrate_teval_accepts_scalar_arrays():
     assert traj.time[-1] == 4
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+def test_equilibrate_reversible():
+    """Ensure equilibrium of reversible reactions is accurate"""
+    model = crn.from_string("A <=> B ; kf=2, kb=1")
+    state = model.state(A=10)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert eq.sum() == state.sum()
+    assert conc_ratio == pytest.approx(rate_ratio)
+
+def test_equilibration_multiple_state():
+    """Permit equilbrium to be calculated for multiple states"""
+    model = crn.from_string("A + B <=> C; kf, kb")
+    initial = model.state(A=[1, 10, 100], B=1)
+    A0 = initial.sel(species='A')
+    B0 = initial.sel(species='B')
+    K = model.params['kf'].value / model.params['kb'].value
+    Ceq = (A0+B0+1/K)/2 - ((A0-B0)**2 + 2*(A0+B0)/K + 1/K**2)**0.5/2
+
+    equilibrium = model.equilibrate(initial)
+
+    assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
+
+def test_equilibrate_subspecies():
+    model = crn.from_string("""
+        A contains reactive with p_A = 0.5
+        A [reactive] <=> B ; kf = 1, kb = 3
+    """)
+    state = model.state(A=8)
+
+    eq = model.equilibrate(state)
+
+    conc_ratio = eq.sel(species='B') / eq.sel(species='A_reactive')
+    rate_ratio = model.params['kf'].value / model.params['kb'].value
+    assert conc_ratio == pytest.approx(rate_ratio)
+    assert eq.sel(species='A') == 7
+
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""
     model = crn.from_string("A + B -> C; k=inf")
@@ -365,3 +458,83 @@ def test_state_accepts_numpy_spaces(conc, extra_conc):
     state = model.state(conc, **extra_conc)
     assert all(state.sel(species='A') == (1, 2, 3))
     assert all(state.sel(species='B') == (1, 10, 100))
+
+def test_parameter_map():
+    """Assert that parameter map returns correct shape
+
+    The API in this test is still experimental and might change in future versions
+    """
+    rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
+    setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
+    assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    system = crn.from_string("A <=> B; k1, k2")
+
+    params = system.parametrize_for(assay.sample_map, k1=['Probe'])
+
+    assert params.mapping.shape == (len(assay.setup.content), 3)
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(params) == 4
+    assert len(params.general_params) == 1
+
+def test_parameter_map_reduce():
+    rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
+    setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
+    assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
+    system = crn.from_string("A <=> B; k1, k2")
+
+    system.parametrize_for(assay.sample_map, k1=['Probe'])
+
+    data = pickle.dumps(system.params)
+    unpickled = pickle.loads(data)
+
+    assert unpickled == system.params
+    assert (unpickled.mapping.values == system.params.mapping.values).all()
+    assert unpickled.general_params == system.params.general_params
+
+def test_parameter_map_assign_sequence():
+    model = crn.from_string("""
+        A + B <=> C; k1, k2
+    """)
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ], columns=["A", "B", "C"])
+    params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+    params['t0'].value = 10
+    params['k1'].value = [1, 10, 100, 1, 10, 100]
+    params['k2'].value = 10
+
+    assert params['t0'].value == 10
+    assert params['k1_A1'].value == 1
+    assert params['k1_A2'].value == 10
+    assert params['k1_A3'].value == 100
+    assert params['k2_A1'].value == 10
+    assert params['k2_A2'].value == 10
+    assert params['k2_A3'].value == 10
+
+    with pytest.raises(ValueError):
+        params['k1'].value = [1, 10, 100]
+
+def test_parameter_map_respects_expressions():
+    model = crn.from_string("""
+        A <=> B; kf = 1, kb
+    """)
+    model.params.add('dG', value=0)
+    model.params['kb'].expr = 'kf*exp(dG)'
+
+    sample_map = pd.DataFrame([["A1", "B", "M1"],
+                               ["A2", "B", "M2"],
+                               ["A3", "B", "M1"]], columns=["A", "B", "M"])
+    params = model.parametrize_for(sample_map, dG=["A"], kf=["M"])
+
+    params['dG'].value = [-10, 0, 10]
+
+    assert params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
+    assert params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
+    assert params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'
