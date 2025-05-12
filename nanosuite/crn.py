@@ -54,6 +54,22 @@ def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, ti
         raise RuntimeError(result.message)
     return result.y
 
+def dist_to_equilib(X, N, C, lnK):
+    """Compute distance to equilibrium distribution
+
+    This is used by CRN.equilibrate to minimize the
+    distance to the equilibrium in an iterative
+    gradient decent.
+    """
+    # pylint: disable=invalid-name
+    Y = N.T @ X + C
+    if out_of_bounds := Y[Y<0].sum():
+        return (1-out_of_bounds)*1e14
+    with np.errstate(divide='ignore', invalid='ignore'):
+        Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
+    Z = np.where(np.isnan(Z), 0, Z)
+    return np.linalg.norm(Z)
+
 
 class ParameterMap(lmfit.Parameters):
     """Mapping between samples and parameters
@@ -69,6 +85,38 @@ class ParameterMap(lmfit.Parameters):
     """
     mapping: pd.DataFrame
     general_params: dict[str, lmfit.Parameter]
+    zero: lmfit.Parameter
+
+    class ParameterProxy:
+        """A proxy object to access all specialized parameters
+
+        ParameterProxy's are returned by ParameterMap.__getitem__ when accessing
+        a general parameter that is overloaded with specializations. The proxy
+        allows to set attributes of all specializations of the general parameter
+        either from a sequence of values or from a single value.
+        """
+        # pylint: disable=too-few-public-methods
+        params: ParameterMap
+        specializations: pd.Series
+
+        def __init__(self, parameter_map: ParameterMap, specializations: pd.Series):
+            self.__dict__.update(specializations=specializations, params=parameter_map)
+
+        def __setattr__(self, attr: str, val: Any) -> None:
+            if isinstance(val, xr.DataArray):
+                val = val.data
+            if isinstance(val, Sequence|np.ndarray):
+                if len(val) != len(self.specializations):
+                    raise ValueError(f"Must provide {len(self.specializations)} values")
+                for special, value in zip(self.specializations, val):
+                    setattr(self.params[special], attr, value)
+            else:
+                for special in self.specializations:
+                    setattr(self.params[special], attr, val)
+
+        def __getattr__(self, attr: str) -> np.ndarray:
+            return np.array([getattr(self.params[special], attr)
+                            for special in self.specializations])
 
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
@@ -76,6 +124,7 @@ class ParameterMap(lmfit.Parameters):
         index = sample_map.index if sample_map is not None else pd.Index([])
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
+        self.zero = lmfit.Parameter('__ZERO')
 
     def __reduce__(self) -> tuple:
         return self.__class__, (), {'mapping': self.mapping,
@@ -88,6 +137,15 @@ class ParameterMap(lmfit.Parameters):
         self.mapping = state['mapping']
         self.general_params = state['general']
         return super().__setstate__(state['params'][2])
+
+    def __getitem__(self, key: str) -> lmfit.Parameter:
+        if key in self:
+            return super().__getitem__(key)
+        if key in self.general_params:
+            return self.ParameterProxy(self, self.mapping[key])
+        if not key:
+            return self.zero
+        raise KeyError(key)
 
     def update(self, other: ParameterMap):
         if (self.mapping.shape != other.mapping.shape
@@ -109,6 +167,7 @@ class ParameterMap(lmfit.Parameters):
         if name not in self.mapping.values:
             # only add a column to the mapping if name is a general parameter
             self.mapping[name] = name
+            self.mapping = self.mapping.copy()
 
     def __add__(self, other: ParameterMap) -> ParameterMap:
         raise RuntimeError("Not implemented yet.")
@@ -160,7 +219,7 @@ class ParameterMap(lmfit.Parameters):
             samples to vary parameters for
         """
         content_dim = next(iter(samples.coords))
-        subset = self.mapping.loc[samples.coords[content_dim]].values
+        subset = self.mapping.loc[samples.coords[content_dim].data].values
         for name in self:
             if name not in subset:
                 self[name].vary = False
@@ -181,10 +240,10 @@ class CRN:
     k_backward can be created with:
 
     >>> from lmfit import Parameter
-    >>> crn = CRN([
-    ...     ((("A", 1), ("B", 1)), (("C", 1),),
-    ...     Parameter('k_forward', 0.1), Parameter('k_backward', 0.1)),
-    ... ])
+    >>> crn = CRN({
+    ...     ((("A", 1), ("B", 1)), (("C", 1),)):
+    ...         (Parameter('k_forward', 0.1), Parameter('k_backward', 0.1)),
+    ... })
 
     This is equivalent to the more convenient function:
 
@@ -208,7 +267,7 @@ class CRN:
     params: ParameterMap
 
     def __init__(self,
-                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
                  species: Iterable[str]|None = None):
         """Create a chemical reaction network.
 
@@ -227,8 +286,8 @@ class CRN:
         self.reactions = {}
         self.params = ParameterMap()
         self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
-        for reaction in reactions or []:
-            self.add_reaction(*reaction)
+        for reaction, rates in (reactions or {}).items():
+            self.add_reaction(*reaction, *rates)
 
     def __str__(self) -> str:
         def render(complexes: tuple[Reactants, Reactants], forward: str, backward: str = '') -> str:
@@ -363,23 +422,29 @@ class CRN:
                 rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
 
-    def scale_concentration_unit(self, scale_factor: float):
+    def scale_concentration_unit(self, scale_factor: float) -> ParameterMap:
         """Scale reaction rate constants to new concentration unit.
 
+        Returns
+        -------
+        ParameterMap with concentrations scaled by the given factor.
         For example, if current rate constants are given in M^-1s^-1, the
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
+        parameter_map = self.params.copy()
+
         for (f_reaction, b_reaction), (f_rate, b_rate) in self.reactions.items():
             for reaction, param in [(f_reaction, f_rate), (b_reaction, b_rate)]:
                 if not param:
                     continue
                 factor = scale_factor**(len(reaction)-1)
-                if not self.params.mapping.empty and param in self.params.mapping:
+                if not parameter_map.mapping.empty and param in parameter_map.mapping:
                     for specific in self.params.mapping[param]:
-                        self.params[specific].value *= factor
+                        parameter_map[specific].value *= factor
                 else:
-                    self.params[param].value *= factor
+                    parameter_map[param].value *= factor
+        return parameter_map
 
     def add_reaction(self, educts: Reactants, products: Reactants,
                      forward_rate: lmfit.Parameter, backward_rate: lmfit.Parameter|None = None):
@@ -395,6 +460,8 @@ class CRN:
         forward_rate: lmfit.Parameter of the forward rate constant
         backward_rate: optional lmfit.Paramter of the backward rate constant (default: None)
         """
+        if forward_rate.value == float('inf') and backward_rate and backward_rate.value != 0:
+            raise ValueError("Reactions with infinite rate constant cannot be reversible.")
         # collect species and complexes
         if (products, educts) in self.reactions:
             self.reactions[products, educts] = (self.reactions[products, educts][0],
@@ -416,7 +483,7 @@ class CRN:
 
         if forward_rate.name not in self.params:
             self.params.add(forward_rate)
-        if backward_rate and backward_rate.name not in self.params:
+        if backward_rate is not None and backward_rate.name not in self.params:
             self.params.add(backward_rate)
 
     def __getitem__(self, name: str) -> lmfit.Parameter:
@@ -436,7 +503,8 @@ class CRN:
         returns a 2D DataArray wich species concentrations for the provided
         number of distinct samples.
 
-        >>> initial = crn.state(A=100, B=100)
+        >>> model = from_string("A + B <=> C; k1, k2")
+        >>> initial = model.state(A=100, B=100)
 
         Parameters
         ----------
@@ -493,18 +561,20 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parametrize_for(self, sample_map: pd.DataFrame, **parameter_dependencies: list[str]):
-        """Assign a parametrization for the given sample_map
+    def parametrize_for(self, sample_map: pd.DataFrame,
+                        **parameter_dependencies: list[str]) -> ParameterMap:
+        """Return a parametrization for the given sample_map
 
         Keyword arguments are parameter names, which are to be specialized
     	following the provided sample_map dependent on the species given
         as argument value. For example:
 
-    	>>> model = crn.from_string("A + B <=> C; k1, k2")
-    	>>> model.parametrize_for(assay, k1=['A', 'B'], k2=['A'])
+        >>> model = from_string("A + B <=> C; k1, k2")
+        >>> params = model.parametrize_for(assay.sample_map,
+        ...                                k1=['A', 'B'], k2=['A'])  # doctest: +SKIP
 
-        Calling the method sets a new model.parameter_map and model.params
-        for the given sample_map and parameter dependencies.
+        Calling the method sets new model.params for the given sample_map and
+        parameter dependencies.
 
         # TODO: The parameter_map currently does not respect buffer and media
         or any descriptor other than chemical species.
@@ -522,7 +592,27 @@ class CRN:
         # to a new specialized parameter object. The parameter name is suffixed with the
         # names of the dependencies (if k1 depends on Probe, the local parameter_map will
         # be named k1_Probe_1, k1_Probe_2, etc.
+
+        # If a parameter gets specialized, it might require to also specialize
+        # parameters that depend on it via expressions. E.g. if k_back is constrained
+        # to equal k_forward / exp(-dG) and dG becomes specialized, then
+        # k_back needs to become specialized too -- and the equation for each
+        # k_back needs to be rewritten to use the specialized dG parameter.
+        # This could even happen iteratively, if a third parameter expression
+        # depends on k_back...
+        # We first add all these implicit dependencies to the parameter_dependencies
+
+        while True:
+            indirect = {par.name: list(set.union(*[set(parameter_dependencies[n]) for n in dep]))
+                        for par in self.params.values()
+                        if par.name not in parameter_dependencies
+                        and (dep := set(par._expr_deps) & set(parameter_dependencies))}  # pylint: disable=protected-access
+            if not indirect:
+                break
+            parameter_dependencies.update(indirect)
+
         for name, dependencies in parameter_dependencies.items():
+            dependencies = sorted(dependencies)
             sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
 
             for _, species in sample_sets.iterrows():
@@ -533,7 +623,20 @@ class CRN:
                                      [sample_map[dependencies] == species].dropna()
                                                                           .index)
                 parameter_map.specify(samples, name, f'{name}_{suffix}')
-        self.params = parameter_map
+
+        # Now we go back and rewrite parameter expressions to use specialized parameters
+        expr_deps = [(par.name, list(dep)) for par in parameter_map.general_params.values()
+                     if (dep := set(par._expr_deps) & set(parameter_dependencies))]  # pylint: disable=protected-access
+        for name, deps in expr_deps:
+            expr = [parameter_map.general_params[name].expr
+                    for sample in parameter_map.mapping.index]
+            substitutions = parameter_map.mapping[deps]
+            for general in substitutions:
+                expr = [ex.replace(general, special)
+                        for ex, special in zip(expr, substitutions[general])]
+            parameter_map[name].expr = expr
+
+        return parameter_map
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
@@ -544,32 +647,47 @@ class CRN:
 
         Parameters
         ----------
-        initial_condition: xarray.DataArray
+        initial_condition: 1D or 2D xarray.DataArray
             state vector to equilibrate
+
+        Returns
+        -------
+        A 1D or 2D xarray.DataArray with the equilibrium corresponding to
+        the initial state
         """
         # pylint: disable=invalid-name
-        C = self.state(initial_condition).values
+        initial_condition = self.state(initial_condition)
         N = self.stoichiometry_matrix
         lnK = np.log(self.equilibrium_constants)
 
         if np.isinf(lnK).any():
             raise ValueError("Only fully reversible CRNs can be equilibrated.")
 
-        def equilib(X):
-            Y = N.T @ X + C
-            if out_of_bounds := Y[Y<0].sum():
-                return (1-out_of_bounds)*1e14
-            with np.errstate(divide='ignore', invalid='ignore'):
-                Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
-            Z = np.where(np.isnan(Z), 0, Z)
-            return np.linalg.norm(Z)
+        kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
+                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
+        kwargs.update(options)
 
-        minimizer_kwargs = {'method': 'Nelder-Mead', 'options': {'xatol': 1e-21, 'maxiter': 1000}}
-        minimizer_kwargs.update(options)
+        if initial_condition.ndim == 1:
+            C = initial_condition.values
+            kwargs['args'] = (N, C, lnK)
+            result = basinhopping(dist_to_equilib, np.zeros(N.shape[0]), niter=100,
+                                  minimizer_kwargs = kwargs)
+            return xr.DataArray(N.T @ result.x + C, initial_condition.coords)
 
-        result = basinhopping(equilib, np.zeros(N.shape[0],), niter=100,
-                              minimizer_kwargs = minimizer_kwargs)
-        return xr.DataArray(N.T @ result.x + C, {'species': self.species})
+        if initial_condition.ndim == 2:
+            with futures.ProcessPoolExecutor() as executor:
+                def schedule_computation(C):
+                    return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
+                                           niter=100,
+                                           minimizer_kwargs = kwargs | {'args': (N, C, lnK)})
+
+                jobs = [schedule_computation(C) for C in initial_condition.values]
+                equilibrium = [N.T @ job.result().x + C
+                               for job, C in zip(jobs, initial_condition.values)]
+
+            return xr.DataArray(equilibrium, initial_condition.coords)
+
+        raise ValueError("Intiail condition mut be 1 or 2 dimensional")
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None,
@@ -773,17 +891,20 @@ class PartitionedCRN(CRN):
     To declare subspecies compositions, PartitionedCRN offers the method
     define_subspecies:
 
-    >>> reactions = from_string(
-    ...     "biomarker_mutant + probe -> biomarker_mutant + signal").reactions
-    >>> crn = PartitionedCRN(reactions)
+    >>> from lmfit import Parameter
+    >>> crn = PartitionedCRN({
+    ...     ((("biomarker_mutant", 1), ("probe", 1)), (("biomarker_mutant", 1), ('signal', 1))):
+    ...         (Parameter('k', 0.1), None),
+    ... })
+
     >>> crn.define_subspecies("biomarker",
-    ...     subspecies={"mutant": 0.01}, rest="wildtype")
+    ...     subspecies={"mutant": Parameter('k_mutant', 0.01)}, rest="biomarker_wildtype")
 
     >>> initial = crn.state(biomarker=100)
     >>> trajectory = crn.integrate(initial)
-    >>> total = trajecory.sel(species="biomarker")
-    >>> mutant = trajecory.sel(species="biomarker_mutant")
-    >>> wildtype = trajecory.sel(species="biomarker_wildtype")
+    >>> total = trajectory.sel(species="biomarker")
+    >>> mutant = trajectory.sel(species="biomarker_mutant")
+    >>> wildtype = trajectory.sel(species="biomarker_wildtype")
 
 
     Internally, the mapping from species space to subspecies space is
@@ -808,7 +929,7 @@ class PartitionedCRN(CRN):
 
 
     def __init__(self,
-                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
                  species_defs : list[tuple[str, dict[str, lmfit.Parameter], str]]|None = None,
                  species: Iterable[str]|None = None):
         super().__init__(reactions, species)
@@ -893,7 +1014,7 @@ class PartitionedCRN(CRN):
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
         content_dim = next(iter(state.coords))
-        return xr.DataArray([sample.values @ self.split_species(state.coords[content_dim].data)
+        return xr.DataArray([sample.values @ self.split_species(sample.coords[content_dim].data)
                                  for sample in state],
                                 state.coords)
 

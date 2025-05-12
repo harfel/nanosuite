@@ -4,21 +4,16 @@ This module requires IPython and matplotlib
 """
 import base64
 from copy import deepcopy
+from itertools import cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
 from IPython.display import display, HTML  # type: ignore
 import lmfit                               # type: ignore
 from matplotlib import colormaps           # type: ignore
 from matplotlib.figure import Figure       # type: ignore
+import numpy as np
 import xarray as xr                        # type: ignore
 from . import crn, mars
-
-
-def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
-    """Color gradient for a given sequence"""
-    size = len(dataset)
-    for idx, _ in enumerate(dataset):
-        yield colormaps[cmap](idx/size)
 
 
 ####################################################################################################
@@ -44,6 +39,11 @@ class FitProgress:
         pass # self.hdisplay.update(HTML('<div/>'))
 
     def __call__(self, params, num_it, residuals, *args, **kwargs):
+        def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
+            size = len(dataset)
+            for idx, _ in enumerate(dataset):
+                yield colormaps[cmap](idx/size)
+
         original = deepcopy(self.crn.params)
         self.crn.params = params
         traj = self.conversion(self.crn.integrate(self.initial, t_eval=self.data.time))
@@ -53,6 +53,7 @@ class FitProgress:
         ax = fig.gca()
         gap = len(traj.time)//15
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
+            # TODO: it would be nice if this could use Assay colors
             ax.plot(experiment.time, experiment, '-', c=color)
             ax.plot(model.time[::gap], model[::gap], 'o', c=color)
         ax.set_xlabel('Time [s]')
@@ -111,30 +112,117 @@ crn.PartitionedCRN = PartitionedCRN  # type: ignore
 ####################################################################################################
 class Assay(mars.Assay):
     """Assay class with graphical representation"""
+    __doc__ = mars.Assay.__doc__
+
+    def __init__(self, *args, **opts):
+        super().__init__(*args, **opts)
+        self.palette = xr.DataArray(np.zeros((len(self.setup), 4)),
+                                    {'content': self.setup.content,
+                                     'channel': ['R', 'G', 'B', 'A']})
+        self.set_default_palette()
+
     def _repr_mimebundle_(self, **kwargs) -> dict[str, Any]:
-        return {'png': self._repr_png_(**kwargs)}
+        return {'html': self._repr_html_(**kwargs),
+                'png': self._repr_png_(**kwargs)}
 
-    def _repr_png_(self, **kwargs):
-        fig = Figure()
-        ax = fig.gca()
-        ax.set_xlabel("Time [min]")
-        ax.set_ylabel("RFU")
-        ax.set_title(self.rfu.attrs["Test Name"])
-        for sample, err, color in zip(self.mean, self.std, gradient(self.mean)):
-            ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
-            ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
-        ax.grid()
-        ax.legend(ncols=4, loc='upper center', bbox_to_anchor=(0.5, 0),
-                  bbox_transform=fig.transFigure)
-
+    def _repr_png_(self, **_):
+        fig = self.plot()
         buf = io.BytesIO()
         fig.savefig(buf, format='png', bbox_inches="tight")
         buf.seek(0)
         return buf.read()
 
     def _repr_html_(self, **kwargs) -> str:
-        data = base64.b64encode(self._repr_png_(**kwargs)).decode()
-        return f'<img src="data:image/png;base64,{data}">'
+        # pylint: disable=protected-access
+        assay_img = base64.b64encode(self._repr_png_(**kwargs)).decode()
+        setup = self.setup._repr_html_() if self.setup is not None else 'No setup provided'
+        sample_map = (self.sample_map._repr_html_()  # type: ignore
+                      if self.sample_map is not None
+                      else 'No sample map provided')
+
+        return f"""
+            <div>
+                <script>
+                    function openTab(evt, id) {{
+                      let tab_group = evt.currentTarget.parentNode.parentNode;
+                      tab_group.querySelectorAll('.tabcontent').forEach(
+                        tab => tab.style.display = 'none'
+                      );
+                      tab_group.querySelectorAll('.tab button').forEach(
+                        link => link.classList.remove('active')
+                      );
+                      tab_group.querySelector('.'+id).style.display = 'block';
+                      evt.currentTarget.classList.add('active');
+                    }}
+                </script>
+
+                <div class="tab">
+                    <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
+                    <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
+                    <button onclick="openTab(event, 'samplemap')" style="border: 1px solid grey">Sample Map</button>
+                </div>
+
+                <div class="rfu tabcontent">
+                  <img src="data:image/png;base64,{assay_img}">
+                </div>
+                <div class="setup tabcontent" style="display: none">
+                  {setup}
+                </div>
+                <div class="samplemap tabcontent" style="display: none; font-size: 0.75rem">
+                  {sample_map}
+                </div>
+            </div>
+        """  # type: ignore
+
+    def set_default_palette(self):
+        """Set distinct gradients for each sample group"""
+        positive = np.unique(self.setup.positive)
+        negative = np.unique(self.setup.negative)
+        controls = np.concatenate([positive, negative])
+        for sample in controls:
+            self.palette.loc[self.setup[self.setup.sample==sample].content] = np.array([0, 0, 0, 1])
+        #groups = self.setup.groupby('group')
+        groups = self.setup[~self.setup.sample.isin(controls)].groupby('group')
+        cmaps = [colormaps[name] for name in ('Reds', 'Greens', 'Blues', 'Oranges', 'Purples')]
+        for (name, group), gradient in zip(groups, cycle(cmaps)):
+            samples = len(group)+len(group)//4
+            for idx, sample in enumerate(group, start=len(group)//4):
+                self.palette.loc[sample.content, :] = np.array(gradient(idx/samples))
+
+    def set_palette(self, color_by, colormap: str = 'brg', portion: tuple[float, float] = (0,1)):
+        """Set distinct gradient for each sample group."""
+        if self.sample_map is None:
+            raise ValueError("Assay.set_palette requires Assay.sample_map to be defined.")
+
+        start, end = portion
+        group_colors = colormaps[colormap]
+        groups = self.sample_map.groupby(by=color_by, sort=False)
+
+        for group_idx, (_, group) in enumerate(groups):
+            f = start + group_idx/len(groups)*(end-start)
+            primary = np.array(group_colors(f))
+            base = np.array([1, 1, 1, 1])
+            for count, (content, _) in enumerate(group.iterrows(), start=1):
+                f = count/len(group)
+                color = f*primary + (1-f)*base
+                self.palette.loc[{'content': content}] = color
+
+    def plot(self) -> Figure:
+        """Visualize assay as matplotlib figure"""
+        fig = Figure()
+        ax = fig.gca()
+        ax.set_xlabel("Time [min]")
+        ax.set_ylabel("RFU")
+        ax.set_title(self.rfu.attrs["Test Name"])
+        for sample, err in zip(self.mean, self.std):
+            color = self.palette.sel(content=sample.content).data
+            ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
+            ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
+        ax.grid()
+        ax.legend(ncols=4, loc='upper center', bbox_to_anchor=(0.5, 0),
+                  bbox_transform=fig.transFigure)
+        return fig
+
 
 # monkey patches
 mars.Assay = Assay                   # type: ignore

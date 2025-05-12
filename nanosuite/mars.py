@@ -140,10 +140,12 @@ class Assay:
         as chemical species. Concentrations of the latter can be provided in
         mM, uM, nM, pM or fM.
         """
-        df = pd.read_excel(setup_file, sheet_name='assay_settings')
-        attrs = dict(df.to_dict('tight')['data'])
+        with warnings.catch_warnings():
+            warnings.simplefilter(action='ignore', category=UserWarning)
+            df = pd.read_excel(setup_file, sheet_name='assay_settings')
+            attrs = dict(df.to_dict('tight')['data'])
+            df = pd.read_excel(setup_file, sheet_name='sample_preparations')
 
-        df = pd.read_excel(setup_file, sheet_name='sample_preparations')
         # generate groups
         content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
         df.set_index(content, inplace=True)
@@ -375,14 +377,18 @@ class Assay:
 
     @property
     def plate(self):
-        """Deprecated: use Assay.rfu instead"""
+        """Fluorescence values of all active wells and time points
+
+        *Deprecated since 0.3.0*: use Assay.rfu instead"""
         warnings.warn("Assay.plate is deprecated. Use Assay.rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.rfu
 
     @property
     def full_plate(self):
-        """Deprecated: use Assay.all_rfu instead"""
+        """Fluorescence values of all wells and time points
+
+        *Deprecated since 0.3.0*: use Assay.all_rfu instead"""
         warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead",
                       DeprecationWarning, stacklevel=2)
         return self.all_rfu
@@ -391,7 +397,7 @@ class Assay:
                     **kwargs: float|Iterable) -> xr.DataArray:
         """Define plate setup
 
-        DEPRECATED: Use Assay.setup
+        *Deprecated since 0.3.0*: Use Assay.setup
 
         This method generates a correctly indexed xr.DataArray that
         describes the plate setup in terms of concentrations of chemical
@@ -440,7 +446,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert
+        *Deprecated since 0.2.4*: Use Assay.convert
 
         Parameters
         ----------
@@ -483,7 +489,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between modelled RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert_relexation
+        Deprecated since 0.2.4: Use Assay.convert_relexation
 
         Parameters
         ----------
@@ -582,7 +588,7 @@ class Assay:
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between raw RFU values and concentrations
 
-        DEPRECATED: Use Assay.convert_direct
+        Deprecated since 0.2.4: Use Assay.convert_direct
 
         Transforms are based on the linear relations
 
@@ -647,7 +653,7 @@ class Assay:
     def convert(
         self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
         pos_conc: xr.DataArray|float = 1., neg_conc: xr.DataArray|float = 0., /,
-        method: str = 'direct'
+        method: str = 'direct', **method_options
     ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
         """Compute transforms between RFU values and concentrations
 
@@ -663,7 +669,7 @@ class Assay:
             Negative control samples. Assumed to be zero if not provided.
         pos_conc, neg_conc: optional xr.DataArray
             Concentration vectors of the positive and negative controls
-        method: 'direct' (default) or 'relaxation'
+        method: 'direct' (default), 'relaxation' or 'average'
 
         Returns
         -------
@@ -678,6 +684,8 @@ class Assay:
             return self.convert_direct(pos_rfu, neg_rfu, pos_conc, neg_conc)
         if method == 'relaxation':
             return self.convert_relaxation(pos_rfu, neg_rfu, pos_conc, neg_conc)
+        if method == 'average':
+            return self.convert_average(pos_rfu, neg_rfu, pos_conc, neg_conc, **method_options)
         raise ValueError(f"Unsupported calibration method '{method}'.")
 
     def convert_direct(
@@ -794,6 +802,92 @@ class Assay:
                                       fit.params['P0'], fit.params['P1'], fit.params['Pinf'])
 
         return self.convert_direct(pos_model, neg_model, pos_conc, neg_conc)
+
+    def convert_average(
+        self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
+        pos_conc: xr.DataArray|float = 1., neg_conc: xr.DataArray|float = 0.,
+        transient: float = 0
+    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
+        """Compute transformations between raw RFU values and concentrations
+
+        TODO: improve documentation
+
+        This method can be used if there are no dedicated controls.
+        """
+        eq = self.rfu[..., self.rfu.time >= transient].mean(dim='time')
+        # ERROR: here I am using pos_rfu wrongly, thinking it is a subset of rfu
+        pos_rfu = 0*self.rfu[self.rfu.sample.isin(pos_rfu.sample)] + eq
+        if neg_rfu is not None:
+            eq = self.rfu[..., self.rfu.time.isin(neg_rfu.time)].mean(dim='time')
+            neg_rfu = 0*self.rfu[self.rfu.sample.isin(neg_rfu.sample)] + eq
+        return self.convert_direct(pos_rfu, neg_rfu, pos_conc, neg_conc)
+
+    def to_concentrations(self, pos_conc: xr.DataArray|float = 1,
+                          neg_conc: xr.DataArray|float = 0, /,
+                          method: str = 'direct', **method_options) -> xr.DataArray:
+        """Convert RFU to concentrations
+
+        This converts Assay.rfu to concentrations using the controls associated
+        in Assay.setup as Assay.setup.positive and Assay.setup.negative. 
+        The return value is a linear interpolation between the provided neg_conc
+        and pos_conc.
+
+        Parameters
+        ----------
+        neg_conc, pos_conc: xarray.DataArray or float (optional)
+            Either scalar concentration values or DataArrays with
+            a coordinate species, which is expected to be a subset
+            of Assay.setup.species. If neg_conc is not provided
+            it defaults to 0. If pos_conc is not provided it
+            defaults to 1.
+
+        method: optional
+            Either 'direct' (default) or 'average'
+
+        method_options
+            are passed through to the respective method
+
+        Returns
+        -------
+        An xarray.DataArray with dimensions (content, species) with
+        interpolated concentration values.
+        """
+        # TODO: allow missing negative controls
+        # TODO: could return dataset with mean and std
+        if method == 'average':
+            raise RuntimeError("Assay.to_concentrations does not yet support method 'average'")
+
+        if self.setup is None:
+            raise ValueError('to_concentrations requires Assay.setup')
+
+        pos_controls = self.setup.positive.dropna('content')
+        neg_controls = self.setup.negative.dropna('content')
+
+        if not pos_controls.content.equals(neg_controls.content):
+            # TODO: just warn and proceed with overlap
+            raise ValueError("All samples must either have no control or two controls.")
+
+        if method == 'relaxation':
+            warnings.warn("Direct conversion to concentrations is experimental. "
+                          "Use the Assay.convert_relaxation interface.")
+
+        controls = xr.concat([pos_controls, neg_controls],
+                             pd.Index(['positive', 'negative'], name='control'))
+
+        rfu = self.mean.reset_index(["group"], drop=True)
+
+        # pos_rfu and neg_rfu are xarrays with the same shape as rfu. for each sample
+        # the array denotes the rfu values of the corresponding controls
+        # (for direct conversion this is exactly what I want)
+        neg_rfu = rfu.loc[controls.sel(control='negative')]
+        pos_rfu = rfu.loc[controls.sel(control='positive')]
+        from_rfu, _ = self.convert(pos_rfu, neg_rfu, pos_conc, neg_conc,
+                                   method=method, **method_options)
+        concs = from_rfu(self.mean.sel(content=controls.content))
+        concs.name = 'contentation'
+        if 'control' in concs.coords:
+            return concs.drop_vars(['control'])
+        return concs
 
     def compute_power_variance_model(self) -> Callable[[float], float]:
         """Compute power variance model

@@ -2,8 +2,9 @@
 """
 import math
 from pathlib import Path
+import pickle
 import pytest
-import lmfit
+import lmfit  # type: ignore
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -132,6 +133,11 @@ def test_from_string_repeated_reversible_rates():
     k2 = model.reactions[(('C', 1), ('D', 1)), (('E', 1),)][0]
     assert k1 == k2
 
+def test_reversible_backward_can_be_zero():
+    system = crn.from_string("A <=> B; k_plus=1, k_minus=0")
+    assert system.params['k_minus'] == 0.
+    assert len(system.params) == 3
+
 def test_scale_concentration_unit():
     system = crn.from_string("""
         A -> X;         k_1 = 0.1
@@ -139,11 +145,11 @@ def test_scale_concentration_unit():
         A + B + C -> Z; k_3 = 0.1
     """)
 
-    system.scale_concentration_unit(10)
+    params = system.scale_concentration_unit(10)
 
-    assert system.params['k_1'] == 0.1
-    assert system.params['k_2'] == 1
-    assert system.params['k_3'] == 10
+    assert params['k_1'] == 0.1
+    assert params['k_2'] == 1
+    assert params['k_3'] == 10
 
 def test_scale_concentration_unit_with_parameter_map():
     system = crn.from_string("""
@@ -155,16 +161,16 @@ def test_scale_concentration_unit_with_parameter_map():
         ['Aa', 'B', 'C', 'X', 'Y', 'Z'],
         ['Ab', 'B', 'C', 'X', 'Y', 'Z'],
     ], columns=['A', 'B', 'C', 'X', 'Y', 'Z'])
-    system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
+    system.params = system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
 
-    system.scale_concentration_unit(1e3)
+    params = system.scale_concentration_unit(1e3)
 
-    assert system.params['k1_Aa'] == 0.1
-    assert system.params['k1_Ab'] == 0.1
-    assert system.params['k2_Aa'] == 100
-    assert system.params['k2_Ab'] == 100
-    assert system.params['k3_Aa'] == 100_000
-    assert system.params['k3_Ab'] == 100_000
+    assert params['k1_Aa'] == 0.1
+    assert params['k1_Ab'] == 0.1
+    assert params['k2_Aa'] == 100
+    assert params['k2_Ab'] == 100
+    assert params['k3_Aa'] == 100_000
+    assert params['k3_Ab'] == 100_000
 
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
@@ -207,8 +213,11 @@ def test_burst_reactions(reactions, initial, outcome):
     traj = test_crn.integrate(initial)
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
+def test_burst_must_not_be_reversible():
+    with pytest.raises(ValueError):
+        crn.from_string("A <=> B; inf, 1")
+
 @pytest.mark.parametrize("reactions, initial", [
-    ("""A <=> B; kf=inf, kb=inf""", [1., 0.]),
     ("""A -> B; k=inf
         B -> A; k=inf""", [1., 0.]),
     ("""A -> B; k=inf
@@ -364,58 +373,19 @@ def test_equilibrate_reversible():
     assert eq.sum() == state.sum()
     assert conc_ratio == pytest.approx(rate_ratio)
 
-@pytest.mark.skip("Feature not yet implemented")
-@pytest.mark.parametrize("system, initial, equilibrium", [
-    ("A -> B", {'A': 10}, {'B': 10}),
-    ("""
-        A -> X
-        X <=> Y
-        Y -> B
-    """, {'A': 10}, {'B': 10}),
-    ("""
-        A <=> X
-        X -> Y
-        Y <=> B
-    """, {'A': 10}, {'B': 5, 'Y': 5}),
-    ("""A + B -> D
-        C + D -> A + E""", {'A': 1, 'B': 2, 'C': 5}, {'B': 0, 'C': 3, 'E': 2}),
-    ("""""", {'A': 10}, {'B': 10}),
-    ("""""", {'A': 10}, {'B': 10}),
-])
-def test_equilibration_irreversible(system, initial, equilibrium):
-    """Ensure equilibrium of irreversible reactions is accurate"""
-    model = crn.from_string(system)
-    state = model.state(initial)
-    eq = model.equilibrate(state)
+def test_equilibration_multiple_state():
+    """Permit equilbrium to be calculated for multiple states"""
+    model = crn.from_string("A + B <=> C; kf, kb")
+    initial = model.state(A=[1, 10, 100], B=1)
+    A0 = initial.sel(species='A')
+    B0 = initial.sel(species='B')
+    K = model.params['kf'].value / model.params['kb'].value
+    Ceq = (A0+B0+1/K)/2 - ((A0-B0)**2 + 2*(A0+B0)/K + 1/K**2)**0.5/2
 
-    assert all(eq.sel(species=species) == pytest.approx(conc)
-               for species, conc in equilibrium.items())
+    equilibrium = model.equilibrate(initial)
 
-@pytest.mark.skip("Feature not yet implemented")
-def test_equilibrate_burst():
-    """Ensure equilibrium works with burst reactions"""
-    model = crn.from_string("""
-        A -> B ; k=inf
-        B <=> C ; kf = 1, kb = 2
-    """)
-    state = model.state(A=10)
+    assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
 
-    eq = model.equilibrate(state)
-
-    conc_ratio = eq.sel(species='C') / eq.sel(species='B')
-    rate_ratio = model.params['kf'].value / model.params['kb'].value
-    assert conc_ratio == pytest.approx(rate_ratio)
-
-@pytest.mark.skip("Feature not yet implemented")
-def test_equilibrate_circular_burst():
-    """Ensure equilibrium refuses circular burst reactions"""
-    model = crn.from_string("A <=> B ; kf=inf, kb=inf")
-    state = model.state(A=10)
-
-    with pytest.raises(ValueError):
-        eq = model.equilibrate(state)
-
-@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
@@ -499,15 +469,15 @@ def test_parameter_map():
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
     system = crn.from_string("A <=> B; k1, k2")
 
-    system.parametrize_for(assay.sample_map, k1=['Probe'])
+    params = system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    assert system.params.mapping.shape == (len(assay.setup.content), 3)
-    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert system.params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert system.params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
-    assert len(system.params) == 4
-    assert len(system.params.general_params) == 1
+    assert params.mapping.shape == (len(assay.setup.content), 3)
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(params) == 4
+    assert len(params.general_params) == 1
 
 def test_parameter_map_reduce():
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
@@ -517,10 +487,54 @@ def test_parameter_map_reduce():
 
     system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    import pickle
     data = pickle.dumps(system.params)
     unpickled = pickle.loads(data)
 
     assert unpickled == system.params
     assert (unpickled.mapping.values == system.params.mapping.values).all()
     assert unpickled.general_params == system.params.general_params
+
+def test_parameter_map_assign_sequence():
+    model = crn.from_string("""
+        A + B <=> C; k1, k2
+    """)
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ], columns=["A", "B", "C"])
+    params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+    params['t0'].value = 10
+    params['k1'].value = [1, 10, 100, 1, 10, 100]
+    params['k2'].value = 10
+
+    assert params['t0'].value == 10
+    assert params['k1_A1'].value == 1
+    assert params['k1_A2'].value == 10
+    assert params['k1_A3'].value == 100
+    assert params['k2_A1'].value == 10
+    assert params['k2_A2'].value == 10
+    assert params['k2_A3'].value == 10
+
+    with pytest.raises(ValueError):
+        params['k1'].value = [1, 10, 100]
+
+def test_parameter_map_respects_expressions():
+    model = crn.from_string("""
+        A <=> B; kf = 1, kb
+    """)
+    model.params.add('dG', value=0)
+    model.params['kb'].expr = 'kf*exp(dG)'
+
+    sample_map = pd.DataFrame([["A1", "B", "M1"],
+                               ["A2", "B", "M2"],
+                               ["A3", "B", "M1"]], columns=["A", "B", "M"])
+    params = model.parametrize_for(sample_map, dG=["A"], kf=["M"])
+
+    params['dG'].value = [-10, 0, 10]
+
+    assert params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
+    assert params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
+    assert params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'
