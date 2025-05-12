@@ -240,10 +240,10 @@ class CRN:
     k_backward can be created with:
 
     >>> from lmfit import Parameter
-    >>> crn = CRN([
-    ...     ((("A", 1), ("B", 1)), (("C", 1),),
-    ...     Parameter('k_forward', 0.1), Parameter('k_backward', 0.1)),
-    ... ])
+    >>> crn = CRN({
+    ...     ((("A", 1), ("B", 1)), (("C", 1),)):
+    ...         (Parameter('k_forward', 0.1), Parameter('k_backward', 0.1)),
+    ... })
 
     This is equivalent to the more convenient function:
 
@@ -267,7 +267,7 @@ class CRN:
     params: ParameterMap
 
     def __init__(self,
-                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
                  species: Iterable[str]|None = None):
         """Create a chemical reaction network.
 
@@ -286,8 +286,8 @@ class CRN:
         self.reactions = {}
         self.params = ParameterMap()
         self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
-        for reaction in reactions or []:
-            self.add_reaction(*reaction)
+        for reaction, rates in (reactions or {}).items():
+            self.add_reaction(*reaction, *rates)
 
     def __str__(self) -> str:
         def render(complexes: tuple[Reactants, Reactants], forward: str, backward: str = '') -> str:
@@ -889,17 +889,20 @@ class PartitionedCRN(CRN):
     To declare subspecies compositions, PartitionedCRN offers the method
     define_subspecies:
 
-    >>> reactions = from_string(
-    ...     "biomarker_mutant + probe -> biomarker_mutant + signal").reactions
-    >>> crn = PartitionedCRN(reactions)
+    >>> from lmfit import Parameter
+    >>> crn = PartitionedCRN({
+    ...     ((("biomarker_mutant", 1), ("probe", 1)), (("biomarker_mutant", 1), ('signal', 1))):
+    ...         (Parameter('k', 0.1), None),
+    ... })
+
     >>> crn.define_subspecies("biomarker",
-    ...     subspecies={"mutant": 0.01}, rest="wildtype")
+    ...     subspecies={"mutant": Parameter('k_mutant', 0.01)}, rest="biomarker_wildtype")
 
     >>> initial = crn.state(biomarker=100)
     >>> trajectory = crn.integrate(initial)
-    >>> total = trajecory.sel(species="biomarker")
-    >>> mutant = trajecory.sel(species="biomarker_mutant")
-    >>> wildtype = trajecory.sel(species="biomarker_wildtype")
+    >>> total = trajectory.sel(species="biomarker")
+    >>> mutant = trajectory.sel(species="biomarker_mutant")
+    >>> wildtype = trajectory.sel(species="biomarker_wildtype")
 
 
     Internally, the mapping from species space to subspecies space is
@@ -924,7 +927,7 @@ class PartitionedCRN(CRN):
 
 
     def __init__(self,
-                 reactions: list[tuple[Reactants, Reactants, lmfit.Parameter]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
                  species_defs : list[tuple[str, dict[str, lmfit.Parameter], str]]|None = None,
                  species: Iterable[str]|None = None):
         super().__init__(reactions, species)
