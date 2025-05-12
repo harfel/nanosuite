@@ -815,7 +815,8 @@ class Assay:
         This method can be used if there are no dedicated controls.
         """
         eq = self.rfu[..., self.rfu.time >= transient].mean(dim='time')
-        pos_rfu = 0*self.rfu[self.rfu.sample.isin(pos_rfu.sample)] + eq  # ERROR: here I am using pos_rfu wrongly, thinking it is a subset of rfu
+        # ERROR: here I am using pos_rfu wrongly, thinking it is a subset of rfu
+        pos_rfu = 0*self.rfu[self.rfu.sample.isin(pos_rfu.sample)] + eq
         if neg_rfu is not None:
             eq = self.rfu[..., self.rfu.time.isin(neg_rfu.time)].mean(dim='time')
             neg_rfu = 0*self.rfu[self.rfu.sample.isin(neg_rfu.sample)] + eq
@@ -886,8 +887,7 @@ class Assay:
         concs.name = 'contentation'
         if 'control' in concs.coords:
             return concs.drop_vars(['control'])
-        else:
-            return concs
+        return concs
 
     def compute_power_variance_model(self) -> Callable[[float], float]:
         """Compute power variance model

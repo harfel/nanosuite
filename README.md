@@ -92,4 +92,4 @@ Please get in touch if you would like to contribute to the project.
 
 License
 -------
-FIXME: license
+Copyright 2025 Nanovery Ltd. under the MIT License agreement.

@@ -172,7 +172,7 @@ class Assay(mars.Assay):
                   {sample_map}
                 </div>
             </div>
-        """  # type: ignore 
+        """  # type: ignore
 
     def set_default_palette(self):
         """Set distinct gradients for each sample group"""
