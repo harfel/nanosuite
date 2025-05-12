@@ -422,23 +422,29 @@ class CRN:
                 rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
 
-    def scale_concentration_unit(self, scale_factor: float):
+    def scale_concentration_unit(self, scale_factor: float) -> ParameterMap:
         """Scale reaction rate constants to new concentration unit.
 
+        Returns
+        -------
+        ParameterMap with concentrations scaled by the given factor.
         For example, if current rate constants are given in M^-1s^-1, the
         call crn.scale_concentration_unit(1e-9) will rescale those to
         nM^-1s^-1.
         """
+        parameter_map = self.params.copy()
+
         for (f_reaction, b_reaction), (f_rate, b_rate) in self.reactions.items():
             for reaction, param in [(f_reaction, f_rate), (b_reaction, b_rate)]:
                 if not param:
                     continue
                 factor = scale_factor**(len(reaction)-1)
-                if not self.params.mapping.empty and param in self.params.mapping:
+                if not parameter_map.mapping.empty and param in parameter_map.mapping:
                     for specific in self.params.mapping[param]:
-                        self.params[specific].value *= factor
+                        parameter_map[specific].value *= factor
                 else:
-                    self.params[param].value *= factor
+                    parameter_map[param].value *= factor
+        return parameter_map
 
     def add_reaction(self, educts: Reactants, products: Reactants,
                      forward_rate: lmfit.Parameter, backward_rate: lmfit.Parameter|None = None):
@@ -553,15 +559,17 @@ class CRN:
             state.loc[..., species] = val
         return state
 
-    def parametrize_for(self, sample_map: pd.DataFrame, **parameter_dependencies: list[str]):
-        """Assign a parametrization for the given sample_map
+    def parametrize_for(self, sample_map: pd.DataFrame,
+                        **parameter_dependencies: list[str]) -> ParameterMap:
+        """Return a parametrization for the given sample_map
 
         Keyword arguments are parameter names, which are to be specialized
     	following the provided sample_map dependent on the species given
         as argument value. For example:
 
         >>> model = from_string("A + B <=> C; k1, k2")
-        >>> model.parametrize_for(assay.sample_map, k1=['A', 'B'], k2=['A'])  # doctest: +SKIP
+        >>> params = model.parametrize_for(assay.sample_map,
+        ...                                k1=['A', 'B'], k2=['A'])  # doctest: +SKIP
 
         Calling the method sets new model.params for the given sample_map and
         parameter dependencies.
@@ -626,7 +634,7 @@ class CRN:
                         for ex, special in zip(expr, substitutions[general])]
             parameter_map[name].expr = expr
 
-        self.params = parameter_map
+        return parameter_map
 
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network

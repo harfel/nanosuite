@@ -145,11 +145,11 @@ def test_scale_concentration_unit():
         A + B + C -> Z; k_3 = 0.1
     """)
 
-    system.scale_concentration_unit(10)
+    params = system.scale_concentration_unit(10)
 
-    assert system.params['k_1'] == 0.1
-    assert system.params['k_2'] == 1
-    assert system.params['k_3'] == 10
+    assert params['k_1'] == 0.1
+    assert params['k_2'] == 1
+    assert params['k_3'] == 10
 
 def test_scale_concentration_unit_with_parameter_map():
     system = crn.from_string("""
@@ -161,16 +161,16 @@ def test_scale_concentration_unit_with_parameter_map():
         ['Aa', 'B', 'C', 'X', 'Y', 'Z'],
         ['Ab', 'B', 'C', 'X', 'Y', 'Z'],
     ], columns=['A', 'B', 'C', 'X', 'Y', 'Z'])
-    system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
+    system.params = system.parametrize_for(sample_map, k1 = ['A'], k2 = ['A'], k3 = ['A'])
 
-    system.scale_concentration_unit(1e3)
+    params = system.scale_concentration_unit(1e3)
 
-    assert system.params['k1_Aa'] == 0.1
-    assert system.params['k1_Ab'] == 0.1
-    assert system.params['k2_Aa'] == 100
-    assert system.params['k2_Ab'] == 100
-    assert system.params['k3_Aa'] == 100_000
-    assert system.params['k3_Ab'] == 100_000
+    assert params['k1_Aa'] == 0.1
+    assert params['k1_Ab'] == 0.1
+    assert params['k2_Aa'] == 100
+    assert params['k2_Ab'] == 100
+    assert params['k3_Aa'] == 100_000
+    assert params['k3_Ab'] == 100_000
 
 def test_implicit_rate_names():
     """Ensure the correct number of rate constants is defined"""
@@ -519,15 +519,15 @@ def test_parameter_map():
     assay = Assay(rfu_file=rfu_file, setup_file=setup_file)
     system = crn.from_string("A <=> B; k1, k2")
 
-    system.parametrize_for(assay.sample_map, k1=['Probe'])
+    params = system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    assert system.params.mapping.shape == (len(assay.setup.content), 3)
-    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert system.params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert system.params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert system.params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
-    assert len(system.params) == 4
-    assert len(system.params.general_params) == 1
+    assert params.mapping.shape == (len(assay.setup.content), 3)
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
+    assert params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert len(params) == 4
+    assert len(params.general_params) == 1
 
 def test_parameter_map_reduce():
     rfu_file = Path(__file__).parent / '../nanosuite/examples/edc_RFU.xlsx'
@@ -555,21 +555,21 @@ def test_parameter_map_assign_sequence():
                                ["A2", "B", "C"],
                                ["A3", "B", "C"],
                                ], columns=["A", "B", "C"])
-    model.parametrize_for(sample_map, k1=["A"], k2=['A'])
-    model.params['t0'].value = 10
-    model.params['k1'].value = [1, 10, 100, 1, 10, 100]
-    model.params['k2'].value = 10
+    params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+    params['t0'].value = 10
+    params['k1'].value = [1, 10, 100, 1, 10, 100]
+    params['k2'].value = 10
 
-    assert model.params['t0'].value == 10
-    assert model.params['k1_A1'].value == 1
-    assert model.params['k1_A2'].value == 10
-    assert model.params['k1_A3'].value == 100
-    assert model.params['k2_A1'].value == 10
-    assert model.params['k2_A2'].value == 10
-    assert model.params['k2_A3'].value == 10
+    assert params['t0'].value == 10
+    assert params['k1_A1'].value == 1
+    assert params['k1_A2'].value == 10
+    assert params['k1_A3'].value == 100
+    assert params['k2_A1'].value == 10
+    assert params['k2_A2'].value == 10
+    assert params['k2_A3'].value == 10
 
     with pytest.raises(ValueError):
-        model.params['k1'].value = [1, 10, 100]
+        params['k1'].value = [1, 10, 100]
 
 def test_parameter_map_respects_expressions():
     model = crn.from_string("""
@@ -581,10 +581,10 @@ def test_parameter_map_respects_expressions():
     sample_map = pd.DataFrame([["A1", "B", "M1"],
                                ["A2", "B", "M2"],
                                ["A3", "B", "M1"]], columns=["A", "B", "M"])
-    model.parametrize_for(sample_map, dG=["A"], kf=["M"])
+    params = model.parametrize_for(sample_map, dG=["A"], kf=["M"])
 
-    model.params['dG'].value = [-10, 0, 10]
+    params['dG'].value = [-10, 0, 10]
 
-    assert model.params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
-    assert model.params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
-    assert model.params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'
+    assert params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
+    assert params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
+    assert params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'

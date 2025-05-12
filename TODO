@@ -1,4 +1,3 @@
-- have CRN.parametrize_for return a new ParameterMap rather than changing CRN.params
 - fix doctests
 - add LICENSE
 - update and add nanosuite/examples
