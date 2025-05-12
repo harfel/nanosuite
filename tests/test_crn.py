@@ -213,8 +213,11 @@ def test_burst_reactions(reactions, initial, outcome):
     traj = test_crn.integrate(initial)
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
+def test_burst_must_not_be_reversible():
+    with pytest.raises(ValueError):
+        crn.from_string("A <=> B; inf, 1")
+
 @pytest.mark.parametrize("reactions, initial", [
-    ("""A <=> B; kf=inf, kb=inf""", [1., 0.]),
     ("""A -> B; k=inf
         B -> A; k=inf""", [1., 0.]),
     ("""A -> B; k=inf
@@ -370,33 +373,6 @@ def test_equilibrate_reversible():
     assert eq.sum() == state.sum()
     assert conc_ratio == pytest.approx(rate_ratio)
 
-@pytest.mark.skip("Feature not yet implemented")
-@pytest.mark.parametrize("system, initial, equilibrium", [
-    ("A -> B", {'A': 10}, {'B': 10}),
-    ("""
-        A -> X
-        X <=> Y
-        Y -> B
-    """, {'A': 10}, {'B': 10}),
-    ("""
-        A <=> X
-        X -> Y
-        Y <=> B
-    """, {'A': 10}, {'B': 5, 'Y': 5}),
-    ("""A + B -> D
-        C + D -> A + E""", {'A': 1, 'B': 2, 'C': 5}, {'B': 0, 'C': 3, 'E': 2}),
-    ("""""", {'A': 10}, {'B': 10}),
-    ("""""", {'A': 10}, {'B': 10}),
-])
-def test_equilibration_irreversible(system, initial, equilibrium):
-    """Ensure equilibrium of irreversible reactions is accurate"""
-    model = crn.from_string(system)
-    state = model.state(initial)
-    eq = model.equilibrate(state)
-
-    assert all(eq.sel(species=species) == pytest.approx(conc)
-               for species, conc in equilibrium.items())
-
 def test_equilibration_multiple_state():
     """Permit equilbrium to be calculated for multiple states"""
     model = crn.from_string("A + B <=> C; kf, kb")
@@ -410,32 +386,6 @@ def test_equilibration_multiple_state():
 
     assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
 
-
-@pytest.mark.skip("Feature not yet implemented")
-def test_equilibrate_burst():
-    """Ensure equilibrium works with burst reactions"""
-    model = crn.from_string("""
-        A -> B ; k=inf
-        B <=> C ; kf = 1, kb = 2
-    """)
-    state = model.state(A=10)
-
-    eq = model.equilibrate(state)
-
-    conc_ratio = eq.sel(species='C') / eq.sel(species='B')
-    rate_ratio = model.params['kf'].value / model.params['kb'].value
-    assert conc_ratio == pytest.approx(rate_ratio)
-
-@pytest.mark.skip("Feature not yet implemented")
-def test_equilibrate_circular_burst():
-    """Ensure equilibrium refuses circular burst reactions"""
-    model = crn.from_string("A <=> B ; kf=inf, kb=inf")
-    state = model.state(A=10)
-
-    with pytest.raises(ValueError):
-        model.equilibrate(state)
-
-@pytest.mark.skip("Feature not yet implemented")
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5

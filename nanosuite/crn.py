@@ -460,6 +460,8 @@ class CRN:
         forward_rate: lmfit.Parameter of the forward rate constant
         backward_rate: optional lmfit.Paramter of the backward rate constant (default: None)
         """
+        if forward_rate.value == float('inf') and backward_rate and backward_rate.value != 0:
+            raise ValueError("Reactions with infinite rate constant cannot be reversible.")
         # collect species and complexes
         if (products, educts) in self.reactions:
             self.reactions[products, educts] = (self.reactions[products, educts][0],
