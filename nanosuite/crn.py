@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent import futures
 from copy import deepcopy
 from itertools import chain
+import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import warnings
 import lmfit                             # type: ignore
@@ -177,11 +178,13 @@ class ParameterMap(lmfit.Parameters):
 
     def specify(self, samples: pd.Index, name: str, new_name: str) -> None:
         """Overload general parameter for specific samples"""
+        if name not in self.mapping.columns:
+            raise KeyError(f"Unknown parameter '{name}'")
         if all(self.mapping[name] == name):
             self.mapping[name] = ""
             self.general_params[name] = self.pop(name)
         if name not in self.mapping.columns:
-            self.mapping[name] = 0
+            self.mapping[name] = 0  # Can I ever get into this code path?
 
         param = deepcopy(self.general_params[name])
         param.name = new_name
@@ -632,7 +635,7 @@ class CRN:
                     for sample in parameter_map.mapping.index]
             substitutions = parameter_map.mapping[deps]
             for general in substitutions:
-                expr = [ex.replace(general, special)
+                expr = [re.sub(f'\\b{general}\\b', special, ex)
                         for ex, special in zip(expr, substitutions[general])]
             parameter_map[name].expr = expr
 

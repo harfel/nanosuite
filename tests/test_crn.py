@@ -538,3 +538,24 @@ def test_parameter_map_respects_expressions():
     assert params['kb_A1_M1'].expr == 'kf_M1*exp(dG_A1)'
     assert params['kb_A2_M2'].expr == 'kf_M2*exp(dG_A2)'
     assert params['kb_A3_M1'].expr == 'kf_M1*exp(dG_A3)'
+
+def test_parameter_map_respects_more_complex_expressions():
+    model = crn.from_string("""
+        A <=> B; ka_f = 1, ka_r
+        B <=> C; kb_f = 1, kb_r
+    """)
+    model.params.add('dG', value=0)
+    model.params.add('dG_star', value=0)
+    model.params['ka_r'].expr = 'ka_f/exp(-dG_star)'
+    model.params['kb_r'].expr = 'ka_f/exp(-dG+dG_star)'
+
+    sample_map = pd.DataFrame([["A1", "B1"],
+                               ["A2", "B2"]], columns=["A", "B"])
+    params = model.parametrize_for(sample_map, dG=['A', 'B'], dG_star=['B'])
+
+    params['dG'].value = [-10, 10]
+
+    assert params['ka_r_B1'].expr == 'ka_f/exp(-dG_star_B1)'
+    assert params['ka_r_B2'].expr == 'ka_f/exp(-dG_star_B2)'
+    assert params['kb_r_A1_B1'].expr == 'ka_f/exp(-dG_A1_B1+dG_star_B1)'
+    assert params['kb_r_A2_B2'].expr == 'ka_f/exp(-dG_A2_B2+dG_star_B2)'
