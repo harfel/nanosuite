@@ -63,7 +63,10 @@ def dist_to_equilib(X, N, C, lnK):
     gradient decent.
     """
     # pylint: disable=invalid-name
-    Y = N.T @ X + C
+    if np.isinf(lnK).any():
+        raise ValueError("Only fully reversible CRNs can be equilibrated.")
+
+    Y = N.T @ X + C.data
     if out_of_bounds := Y[Y<0].sum():
         return (1-out_of_bounds)*1e14
     with np.errstate(divide='ignore', invalid='ignore'):
@@ -270,7 +273,9 @@ class CRN:
     params: ParameterMap
 
     def __init__(self,
-                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants],
+                                 tuple[lmfit.Parameter,
+                                 lmfit.Parameter|None]]|None = None,
                  species: Iterable[str]|None = None):
         """Create a chemical reaction network.
 
@@ -363,22 +368,6 @@ class CRN:
                          for (educts, products) in self.reactions])
 
     @property
-    def equilibrium_constants(self) -> np.ndarray:
-        """Equilibrium constants of the reactions
-
-        This returns a vector of equilibrium constants for each
-        reaction. Irreversible reactions have an equilibrium constant
-        equal to infinity.
-        """
-        if not self.params.mapping.empty:
-            raise RuntimeError("TODO: CRN.parameter_map's are not supported yet.")
-        with np.errstate(divide='ignore', invalid='ignore'):
-            return np.array([
-                self.params[forward]/self.params[backward] if backward else float('inf')
-                for (forward, backward) in self.reactions.values()
-            ])
-
-    @property
     def complex_graph(self) -> np.ndarray:
         """Complex graph of the reaction network.
 
@@ -424,6 +413,27 @@ class CRN:
                 rate_constants[i, j] = kf if kf != float('inf') else 0.
                 rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
+
+    def get_equilibrium_constants(self,
+                                  params: dict[str, lmfit.Parameter]|None = None) -> np.ndarray:
+        """Equilibrium constants of the reactions
+    
+        This returns a vector of equilibrium constants for each
+        reaction. Irreversible reactions have an equilibrium constant
+        equal to infinity.
+
+        Parameters
+        ----------
+        params: optional Parameter dictionary
+            Reaction rate constants used to calculate equilibrium constants.
+            Uses self.params if not given.
+        """
+        params = params if params is not None else self.params
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.array([
+                params[forward].value/params[backward].value if backward else float('inf')
+                for (forward, backward) in self.reactions.values()
+            ])
 
     def scale_concentration_unit(self, scale_factor: float) -> ParameterMap:
         """Scale reaction rate constants to new concentration unit.
@@ -661,36 +671,35 @@ class CRN:
         # pylint: disable=invalid-name
         initial_condition = self.state(initial_condition)
         N = self.stoichiometry_matrix
-        lnK = np.log(self.equilibrium_constants)
-
-        if np.isinf(lnK).any():
-            raise ValueError("Only fully reversible CRNs can be equilibrated.")
 
         kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
                                   'options': {'xatol': 1e-21, 'maxiter': 100}}
         kwargs.update(options)
 
         if initial_condition.ndim == 1:
-            C = initial_condition.values
-            kwargs['args'] = (N, C, lnK)
+            params = self.params.specification_for(initial_condition)
+            lnK = np.log(self.get_equilibrium_constants(params))
+            kwargs['args'] = (N, initial_condition, lnK)
             result = basinhopping(dist_to_equilib, np.zeros(N.shape[0]), niter=100,
                                   minimizer_kwargs = kwargs)
-            return xr.DataArray(N.T @ result.x + C, initial_condition.coords)
+            return xr.DataArray(N.T @ result.x + initial_condition, initial_condition.coords)
 
         if initial_condition.ndim == 2:
             with futures.ProcessPoolExecutor() as executor:
                 def schedule_computation(C):
+                    params = self.params.specification_for(C)
+                    lnK = np.log(self.get_equilibrium_constants(params))
                     return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
                                            niter=100,
                                            minimizer_kwargs = kwargs | {'args': (N, C, lnK)})
 
-                jobs = [schedule_computation(C) for C in initial_condition.values]
+                jobs = [schedule_computation(C) for C in initial_condition]
                 equilibrium = [N.T @ job.result().x + C
-                               for job, C in zip(jobs, initial_condition.values)]
+                               for job, C in zip(jobs, initial_condition)]
 
             return xr.DataArray(equilibrium, initial_condition.coords)
 
-        raise ValueError("Intiail condition mut be 1 or 2 dimensional")
+        raise ValueError("Initial condition mut be 1 or 2 dimensional")
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None,
@@ -771,12 +780,11 @@ class CRN:
         else:
             with futures.ProcessPoolExecutor() as executor:
                 @cache.compute
-                def schedule_computation(sample, params):
+                def schedule_computation(sample):
+                    params = self.params.specification_for(sample)
                     return executor.submit(do_integration, self, sample, params, times, options)
 
-                jobs = [schedule_computation(sample, self.params.specification_for(sample))
-                        for sample in initial_condition]
-
+                jobs = [schedule_computation(sample) for sample in initial_condition]
                 traj = [job.result() for job in jobs]
 
         return xr.DataArray(traj, [(dim, initial_condition.indexes[dim])
@@ -932,7 +940,9 @@ class PartitionedCRN(CRN):
 
 
     def __init__(self,
-                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants],
+                                 tuple[lmfit.Parameter,
+                                 lmfit.Parameter|None]]|None = None,
                  species_defs : list[tuple[str, dict[str, lmfit.Parameter], str]]|None = None,
                  species: Iterable[str]|None = None):
         super().__init__(reactions, species)

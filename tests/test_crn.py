@@ -386,6 +386,26 @@ def test_equilibration_multiple_state():
 
     assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
 
+def test_equilibrate_with_sample_map():
+    model = crn.from_string("""
+        A <=> B; kf=1, kr=1
+    """)
+
+    initial = model.state(A=3*[110])
+
+    sample_map = pd.DataFrame([
+        ['A', 'B1'],
+        ['A', 'B2'],
+        ['A', 'B3'],
+    ], columns=['A', 'B'], index=initial.coords['sample'])
+
+    model.params = model.parametrize_for(sample_map, kr = ['B'])
+    model.params['kr'].value = [0.1, 1., 10.]
+
+    eq = model.equilibrate(initial)
+
+    assert (eq.sel(species='A').values == pytest.approx([10., 55., 99.99999999]))
+
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
