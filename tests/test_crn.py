@@ -373,7 +373,7 @@ def test_equilibrate_reversible():
     assert eq.sum() == state.sum()
     assert conc_ratio == pytest.approx(rate_ratio)
 
-def test_equilibration_multiple_state():
+def test_equilibrate_multiple_state():
     """Permit equilbrium to be calculated for multiple states"""
     model = crn.from_string("A + B <=> C; kf, kb")
     initial = model.state(A=[1, 10, 100], B=1)
@@ -404,7 +404,25 @@ def test_equilibrate_with_sample_map():
 
     eq = model.equilibrate(initial)
 
-    assert (eq.sel(species='A').values == pytest.approx([10., 55., 99.99999999]))
+    assert eq.sel(species='A').values == pytest.approx([10., 55., 99.99999999])
+
+def test_equilibrate_ignores_unspecified_samples():
+    model = crn.from_string("""
+        A <=> B; kf=1, kr=1
+    """)
+
+    initial = model.state(A=[10, 0])
+
+    sample_map = pd.DataFrame([
+        ['A1', 'B'],
+        [None, None],
+    ], columns=['A', 'B'], index=initial.coords['sample'])
+    model.params = model.parametrize_for(sample_map, kr = ['A'])
+    model.params['kr'].value = [1., 1.]
+
+    eq = model.equilibrate(initial)
+
+    assert eq.sel(species='A').values == pytest.approx([5, 0])
 
 def test_equilibrate_subspecies():
     model = crn.from_string("""

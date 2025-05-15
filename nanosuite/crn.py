@@ -63,9 +63,6 @@ def dist_to_equilib(X, N, C, lnK):
     gradient decent.
     """
     # pylint: disable=invalid-name
-    if np.isinf(lnK).any():
-        raise ValueError("Only fully reversible CRNs can be equilibrated.")
-
     Y = N.T @ X + C.data
     if out_of_bounds := Y[Y<0].sum():
         return (1-out_of_bounds)*1e14
@@ -89,7 +86,7 @@ class ParameterMap(lmfit.Parameters):
     """
     mapping: pd.DataFrame
     general_params: dict[str, lmfit.Parameter]
-    zero: lmfit.Parameter
+    zero: lmfit.Parameter = lmfit.Parameter('__ZERO__', 0, vary=False)
 
     class ParameterProxy:
         """A proxy object to access all specialized parameters
@@ -113,12 +110,16 @@ class ParameterMap(lmfit.Parameters):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):
+                    if self.params[special] is self.params.zero:
+                        continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, value)
             else:
                 for special in self.specializations:
+                    if self.params[special] is self.params.zero:
+                        continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, val)
 
-        def __getattr__(self, attr: str) -> np.ndarray:
+        def __getattr__(self, attr: str) -> np.ndarray:  # FIXME: return DataFrame or DataArray
             return np.array([getattr(self.params[special], attr)
                             for special in self.specializations])
 
@@ -128,7 +129,6 @@ class ParameterMap(lmfit.Parameters):
         index = sample_map.index if sample_map is not None else pd.Index([])
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
-        self.zero = lmfit.Parameter('__ZERO')
 
     def __reduce__(self) -> tuple:
         return self.__class__, (), {'mapping': self.mapping,
@@ -213,7 +213,7 @@ class ParameterMap(lmfit.Parameters):
             return self
         content_dim = next(iter(sample.coords))
         specification = self.mapping.loc[sample.coords[content_dim].values]
-        return {general: self.get(specification[general], 0)
+        return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
     def fix_outside(self, samples: xr.DataArray) -> None:
@@ -431,7 +431,7 @@ class CRN:
         params = params if params is not None else self.params
         with np.errstate(divide='ignore', invalid='ignore'):
             return np.array([
-                params[forward].value/params[backward].value if backward else float('inf')
+                params[forward]/b if backward and (b:=params[backward]) != 0 else float('inf')
                 for (forward, backward) in self.reactions.values()
             ])
 
@@ -686,14 +686,14 @@ class CRN:
 
         if initial_condition.ndim == 2:
             with futures.ProcessPoolExecutor() as executor:
-                def schedule_computation(C):
-                    params = self.params.specification_for(C)
+                def schedule_computation(sample):
+                    params = self.params.specification_for(sample)
                     lnK = np.log(self.get_equilibrium_constants(params))
                     return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
                                            niter=100,
-                                           minimizer_kwargs = kwargs | {'args': (N, C, lnK)})
+                                           minimizer_kwargs = kwargs | {'args': (N, sample, lnK)})
 
-                jobs = [schedule_computation(C) for C in initial_condition]
+                jobs = [schedule_computation(sample) for sample in initial_condition]
                 equilibrium = [N.T @ job.result().x + C
                                for job, C in zip(jobs, initial_condition)]
 
