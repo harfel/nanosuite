@@ -72,12 +72,61 @@ class FitProgress:
         # display HTML. Instead, I have to update the model of a persistent
         # data view.
         self.hdisplay.update(HTML(f'''
-        <div>
-            <div>Iteration: {num_it}</div>
+        <div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+            <div style="width: 100%">Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
             <div style="display: inline-block">{params._repr_html_()}</div>
         </div>
         '''))
+
+class EquilibriumFitProgress:
+    """Live visualization of Equilibrium.fit"""
+    def __init__(self,
+                 crn_: crn.CRN,
+                 data: xr.DataArray,
+                 initial: xr.DataArray,
+                 conversion: Callable[[xr.DataArray], xr.DataArray]):
+        self.crn = crn_
+        self.data = data
+        self.initial = initial
+        self.conversion = conversion
+        self.hdisplay = None
+
+    def __enter__(self):
+        self.hdisplay = display(HTML('<div/>'), display_id=True)
+        return self
+
+    def __exit__(self, typ, value, traceback):
+        pass # self.hdisplay.update(HTML('<div/>'))
+
+    def __call__(self, params, num_it, residuals, *args, **kwargs):
+        original = deepcopy(self.crn.params)
+        self.crn.params = params
+        eq = self.conversion(self.crn.equilibrate(self.initial))
+        self.crn.params = original
+
+        fig = Figure()
+        ax = fig.gca()
+
+        x = np.arange(0, len(eq.sample))
+        ax.set_xticks(x, eq.sample.data, rotation=90)
+        ax.bar(x, self.data, label="experiment", width=0.4)
+        ax.bar(x+0.4, eq, label="model", width=0.4)
+        ax.legend()
+        ax.grid(axis='y')
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png')
+        buf.seek(0)
+
+        self.hdisplay.update(HTML(f'''
+        <div style="display: flex; flex-wrap: wrap; align-items: flex-start">
+            <div style="width: 100%">Iteration: {num_it}</div>
+            <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
+            <div style="display: inline-block">{params._repr_html_()}</div>
+        </div>
+        '''))
+
 
 class CRN(crn.CRN):
     """CRN class that visualizes fit progress"""
@@ -90,19 +139,30 @@ class CRN(crn.CRN):
             iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb:
-            return super().fit(data, initial, conversion, error,
-                               iter_cb=iter_cb, **options)
+            return super().fit(data, initial, conversion, error, iter_cb=iter_cb, **options)
         with FitProgress(self, data, initial, conversion, error) as progress:
-            return super().fit(data, initial, conversion, error,
-                               iter_cb=progress, **options)
+            return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
 
 class PartitionedCRN(crn.PartitionedCRN, CRN):
     """PartitionedCRN class that visualizes fit progress"""
+
+class Equilibrium(crn.Equilibrium):
+    """Equilibrium class that visualizes fit progress"""
+    def fit(self,
+            data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray],
+            *, iter_cb: Callable|None = None,
+            **options) -> lmfit.minimizer.MinimizerResult:
+        if iter_cb:
+            return super().fit(data, conversion, iter_cb=iter_cb, **options)
+        with EquilibriumFitProgress(self.crn, data, self.initial, conversion) as progress:
+            return super().fit(data, conversion, iter_cb=progress, **options)
 
 
 # monkey patches
 crn.CRN = CRN                        # type: ignore
 crn.PartitionedCRN = PartitionedCRN  # type: ignore
+crn.Equilibrium = Equilibrium        # type: ignore
 
 
 ####################################################################################################

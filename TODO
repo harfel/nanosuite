@@ -1,3 +1,6 @@
+- CRN.trajectory should return Trajectory
+- deprecate CRN.integrate, CRN.fit, and CRN.equilibrate
+= feature/equilibrate-parametermaps
 - improved calibration via assay.setup controls
   - endpoint calibration as alternative to "proper" controls
   - permit scalar pos_rfu, neg_rfu arguments in addition to 1D/2D arrays

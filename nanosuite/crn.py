@@ -106,7 +106,7 @@ class ParameterMap(lmfit.Parameters):
         def __setattr__(self, attr: str, val: Any) -> None:
             if isinstance(val, xr.DataArray):
                 val = val.data
-            if isinstance(val, Sequence|np.ndarray):
+            if isinstance(val, Sequence|np.ndarray|pd.Series):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):
@@ -668,6 +668,7 @@ class CRN:
         A 1D or 2D xarray.DataArray with the equilibrium corresponding to
         the initial state
         """
+        # FIXME: deprecate CRN.equilibrate
         # pylint: disable=invalid-name
         initial_condition = self.state(initial_condition)
         N = self.stoichiometry_matrix
@@ -874,12 +875,33 @@ class CRN:
             return (data-model)/error
 
         original = self.params
-        params = self.params.copy()
+        params = original.copy()
         params.fix_outside(data)
         params['t0'].max = float(data.time[0]) # TODO: respect injections
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
         return fit
+
+    def equilibrium(self, initial: xr.DataArray) -> Equilibrium:
+        """Equilibrium model
+
+        This returns an Equilibrium model of the CRN.
+
+        >>> model = from_string("A + B <=> C; k_f=1, k_r=10")
+        >>> initial = model.state(A=100, B=50)
+        >>> eq = model.equilibrium(initial)
+        >>> distribution = eq.eval()
+
+        Parameters
+        ----------
+        initial: xarray.DataArray
+            The initial state for which the equilibrium should be computed 
+
+        Returns
+        -------
+        An Equilibrium model
+        """
+        return Equilibrium(self, initial)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
@@ -887,6 +909,7 @@ class CRN:
             species if stoich == 1 else f'{stoich} {species}'
             for species, stoich in multiset
         )
+
 
 class PartitionedCRN(CRN):
     """CRN with subspecies partitioning
@@ -1052,6 +1075,73 @@ class PartitionedCRN(CRN):
         traj_subspecies = super().integrate(initial, t_eval, cache, **options)
         return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
                             name=traj_subspecies.name)
+
+
+class Equilibrium:
+    """Equilibrium model of a CRN
+
+    This represents the equilibrium distribution of a reversible CRN.
+    The main purpose of the model is to fit reaction rate constants
+    to experimental data. When doing so, care must be taken to fix
+    one of the kinetic rate parameters that constitute the equilibrium
+    constant. E.g.
+
+    >>> model = from_string("A + B <=> C; k_f=1, k_r")
+    >>> model.params['k_f'].vary = False
+    >>> eq = Equilibrium(model, model.state(A=100, B=100))
+    """
+    def __init__(self, crn: CRN, initial: xr.DataArray):
+        self.crn = crn
+        self.initial = initial
+
+    def eval(self, **options) -> xr.DataArray:
+        """Compute equilibrium state
+
+        Uses gradient decent to find the equilibrium state for a given
+        initial condition. The implementation follows the procedure
+        discussed in https://chemistry.stackexchange.com/questions/153869/
+
+        Parameters
+        ----------
+        Any keyword argument is passed through to lmfit.minimize
+
+        Returns
+        -------
+        A 1D or 2D xarray.DataArray with the equilibrium corresponding to
+        the initial state
+        """
+        return self.crn.equilibrate(self.initial, *options)
+
+    def fit(self,
+            data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray],
+            **options) -> lmfit.minimizer.MinimizerResult:
+        """Fit rate constants to match experimental equilibrium
+
+        Parameters
+        ----------
+        data: xarray.DataArray
+            1D experimental equilibrium data
+
+        conversion: callable
+            Function to convert calculated equilibrium into observable,
+            typically along the line of
+            lambda eq: eq.sel(species='Signal')
+
+        Returns
+        -------
+        lmfit.FitResult
+        """
+        def objective(params, **opts):
+            self.crn.params = params
+            eq = conversion(self.crn.equilibrate(self.initial, **opts))
+            return data - eq
+
+        original = self.crn.params
+        params = original.copy()
+        fit = lmfit.minimize(objective, params, **options)
+        self.crn.params = original
+        return fit
 
 
 def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:
