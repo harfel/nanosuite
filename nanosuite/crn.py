@@ -224,6 +224,8 @@ class ParameterMap(lmfit.Parameters):
         samples: xarray.DataArray
             samples to vary parameters for
         """
+        if samples.ndim == 1:
+            return
         content_dim = next(iter(samples.coords))
         subset = self.mapping.loc[samples.coords[content_dim].data].values
         for name in self:
@@ -697,7 +699,6 @@ class CRN:
                 jobs = [schedule_computation(sample) for sample in initial_condition]
                 equilibrium = [N.T @ job.result().x + C
                                for job, C in zip(jobs, initial_condition)]
-
             return xr.DataArray(equilibrium, initial_condition.coords)
 
         raise ValueError("Initial condition mut be 1 or 2 dimensional")
@@ -1092,7 +1093,7 @@ class Equilibrium:
     """
     def __init__(self, crn: CRN, initial: xr.DataArray):
         self.crn = crn
-        self.initial = initial
+        self.initial = crn.state(initial)
 
     def eval(self, **options) -> xr.DataArray:
         """Compute equilibrium state
@@ -1132,14 +1133,23 @@ class Equilibrium:
         -------
         lmfit.FitResult
         """
+        if data.ndim == 2:
+            content_dim = next(iter(data.coords))
+            initial = self.initial.loc[data.coords[content_dim]]
+
         def objective(params, **opts):
             self.crn.params = params
-            eq = conversion(self.crn.equilibrate(self.initial, **opts))
-            return data - eq
+            eq = self.eval(**opts)
+            self.initial = eq
+            return ((data - conversion(eq))**2).data
 
         original = self.crn.params
         params = original.copy()
-        fit = lmfit.minimize(objective, params, **options)
+        params.fix_outside(data)
+        params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
+        opts = {'method': 'nelder-mead'}
+        opts.update(**options)
+        fit = lmfit.minimize(objective, params, **opts)
         self.crn.params = original
         return fit
 

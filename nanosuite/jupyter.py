@@ -155,7 +155,9 @@ class Equilibrium(crn.Equilibrium):
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb:
             return super().fit(data, conversion, iter_cb=iter_cb, **options)
-        with EquilibriumFitProgress(self.crn, data, self.initial, conversion) as progress:
+
+        initial = self.initial[self.initial.sample.isin(data.sample)]
+        with EquilibriumFitProgress(self.crn, data, initial, conversion) as progress:
             return super().fit(data, conversion, iter_cb=progress, **options)
 
 
