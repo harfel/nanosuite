@@ -3,6 +3,7 @@
 This module requires IPython and matplotlib
 """
 import base64
+from contextlib import ExitStack
 from copy import deepcopy
 from itertools import cycle
 import io
@@ -14,6 +15,40 @@ from matplotlib.figure import Figure       # type: ignore
 import numpy as np
 import xarray as xr                        # type: ignore
 from . import crn, mars
+
+####################################################################################################
+#
+# control interactivity
+#
+####################################################################################################
+interactive: bool = True
+
+def ion() -> ExitStack:
+    """Turn interactive mode on
+
+    Allows to temporarily turn on interactive mode. Can be used as a context manager:
+    >>> with ns.jupyter.ion():
+    >>>     perform_fit()
+    """
+    global interactive
+    stack = ExitStack()
+    stack.callback(ion if interactive else ioff)
+    interactive = True
+    return stack
+
+def ioff() -> ExitStack:
+    """
+    Turn interactive mode off
+
+    Allows to temporarily turn off interactive mode. Can be used as a context manager:
+    >>> with ns.jupyter.ioff():
+    >>>     perform_fit()
+    """
+    global interactive
+    stack = ExitStack()
+    stack.callback(ion if interactive else ioff)
+    interactive = False
+    return stack
 
 
 ####################################################################################################
@@ -138,7 +173,7 @@ class CRN(crn.CRN):
             *,
             iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
-        if iter_cb:
+        if iter_cb or not interactive:
             return super().fit(data, initial, conversion, error, iter_cb=iter_cb, **options)
         with FitProgress(self, data, initial, conversion, error) as progress:
             return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
@@ -153,9 +188,8 @@ class Equilibrium(crn.Equilibrium):
             conversion: Callable[[xr.DataArray], xr.DataArray],
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
-        if iter_cb:
+        if iter_cb or not interactive:
             return super().fit(data, conversion, iter_cb=iter_cb, **options)
-
         initial = self.initial[self.initial.sample.isin(data.sample)]
         with EquilibriumFitProgress(self.crn, data, initial, conversion) as progress:
             return super().fit(data, conversion, iter_cb=progress, **options)
