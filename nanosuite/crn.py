@@ -25,55 +25,6 @@ DEFAULT_INTEGRATION_POINTS = 501
 DEFAULT_MIN_T0 = -np.inf
 
 
-def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, times: pd.Index,
-                   options: dict) -> np.ndarray:
-    """Integrate crn for initial condition at given times
-
-    Internally, this method uses the method of van der Schaft et al.
-    (2011) SIAM J Appl Math 73(2):953-973.
-    """
-    # FIXME: move code into Trajectory
-    # pylint: disable=invalid-name
-
-    Z = crn.complex_graph
-    A = crn.get_complex_adjacency(params)
-    L = np.diag(np.sum(A, axis=0)) - A
-
-    def kinetics(_, state):
-        # Z.T @ log(state) with convention 0*inf = 0
-        with np.errstate(divide='ignore', invalid='ignore'):
-            tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
-            tmp = np.nansum(Z.T*tmp, axis=1)
-        return -Z @ L @ np.exp(tmp)
-
-    if 'atol' not in options:
-        options['atol'] = 1e-8*initial.max() or 1e-8
-    if 'rtol' not in options:
-        options['rtol'] = 1e-8
-
-    result = solve_ivp(kinetics, (params['t0'], times[-1]), initial, t_eval=times, **options)
-    if not result.success:
-        raise RuntimeError(result.message)
-    return result.y
-
-def dist_to_equilib(X, N, C, lnK):
-    """Compute distance to equilibrium distribution
-
-    This is used by CRN.equilibrate to minimize the
-    distance to the equilibrium in an iterative
-    gradient decent.
-    """
-    # FIXME: move code into Equilibrium
-    # pylint: disable=invalid-name
-    Y = N.T @ X + C.data
-    if out_of_bounds := Y[Y<0].sum():
-        return (1-out_of_bounds)*1e14
-    with np.errstate(divide='ignore', invalid='ignore'):
-        Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
-    Z = np.where(np.isnan(Z), 0, Z)
-    return np.linalg.norm(Z)
-
-
 class ParameterMap(lmfit.Parameters):
     """Mapping between samples and parameters
 
@@ -338,7 +289,7 @@ class CRN:
     def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
         """Return subset of reactions with infinite rate constant
 
-        DEPRECATED: This property has been deprecated in version 0.3.0
+        *Deprecated since 0.3.0*
         """
         warnings.warn("CRN.burst_reactions is deprecated and will be removed.",
                       DeprecationWarning, stacklevel=2)
@@ -578,6 +529,15 @@ class CRN:
             state.loc[..., species] = val
         return state
 
+    def post_process_state(self, state: xr.DataArray) -> xr.DataArray:
+        """Rectify computed states.
+
+        This method is can be called by functions that generate CRN states such as
+        trajectories or equilbrium distributions in order to enforce given invariants.
+        The default implementation returns the provided state unaltered.
+        """
+        return state
+
     def parametrize_for(self, sample_map: pd.DataFrame,
                         **parameter_dependencies: list[str]) -> ParameterMap:
         """Return a parametrization for the given sample_map
@@ -658,9 +618,7 @@ class CRN:
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
 
-        Uses gradient decent to find the equilibrium state for a given
-        initial condition. The implementation follows the procedure
-        discussed in https://chemistry.stackexchange.com/questions/153869/
+        **Deprecated since version 0.3.1**: Use CRN.equilibrium().eval() instead.
 
         Parameters
         ----------
@@ -672,44 +630,17 @@ class CRN:
         A 1D or 2D xarray.DataArray with the equilibrium corresponding to
         the initial state
         """
-        # FIXME: deprecate CRN.equilibrate
-        # FIXME: move code into Equilibrium
-        # pylint: disable=invalid-name
-        initial_condition = self.state(initial_condition)
-        N = self.stoichiometry_matrix
-
-        kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
-                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
-        kwargs.update(options)
-
-        if initial_condition.ndim == 1:
-            params = self.params.specification_for(initial_condition)
-            lnK = np.log(self.get_equilibrium_constants(params))
-            kwargs['args'] = (N, initial_condition, lnK)
-            result = basinhopping(dist_to_equilib, np.zeros(N.shape[0]), niter=100,
-                                  minimizer_kwargs = kwargs)
-            return xr.DataArray(N.T @ result.x + initial_condition, initial_condition.coords)
-
-        if initial_condition.ndim == 2:
-            with futures.ProcessPoolExecutor() as executor:
-                def schedule_computation(sample):
-                    params = self.params.specification_for(sample)
-                    lnK = np.log(self.get_equilibrium_constants(params))
-                    return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
-                                           niter=100,
-                                           minimizer_kwargs = kwargs | {'args': (N, sample, lnK)})
-
-                jobs = [schedule_computation(sample) for sample in initial_condition]
-                equilibrium = [N.T @ job.result().x + C
-                               for job, C in zip(jobs, initial_condition)]
-            return xr.DataArray(equilibrium, initial_condition.coords)
-
-        raise ValueError("Initial condition mut be 1 or 2 dimensional")
+        warnings.warn("CRN.equilibrate is deprecated and will be removed. "
+                      "Use CRN.equilibrium().eval() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.equilibrium(initial_condition).eval(**options)
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None,
                   cache: Cache|None = None, **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
+
+        **Deprecated since version 0.3.1**: Use CRN.trajectory().eval() instead.
 
         If the initial condition is a 1D vector, this returns a
         2D DataArray of states over the requested interval t_eval.
@@ -744,59 +675,10 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        # FIXME: deprecate CRN.integrate
-        # FIXME: move code into Trajectory
-        def stratify_t_eval(times):
-            # pylint: disable=too-many-return-statements
-            if isinstance(times, tuple):
-                return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
-                                            dtype=float),
-                                name="time")
-            if isinstance(times, pd.Index):
-                return times
-            if isinstance(times, xr.DataArray):
-                if times.ndim == 0:
-                    return pd.Index(np.linspace(self.params['t0'].value,
-                                                float(t_eval), DEFAULT_INTEGRATION_POINTS,
-                                                dtype=float),
-                                    name="time")
-                if times.ndim == 1:
-                    return times
-                raise ValueError("t_eval must have either zero or one dimension.")
-            if isinstance(times, Iterable):
-                return pd.Index(times, name="time")
-            if times is None:
-                return pd.Index(np.linspace(self.params['t0'].value,
-                                            DEFAULT_INTEGRATION_END,
-                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
-                                name="time")
-            return pd.Index(np.linspace(self.params['t0'].value, t_eval,
-                                        DEFAULT_INTEGRATION_POINTS, dtype=float),
-                            name="time")
-
-        if not cache:
-            cache = Cache()
-
-        times: pd.Index = stratify_t_eval(t_eval)
-        initial_condition = self.state(initial_condition)
-        if any(param.value==float('inf') for param in self.params.values()):
-            initial_condition = self.perform_burst_reactions(initial_condition)
-
-        if len(initial_condition.dims) == 1:
-            traj: Iterable = do_integration(self, initial_condition, self.params, times, options)
-        else:
-            with futures.ProcessPoolExecutor() as executor:
-                @cache.compute
-                def schedule_computation(sample):
-                    params = self.params.specification_for(sample)
-                    return executor.submit(do_integration, self, sample, params, times, options)
-
-                jobs = [schedule_computation(sample) for sample in initial_condition]
-                traj = [job.result() for job in jobs]
-
-        return xr.DataArray(traj, [(dim, initial_condition.indexes[dim])
-                                   for dim in initial_condition.dims] + [times],
-                            name="concentration")
+        warnings.warn("CRN.integrate is deprecated and will be removed. "
+                      "Use CRN.trajectory().eval() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.trajectory(initial_condition).eval(t_eval, cache, **options)
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
@@ -852,6 +734,8 @@ class CRN:
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
+        **Deprecated since version 0.3.1**: Use CRN.trajectory().fit() instead.
+
         Parameters
         ----------
         data: xarray.DataArray with rfu over time
@@ -870,33 +754,15 @@ class CRN:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        # FIXME: deprecate CRN.fit
-        # FIXME: move code into Trajectory
-        conversion = conversion or (lambda conc: conc.sel(species=data.species))
+        warnings.warn("CRN.fit is deprecated and will be removed. "
+                      "Use CRN.trajectory().fit() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.trajectory(initial).fit(data, conversion, error, **options)
 
-        if data.ndim == 2:
-            content_dim = data.dims[0]
-            initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
-
-        cache = Cache(2*len(initial))
-
-        def objective(params):
-            self.params = params
-            model = conversion(self.integrate(initial, t_eval=data.time, cache=cache))
-            return (data-model)/error
-
-        original = self.params
-        params = original.copy()
-        params.fix_outside(data)
-        params['t0'].max = float(data.time[0]) # TODO: respect injections
-        fit = lmfit.minimize(objective, params, **options)
-        self.params = original
-        return fit
-
-    def trajectory(self, initial: xr.DataArray) -> Trajectory:
+    def trajectory(self, initial: xr.DataArray|dict) -> Trajectory:
         return Trajectory(self, initial)
 
-    def equilibrium(self, initial: xr.DataArray) -> Equilibrium:
+    def equilibrium(self, initial: xr.DataArray|dict) -> Equilibrium:
         """Equilibrium model
 
         This returns an Equilibrium model of the CRN.
@@ -931,7 +797,7 @@ class PartitionedCRN(CRN):
     This subclass allows for modelling of CRNs where certain species are a
     mixture of subspecies. Consider for example a biomarker where 1% is a mutant,
     the rest being wildtype. PartitionedCRN allows one to provide initial
-    states in biomarker concentrations, whicu are converted to subspecies
+    states in biomarker concentrations, which are converted to subspecies
     concentratrations before dynamics are simulated. Before reporting results
     back to the user, overall species concentrations are updated from the
     subspecies concentrations.
@@ -1065,30 +931,17 @@ class PartitionedCRN(CRN):
             return xr.DataArray(state.values @ self.split_species(), state.coords)
         content_dim = state.dims[0]
         return xr.DataArray([sample.values @ self.split_species(sample.coords[content_dim].data)
-                                 for sample in state],
-                                state.coords)
+                             for sample in state],
+                            state.coords)
 
-    def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
-        initial = self.state(initial_condition)
-        initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
-                                          initial.coords)
-        eq_subspecies = super().equilibrate(initial_subspecies, **options)
-        return xr.DataArray(self.merge_subspecies @ eq_subspecies.values, eq_subspecies.coords,
-                            name=eq_subspecies.name)
+    def post_process_state(self, state: xr.DataArray) -> xr.DataArray:
+        """Recalculate correct summary concentrations
 
-    def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
-                  t_eval: Iterable|float|None = None,
-                  cache: Cache|None = None, **options) -> xr.DataArray:
-        """Generate trajectory for given initial condition(s).
-
-        This converts the given initial condition to subspecies concentrations
-        which are then integrated using CRN.integrate. Trajectories are merged
-        back into total species concentrations.
+        This method returns a state or trajectory with unaltered subspecies
+        concentrations, but recalculates the overall species concentrations
+        from the concentrations of subspecies.
         """
-        initial = self.state(initial_condition)
-        traj_subspecies = super().integrate(initial, t_eval, cache, **options)
-        return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
-                            name=traj_subspecies.name)
+        return xr.DataArray(self.merge_subspecies @ state.values, state.coords, name=state.name)
 
 
 class Trajectory:
@@ -1104,9 +957,16 @@ class Trajectory:
         the return value is a 3D DataArray with trajectories for
         each initial condition.
     """
-    def __init__(self, crn: CRN, initial: xr.DataArray):
+    def __init__(self, crn: CRN, initial: xr.DataArray|dict):
         self.crn = crn
-        self.initial = initial
+
+        initial = crn.state(initial)
+        if initial.ndim not in [1, 2]:
+            raise ValueError("Initial condition must be 1D or 2D")
+        if any(param.value==float('inf') for param in crn.params.values()):
+            self.initial = crn.perform_burst_reactions(initial)
+        else:
+            self.initial = initial
 
     def eval(self,
              t_eval: Iterable[float]|float|None = None,
@@ -1138,7 +998,56 @@ class Trajectory:
     -------
         2D or 3D DataArray of trajectories. See help(Trajectory).
         """
-        return self.crn.integrate(self.initial, t_eval, cache, **options)
+        def stratify_t_eval(times):
+            # pylint: disable=too-many-return-statements
+            if isinstance(times, tuple):
+                return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
+                                            dtype=float),
+                                name="time")
+            if isinstance(times, pd.Index):
+                return times
+            if isinstance(times, xr.DataArray):
+                if times.ndim == 0:
+                    return pd.Index(np.linspace(self.crn.params['t0'].value,
+                                                float(t_eval), DEFAULT_INTEGRATION_POINTS,
+                                                dtype=float),
+                                    name="time")
+                if times.ndim == 1:
+                    return times
+                raise ValueError("t_eval must have either zero or one dimension.")
+            if isinstance(times, Iterable):
+                return pd.Index(times, name="time")
+            if times is None:
+                return pd.Index(np.linspace(self.crn.params['t0'].value,
+                                            DEFAULT_INTEGRATION_END,
+                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
+                                name="time")
+            return pd.Index(np.linspace(self.crn.params['t0'].value, t_eval,
+                                        DEFAULT_INTEGRATION_POINTS, dtype=float),
+                            name="time")
+
+        if not cache:
+            cache = Cache()
+
+        times: pd.Index = stratify_t_eval(t_eval)
+
+        if len(self.initial.dims) == 1:
+            traj: Iterable = self._do_integration(self.initial, times, options)
+        else:
+            with futures.ProcessPoolExecutor() as executor:
+                @cache.compute
+                def schedule_computation(sample):
+                    params = self.crn.params.specification_for(sample)
+                    return executor.submit(self._do_integration, sample, times, options)
+
+                jobs = [schedule_computation(sample) for sample in self.initial]
+                traj = [job.result() for job in jobs]
+
+        traj = xr.DataArray(traj,
+                            [(dim, self.initial.indexes[dim]) for dim in self.initial.dims]
+                            + [times],
+                            name=self.initial.name)
+        return self.crn.post_process_state(traj)
 
     def fit(self,
             data: xr.DataArray,
@@ -1164,7 +1073,58 @@ class Trajectory:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        return self.crn.fit(data, self.initial, conversion, error, **options)
+        conversion = conversion or (lambda conc: conc.sel(species=data.species))
+
+        if data.ndim == 2:
+            content_dim = data.dims[0]
+            initial = self.initial[self.initial.coords[content_dim].isin(data.coords[content_dim])]
+        else:
+            initial = self.initial
+
+        cache = Cache(2*len(initial))
+
+        def objective(params):
+            self.crn.params = params
+            model = conversion(self.eval(t_eval=data.time, cache=cache))
+            return (data-model)/error
+
+        original = self.crn.params
+        params = original.copy()
+        params.fix_outside(data)
+        params['t0'].max = float(data.time[0]) # TODO: respect injections
+        fit = lmfit.minimize(objective, params, **options)
+        self.crn.params = original
+        return fit
+
+    def _do_integration(self, initial: xr.DataArray, times: pd.Index, options: dict) -> np.ndarray:
+        """Integrate crn for initial condition at given times
+
+        Internally, this method uses the method of van der Schaft et al.
+        (2011) SIAM J Appl Math 73(2):953-973.
+        """
+        # pylint: disable=invalid-name
+
+        Z = self.crn.complex_graph
+        A = self.crn.get_complex_adjacency(self.crn.params)
+        L = np.diag(np.sum(A, axis=0)) - A
+
+        def kinetics(_, state):
+            # Z.T @ log(state) with convention 0*inf = 0
+            with np.errstate(divide='ignore', invalid='ignore'):
+                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
+                tmp = np.nansum(Z.T*tmp, axis=1)
+            return -Z @ L @ np.exp(tmp)
+
+        if 'atol' not in options:
+            options['atol'] = 1e-8*initial.max() or 1e-8
+        if 'rtol' not in options:
+            options['rtol'] = 1e-8
+
+        result = solve_ivp(kinetics, (self.crn.params['t0'], times[-1]), initial,
+                           t_eval=times, **options)
+        if not result.success:
+            raise RuntimeError(result.message)
+        return result.y
 
 
 class Equilibrium:
@@ -1180,9 +1140,16 @@ class Equilibrium:
     >>> model.params['k_f'].vary = False
     >>> eq = Equilibrium(model, model.state(A=100, B=100))
     """
-    def __init__(self, crn: CRN, initial: xr.DataArray):
+    def __init__(self, crn: CRN, initial: xr.DataArray|dict):
         self.crn = crn
-        self.initial = crn.state(initial)
+
+        initial = crn.state(initial)
+        if initial.ndim not in [1, 2]:
+            raise ValueError("Initial condition must be 1D or 2D")
+        if any(param.value==float('inf') for param in crn.params.values()):
+            self.initial = crn.perform_burst_reactions(initial)
+        else:
+            self.initial = initial
 
     def eval(self, **options) -> xr.DataArray:
         """Compute equilibrium state
@@ -1200,7 +1167,38 @@ class Equilibrium:
         A 1D or 2D xarray.DataArray with the equilibrium corresponding to
         the initial state
         """
-        return self.crn.equilibrate(self.initial, *options)
+        # pylint: disable=invalid-name
+        N = self.crn.stoichiometry_matrix
+
+        kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
+                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
+        kwargs.update(options)
+
+        if self.initial.ndim == 1:
+            params = self.crn.params.specification_for(self.initial)
+            lnK = np.log(self.crn.get_equilibrium_constants(params))
+            kwargs['args'] = (N, self.initial, lnK)
+            result = basinhopping(self._dist_to_equilib, np.zeros(N.shape[0]), niter=100,
+                                  minimizer_kwargs = kwargs)
+            equilibrium = N.T @ result.x + self.initial
+
+        else:
+            with futures.ProcessPoolExecutor() as executor:
+                def schedule_computation(sample):
+                    params = self.crn.params.specification_for(sample)
+                    lnK = np.log(self.crn.get_equilibrium_constants(params))
+                    return executor.submit(basinhopping,
+                                           self._dist_to_equilib,
+                                           np.zeros(N.shape[0]),
+                                           niter=100,
+                                           minimizer_kwargs = kwargs | {'args': (N, sample, lnK)})
+
+                jobs = [schedule_computation(sample) for sample in self.initial]
+                equilibrium = [N.T @ job.result().x + C
+                               for job, C in zip(jobs, self.initial)]
+
+        return xr.DataArray(self.crn.post_process_state(equilibrium),
+                            self.initial.coords, name=self.initial.name)
 
     def fit(self,
             data: xr.DataArray,
@@ -1232,15 +1230,34 @@ class Equilibrium:
             self.initial = eq
             return ((data - conversion(eq))**2).data
 
-        original = self.crn.params
-        params = original.copy()
+        orig_params = self.crn.params
+        orig_initial = self.initial
+        params = orig_params.copy()
         params.fix_outside(data)
         params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
         opts = {'method': 'nelder-mead'}
         opts.update(**options)
         fit = lmfit.minimize(objective, params, **opts)
-        self.crn.params = original
+        self.initial = orig_initial
+        self.crn.params = orig_params
         return fit
+
+    @staticmethod
+    def _dist_to_equilib(X, N, C, lnK):
+        """Compute distance to equilibrium distribution
+    
+        This is used by CRN.equilibrate to minimize the
+        distance to the equilibrium in an iterative
+        gradient decent.
+        """
+        # pylint: disable=invalid-name
+        Y = N.T @ X + C.data
+        if out_of_bounds := Y[Y<0].sum():
+            return (1-out_of_bounds)*1e14
+        with np.errstate(divide='ignore', invalid='ignore'):
+            Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
+        Z = np.where(np.isnan(Z), 0, Z)
+        return np.linalg.norm(Z)
 
 
 def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:

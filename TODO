@@ -1,4 +1,4 @@
-- deprecate CRN.integrate, CRN.fit, and CRN.equilibrate
+- please pylint
 = feature/equilibrate-parametermaps
 - improved calibration via assay.setup controls
   - endpoint calibration as alternative to "proper" controls

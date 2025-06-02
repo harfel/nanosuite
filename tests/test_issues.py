@@ -7,6 +7,8 @@ tests to pinpoint the issue.
 import pytest
 import xarray as xr
 from nanosuite import crn
+from .utils import deprecated_feature
+
 
 def test_issue_0001():
     """Ensure that CRN params can be assigned via CRN.params."""
@@ -28,6 +30,7 @@ def test_issue_0001():
     assert crn_b.params['p'] == 0.03
 
 
+@deprecated_feature
 def test_issue_0002():
     """Ensure that ImpureCRN's can be integrated."""
     impure_crn = crn.from_string("""

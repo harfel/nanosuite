@@ -10,7 +10,7 @@ import pandas as pd
 import xarray as xr
 from nanosuite import crn
 from nanosuite.mars import Assay
-
+from .utils import deprecated_feature
 
 def test_params_add():
     """Ensure that parameters can be added to CRN.params"""
@@ -210,7 +210,7 @@ def test_burst_reactions(reactions, initial, outcome):
     """Ensure currect treatment of burst reactions"""
     test_crn = crn.from_string(reactions)
     initial = xr.DataArray(initial, {'species': test_crn.species})
-    traj = test_crn.integrate(initial)
+    traj = test_crn.trajectory(initial).eval()
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
 def test_burst_must_not_be_reversible():
@@ -229,7 +229,7 @@ def test_circular_burst_reactions(reactions, initial):
     test_crn = crn.from_string(reactions)
     initial = xr.DataArray(initial, {'species': test_crn.species})
     with pytest.raises(ValueError):
-        test_crn.integrate(initial)
+        test_crn.trajectory(initial).eval()
 
 def test_impurities():
     """Ensure correct split into subspecies"""
@@ -240,7 +240,7 @@ def test_impurities():
        A [impure] -> Y;  k
     """)
     initial = test_crn.state(A=1.)
-    traj = test_crn.integrate(initial)
+    traj = test_crn.trajectory(initial).eval()
     print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
@@ -252,7 +252,7 @@ def test_impurities_can_burst():
        A [impure] -> X; k=inf
     """)
     initial = test_crn.state(A=1.0)
-    traj = test_crn.integrate(initial)
+    traj = test_crn.trajectory(initial).eval()
     assert traj.sel(species="A", time=0) == 0.5
     assert traj.sel(species="A_impure", time=0) == 0.
     assert traj.sel(species="A", time=100) == 0.5
@@ -273,7 +273,7 @@ def test_impurities_support_parallel_systems():
         'system': ['1', '2', '3'],
         'species': ['A']
     })
-    traj = test_crn.integrate(initial)
+    traj = test_crn.trajectory(initial).eval()
 
     assert (traj.sel(time=0, species="A_impure") - [0.1, 0.2, 0.3] < 1e-15).all()
 
@@ -294,6 +294,7 @@ def test_add_reaction_respects_catalysts():
                          forward_rate=lmfit.Parameter('k'))
     assert len(network.species) == 3
 
+@deprecated_feature
 def test_integrate_teval_is_optional():
     """Ensure that scalar t_eval is optional"""
     model = crn.from_string("A + B -> C")
@@ -304,6 +305,7 @@ def test_integrate_teval_is_optional():
     assert traj.time[-1] == crn.DEFAULT_INTEGRATION_END
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+@deprecated_feature
 def test_integrate_teval_accepts_float():
     """Ensure that scalar t_eval is taken as end value"""
     model = crn.from_string("A + B -> C")
@@ -314,6 +316,7 @@ def test_integrate_teval_accepts_float():
     assert traj.time[-1] == 66
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+@deprecated_feature
 def test_integrate_scalar_teval_starts_at_t0():
     """Ensure that scalar t_eval uses t0 as start value"""
     model = crn.from_string("A + B -> C")
@@ -325,6 +328,7 @@ def test_integrate_scalar_teval_starts_at_t0():
     assert traj.time[-1] == 66
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+@deprecated_feature
 def test_integrate_teval_accepts_tuple():
     """Ensure that tuple t_eval is taken as start and end values"""
     model = crn.from_string("A + B -> C")
@@ -336,6 +340,7 @@ def test_integrate_teval_accepts_tuple():
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
     assert traj.sel(species='C')[0] > 0
 
+@deprecated_feature
 def test_integrate_teval_accepts_iterable():
     """Ensure that scalar t_eval is taken as time points"""
     model = crn.from_string("A + B -> C")
@@ -344,6 +349,7 @@ def test_integrate_teval_accepts_iterable():
     assert traj.time[0] == 2
     assert traj.time[-1] == 32
 
+@deprecated_feature
 def test_integrate_teval_accepts_dataarrays():
     """Ensure that xarrays are taken directly as time dimension"""
     model = crn.from_string("A + B -> C")
@@ -351,6 +357,7 @@ def test_integrate_teval_accepts_dataarrays():
     traj = model.integrate(model.state(A=10, B=10), t_eval=times)
     assert (traj.testtime == times).all()
 
+@deprecated_feature
 def test_integrate_teval_accepts_scalar_arrays():
     """Ensure that scalar arrays are taken as end point of a time interval"""
     model = crn.from_string("A + B -> C")
@@ -361,6 +368,7 @@ def test_integrate_teval_accepts_scalar_arrays():
     assert traj.time[-1] == 4
     assert len(traj.time) == crn.DEFAULT_INTEGRATION_POINTS
 
+@deprecated_feature
 def test_equilibrate_reversible():
     """Ensure equilibrium of reversible reactions is accurate"""
     model = crn.from_string("A <=> B ; kf=2, kb=1")
@@ -373,6 +381,7 @@ def test_equilibrate_reversible():
     assert eq.sum() == state.sum()
     assert conc_ratio == pytest.approx(rate_ratio)
 
+@deprecated_feature
 def test_equilibrate_multiple_state():
     """Permit equilbrium to be calculated for multiple states"""
     model = crn.from_string("A + B <=> C; kf, kb")
@@ -386,6 +395,7 @@ def test_equilibrate_multiple_state():
 
     assert (equilibrium.sel(species='C') == pytest.approx(Ceq)).all()
 
+@deprecated_feature
 def test_equilibrate_with_sample_map():
     model = crn.from_string("""
         A <=> B; kf=1, kr=1
@@ -406,6 +416,7 @@ def test_equilibrate_with_sample_map():
 
     assert eq.sel(species='A').values == pytest.approx([10., 55., 99.99999999])
 
+@deprecated_feature
 def test_equilibrate_ignores_unspecified_samples():
     model = crn.from_string("""
         A <=> B; kf=1, kr=1
@@ -424,6 +435,7 @@ def test_equilibrate_ignores_unspecified_samples():
 
     assert eq.sel(species='A').values == pytest.approx([5, 0])
 
+@deprecated_feature
 def test_equilibrate_subspecies():
     model = crn.from_string("""
         A contains reactive with p_A = 0.5
@@ -455,7 +467,7 @@ def test_perform_burst_reactions_works_with_multiple_samples():
         'sample': "a b c d e f g h i".split(),
         'species': "A B".split(),
     })
-    traj = model.integrate(init)
+    traj = model.trajectory(init).eval()
     assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()
 
 @pytest.mark.parametrize("conc, extra_conc", [
