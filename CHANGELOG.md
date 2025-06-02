@@ -1,7 +1,8 @@
-0.3.1rc1
---------
+0.3.1 (Unreleased)
+------------------
 
 Added:
+- CRN.trajectory returns a model of a CRN's trajectory for integration and fitting
 - CRN.equilibrium returns a model that can be fit to experimental data
 - ns.jupyter.ion and ioff allow to turn interactive output on or off
 

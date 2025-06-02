@@ -32,6 +32,7 @@ def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, ti
     Internally, this method uses the method of van der Schaft et al.
     (2011) SIAM J Appl Math 73(2):953-973.
     """
+    # FIXME: move code into Trajectory
     # pylint: disable=invalid-name
 
     Z = crn.complex_graph
@@ -62,6 +63,7 @@ def dist_to_equilib(X, N, C, lnK):
     distance to the equilibrium in an iterative
     gradient decent.
     """
+    # FIXME: move code into Equilibrium
     # pylint: disable=invalid-name
     Y = N.T @ X + C.data
     if out_of_bounds := Y[Y<0].sum():
@@ -226,7 +228,7 @@ class ParameterMap(lmfit.Parameters):
         """
         if samples.ndim == 1:
             return
-        content_dim = next(iter(samples.coords))
+        content_dim = samples.dims[0]
         subset = self.mapping.loc[samples.coords[content_dim].data].values
         for name in self:
             if name not in subset:
@@ -671,6 +673,7 @@ class CRN:
         the initial state
         """
         # FIXME: deprecate CRN.equilibrate
+        # FIXME: move code into Equilibrium
         # pylint: disable=invalid-name
         initial_condition = self.state(initial_condition)
         N = self.stoichiometry_matrix
@@ -741,6 +744,8 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
+        # FIXME: deprecate CRN.integrate
+        # FIXME: move code into Trajectory
         def stratify_t_eval(times):
             # pylint: disable=too-many-return-statements
             if isinstance(times, tuple):
@@ -865,8 +870,13 @@ class CRN:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
+        # FIXME: deprecate CRN.fit
+        # FIXME: move code into Trajectory
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
-        initial = initial[initial.sample.isin(data.sample)]
+
+        if data.ndim == 2:
+            content_dim = data.dims[0]
+            initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
 
         cache = Cache(2*len(initial))
 
@@ -882,6 +892,9 @@ class CRN:
         fit = lmfit.minimize(objective, params, **options)
         self.params = original
         return fit
+
+    def trajectory(self, initial: xr.DataArray) -> Trajectory:
+        return Trajectory(self, initial)
 
     def equilibrium(self, initial: xr.DataArray) -> Equilibrium:
         """Equilibrium model
@@ -1050,7 +1063,7 @@ class PartitionedCRN(CRN):
 
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
-        content_dim = next(iter(state.coords))
+        content_dim = state.dims[0]
         return xr.DataArray([sample.values @ self.split_species(sample.coords[content_dim].data)
                                  for sample in state],
                                 state.coords)
@@ -1078,8 +1091,84 @@ class PartitionedCRN(CRN):
                             name=traj_subspecies.name)
 
 
+class Trajectory:
+    """Trajectory of a CRN
+
+    Parameters
+    ----------
+    initial_condition: 1D or 2D xarray.DataArray
+        the last coord must denote species concentrations
+
+        If initial_condition is a 1D vector, Trajectory.eval returns
+        a 2D DataArray of states. If initial_condition is a 2D DataArray,
+        the return value is a 3D DataArray with trajectories for
+        each initial condition.
+    """
+    def __init__(self, crn: CRN, initial: xr.DataArray):
+        self.crn = crn
+        self.initial = initial
+
+    def eval(self,
+             t_eval: Iterable[float]|float|None = None,
+             cache: Cache|None = None, **options) -> xr.DataArray:
+        """Evaluate trajectory at given time points
+
+    Internally, the method uses scipy.integrate.solve_ivp.
+    Optional keyword arguments (method, atol, rtol, etc.) are
+    passed to solve_ivp.
+
+    Parameters
+    ----------
+    t_eval: float, tuple, Iterable or None
+        Time points at which system states should be reported.
+        If t_eval is scalar, the reported range starts at self.params['t0']
+        and stops at t_eval. If t_eval is a tuple, the values are taken
+        as start and end points. If t_eval is an iterable, those are the
+        returned integration points. If t_eval is not provided,
+        results are reported between crn.DEFAULT_INTEGRATION_START and
+        crn.DEFAULT_INTEGRATON_END with crn.DEFAULT_INTEGRATION_POINTS
+        points.
+        (t_eval does not influence the numerical step width of
+        the integrator).
+    options
+        any remaining keyword arguments are passed to
+        scipy.optimize.solve_ivp
+
+    Returns
+    -------
+        2D or 3D DataArray of trajectories. See help(Trajectory).
+        """
+        return self.crn.integrate(self.initial, t_eval, cache, **options)
+
+    def fit(self,
+            data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+            error: float|xr.DataArray = 1.,
+            **options) -> lmfit.minimizer.MinimizerResult:
+        """Fit model parameters to experimental data
+
+        Parameters
+        ----------
+        data: xarray.DataArray with rfu over time
+        conversion: optional function to convert concentrations to RFU values
+            The conversion must accept DataArrays of concentrations
+            over time and must return a DataArray of RFU values over
+            time. Can be obtained from mars.Assay.convert.
+        error: optional xr.DataArray with rfu over time or float (default 1.)
+            Standard deviations of measured data
+        options:
+            Any remaining keyword arguments are pass to lmfit.minimize
+
+        Result
+        ------
+            An lmfit MinimizerResult that contains (among others) the
+            attribute params, which are the optimized parameters.
+        """
+        return self.crn.fit(data, self.initial, conversion, error, **options)
+
+
 class Equilibrium:
-    """Equilibrium model of a CRN
+    """Equilibrium of a CRN
 
     This represents the equilibrium distribution of a reversible CRN.
     The main purpose of the model is to fit reaction rate constants
@@ -1134,7 +1223,7 @@ class Equilibrium:
         lmfit.FitResult
         """
         if data.ndim == 2:
-            content_dim = next(iter(data.coords))
+            content_dim = data.dims[0]
             initial = self.initial.loc[data.coords[content_dim]]
 
         def objective(params, **opts):

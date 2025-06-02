@@ -1,4 +1,3 @@
-- CRN.trajectory should return Trajectory
 - deprecate CRN.integrate, CRN.fit, and CRN.equilibrate
 = feature/equilibrate-parametermaps
 - improved calibration via assay.setup controls
