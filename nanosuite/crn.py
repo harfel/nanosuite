@@ -1,19 +1,17 @@
 """Chemical reaction networks
 """
 from __future__ import annotations
-from concurrent import futures
 from copy import deepcopy
 from itertools import chain
+import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import warnings
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
-from scipy.integrate import solve_ivp    # type: ignore
-from scipy.optimize import basinhopping  # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
-from .utils import Cache
+from .numerics import Trajectory, Equilibrium
 
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -22,53 +20,6 @@ DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
 DEFAULT_MIN_T0 = -np.inf
-
-
-def do_integration(crn: CRN, initial: xr.DataArray, params: lmfit.Parameters, times: pd.Index,
-                   options: dict) -> np.ndarray:
-    """Integrate crn for initial condition at given times
-
-    Internally, this method uses the method of van der Schaft et al.
-    (2011) SIAM J Appl Math 73(2):953-973.
-    """
-    # pylint: disable=invalid-name
-
-    Z = crn.complex_graph
-    A = crn.get_complex_adjacency(params)
-    L = np.diag(np.sum(A, axis=0)) - A
-
-    def kinetics(_, state):
-        # Z.T @ log(state) with convention 0*inf = 0
-        with np.errstate(divide='ignore', invalid='ignore'):
-            tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
-            tmp = np.nansum(Z.T*tmp, axis=1)
-        return -Z @ L @ np.exp(tmp)
-
-    if 'atol' not in options:
-        options['atol'] = 1e-8*initial.max() or 1e-8
-    if 'rtol' not in options:
-        options['rtol'] = 1e-8
-
-    result = solve_ivp(kinetics, (params['t0'], times[-1]), initial, t_eval=times, **options)
-    if not result.success:
-        raise RuntimeError(result.message)
-    return result.y
-
-def dist_to_equilib(X, N, C, lnK):
-    """Compute distance to equilibrium distribution
-
-    This is used by CRN.equilibrate to minimize the
-    distance to the equilibrium in an iterative
-    gradient decent.
-    """
-    # pylint: disable=invalid-name
-    Y = N.T @ X + C
-    if out_of_bounds := Y[Y<0].sum():
-        return (1-out_of_bounds)*1e14
-    with np.errstate(divide='ignore', invalid='ignore'):
-        Z = np.nansum(N*np.log(Y).T, axis=1) - lnK
-    Z = np.where(np.isnan(Z), 0, Z)
-    return np.linalg.norm(Z)
 
 
 class ParameterMap(lmfit.Parameters):
@@ -85,7 +36,7 @@ class ParameterMap(lmfit.Parameters):
     """
     mapping: pd.DataFrame
     general_params: dict[str, lmfit.Parameter]
-    zero: lmfit.Parameter
+    zero: lmfit.Parameter = lmfit.Parameter('__ZERO__', 0, vary=False)
 
     class ParameterProxy:
         """A proxy object to access all specialized parameters
@@ -105,16 +56,20 @@ class ParameterMap(lmfit.Parameters):
         def __setattr__(self, attr: str, val: Any) -> None:
             if isinstance(val, xr.DataArray):
                 val = val.data
-            if isinstance(val, Sequence|np.ndarray):
+            if isinstance(val, Sequence|np.ndarray|pd.Series):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):
+                    if self.params[special] is self.params.zero:
+                        continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, value)
             else:
                 for special in self.specializations:
+                    if self.params[special] is self.params.zero:
+                        continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, val)
 
-        def __getattr__(self, attr: str) -> np.ndarray:
+        def __getattr__(self, attr: str) -> np.ndarray:  # FIXME: return DataFrame or DataArray
             return np.array([getattr(self.params[special], attr)
                             for special in self.specializations])
 
@@ -124,7 +79,6 @@ class ParameterMap(lmfit.Parameters):
         index = sample_map.index if sample_map is not None else pd.Index([])
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
-        self.zero = lmfit.Parameter('__ZERO')
 
     def __reduce__(self) -> tuple:
         return self.__class__, (), {'mapping': self.mapping,
@@ -177,11 +131,13 @@ class ParameterMap(lmfit.Parameters):
 
     def specify(self, samples: pd.Index, name: str, new_name: str) -> None:
         """Overload general parameter for specific samples"""
+        if name not in self.mapping.columns:
+            raise KeyError(f"Unknown parameter '{name}'")
         if all(self.mapping[name] == name):
             self.mapping[name] = ""
             self.general_params[name] = self.pop(name)
         if name not in self.mapping.columns:
-            self.mapping[name] = 0
+            self.mapping[name] = 0  # Can I ever get into this code path?
 
         param = deepcopy(self.general_params[name])
         param.name = new_name
@@ -207,7 +163,7 @@ class ParameterMap(lmfit.Parameters):
             return self
         content_dim = next(iter(sample.coords))
         specification = self.mapping.loc[sample.coords[content_dim].values]
-        return {general: self.get(specification[general], 0)
+        return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
     def fix_outside(self, samples: xr.DataArray) -> None:
@@ -218,7 +174,9 @@ class ParameterMap(lmfit.Parameters):
         samples: xarray.DataArray
             samples to vary parameters for
         """
-        content_dim = next(iter(samples.coords))
+        if samples.ndim == 1:
+            return
+        content_dim = samples.dims[0]
         subset = self.mapping.loc[samples.coords[content_dim].data].values
         for name in self:
             if name not in subset:
@@ -267,7 +225,9 @@ class CRN:
     params: ParameterMap
 
     def __init__(self,
-                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants],
+                                 tuple[lmfit.Parameter,
+                                 lmfit.Parameter|None]]|None = None,
                  species: Iterable[str]|None = None):
         """Create a chemical reaction network.
 
@@ -326,7 +286,7 @@ class CRN:
     def burst_reactions(self) -> dict[tuple[Reactants, Reactants], tuple[str, str]]:
         """Return subset of reactions with infinite rate constant
 
-        DEPRECATED: This property has been deprecated in version 0.3.0
+        *Deprecated since 0.3.0*
         """
         warnings.warn("CRN.burst_reactions is deprecated and will be removed.",
                       DeprecationWarning, stacklevel=2)
@@ -358,22 +318,6 @@ class CRN:
         return np.array([[stoichiometry(species, products) - stoichiometry(species, educts)
                           for species in self.species]
                          for (educts, products) in self.reactions])
-
-    @property
-    def equilibrium_constants(self) -> np.ndarray:
-        """Equilibrium constants of the reactions
-
-        This returns a vector of equilibrium constants for each
-        reaction. Irreversible reactions have an equilibrium constant
-        equal to infinity.
-        """
-        if not self.params.mapping.empty:
-            raise RuntimeError("TODO: CRN.parameter_map's are not supported yet.")
-        with np.errstate(divide='ignore', invalid='ignore'):
-            return np.array([
-                self.params[forward]/self.params[backward] if backward else float('inf')
-                for (forward, backward) in self.reactions.values()
-            ])
 
     @property
     def complex_graph(self) -> np.ndarray:
@@ -421,6 +365,27 @@ class CRN:
                 rate_constants[i, j] = kf if kf != float('inf') else 0.
                 rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
+
+    def get_equilibrium_constants(self,
+                                  params: dict[str, lmfit.Parameter]|None = None) -> np.ndarray:
+        """Equilibrium constants of the reactions
+    
+        This returns a vector of equilibrium constants for each
+        reaction. Irreversible reactions have an equilibrium constant
+        equal to infinity.
+
+        Parameters
+        ----------
+        params: optional Parameter dictionary
+            Reaction rate constants used to calculate equilibrium constants.
+            Uses self.params if not given.
+        """
+        params = params if params is not None else self.params
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.array([
+                params[forward]/b if backward and (b:=params[backward]) != 0 else float('inf')
+                for (forward, backward) in self.reactions.values()
+            ])
 
     def scale_concentration_unit(self, scale_factor: float) -> ParameterMap:
         """Scale reaction rate constants to new concentration unit.
@@ -561,6 +526,15 @@ class CRN:
             state.loc[..., species] = val
         return state
 
+    def post_process_state(self, state: xr.DataArray) -> xr.DataArray:
+        """Rectify computed states.
+
+        This method is can be called by functions that generate CRN states such as
+        trajectories or equilbrium distributions in order to enforce given invariants.
+        The default implementation returns the provided state unaltered.
+        """
+        return state
+
     def parametrize_for(self, sample_map: pd.DataFrame,
                         **parameter_dependencies: list[str]) -> ParameterMap:
         """Return a parametrization for the given sample_map
@@ -632,7 +606,7 @@ class CRN:
                     for sample in parameter_map.mapping.index]
             substitutions = parameter_map.mapping[deps]
             for general in substitutions:
-                expr = [ex.replace(general, special)
+                expr = [re.sub(f'\\b{general}\\b', special, ex)
                         for ex, special in zip(expr, substitutions[general])]
             parameter_map[name].expr = expr
 
@@ -641,9 +615,7 @@ class CRN:
     def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
         """Equilibrium state of the reaction network
 
-        Uses gradient decent to find the equilibrium state for a given
-        initial condition. The implementation follows the procedure
-        discussed in https://chemistry.stackexchange.com/questions/153869/
+        **Deprecated since version 0.3.1**: Use CRN.equilibrium().eval() instead.
 
         Parameters
         ----------
@@ -655,44 +627,16 @@ class CRN:
         A 1D or 2D xarray.DataArray with the equilibrium corresponding to
         the initial state
         """
-        # pylint: disable=invalid-name
-        initial_condition = self.state(initial_condition)
-        N = self.stoichiometry_matrix
-        lnK = np.log(self.equilibrium_constants)
-
-        if np.isinf(lnK).any():
-            raise ValueError("Only fully reversible CRNs can be equilibrated.")
-
-        kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
-                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
-        kwargs.update(options)
-
-        if initial_condition.ndim == 1:
-            C = initial_condition.values
-            kwargs['args'] = (N, C, lnK)
-            result = basinhopping(dist_to_equilib, np.zeros(N.shape[0]), niter=100,
-                                  minimizer_kwargs = kwargs)
-            return xr.DataArray(N.T @ result.x + C, initial_condition.coords)
-
-        if initial_condition.ndim == 2:
-            with futures.ProcessPoolExecutor() as executor:
-                def schedule_computation(C):
-                    return executor.submit(basinhopping, dist_to_equilib, np.zeros(N.shape[0]),
-                                           niter=100,
-                                           minimizer_kwargs = kwargs | {'args': (N, C, lnK)})
-
-                jobs = [schedule_computation(C) for C in initial_condition.values]
-                equilibrium = [N.T @ job.result().x + C
-                               for job, C in zip(jobs, initial_condition.values)]
-
-            return xr.DataArray(equilibrium, initial_condition.coords)
-
-        raise ValueError("Intiail condition mut be 1 or 2 dimensional")
+        warnings.warn("CRN.equilibrate is deprecated and will be removed. "
+                      "Use CRN.equilibrium().eval() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.equilibrium(initial_condition).eval(**options)
 
     def integrate(self, initial_condition: xr.DataArray|dict,
-                  t_eval: Iterable[float]|float|None = None,
-                  cache: Cache|None = None, **options) -> xr.DataArray:
+                  t_eval: Iterable[float]|float|None = None, **options) -> xr.DataArray:
         """Generate trajectory for given initial condition(s).
+
+        **Deprecated since version 0.3.1**: Use CRN.trajectory().eval() instead.
 
         If the initial condition is a 1D vector, this returns a
         2D DataArray of states over the requested interval t_eval.
@@ -727,58 +671,10 @@ class CRN:
         -------
             2D or 3D DataArray of trajectories. See above.
         """
-        def stratify_t_eval(times):
-            # pylint: disable=too-many-return-statements
-            if isinstance(times, tuple):
-                return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
-                                            dtype=float),
-                                name="time")
-            if isinstance(times, pd.Index):
-                return times
-            if isinstance(times, xr.DataArray):
-                if times.ndim == 0:
-                    return pd.Index(np.linspace(self.params['t0'].value,
-                                                float(t_eval), DEFAULT_INTEGRATION_POINTS,
-                                                dtype=float),
-                                    name="time")
-                if times.ndim == 1:
-                    return times
-                raise ValueError("t_eval must have either zero or one dimension.")
-            if isinstance(times, Iterable):
-                return pd.Index(times, name="time")
-            if times is None:
-                return pd.Index(np.linspace(self.params['t0'].value,
-                                            DEFAULT_INTEGRATION_END,
-                                            DEFAULT_INTEGRATION_POINTS, dtype=float),
-                                name="time")
-            return pd.Index(np.linspace(self.params['t0'].value, t_eval,
-                                        DEFAULT_INTEGRATION_POINTS, dtype=float),
-                            name="time")
-
-        if not cache:
-            cache = Cache()
-
-        times: pd.Index = stratify_t_eval(t_eval)
-        initial_condition = self.state(initial_condition)
-        if any(param.value==float('inf') for param in self.params.values()):
-            initial_condition = self.perform_burst_reactions(initial_condition)
-
-        if len(initial_condition.dims) == 1:
-            traj: Iterable = do_integration(self, initial_condition, self.params, times, options)
-        else:
-            with futures.ProcessPoolExecutor() as executor:
-                @cache.compute
-                def schedule_computation(sample, params):
-                    return executor.submit(do_integration, self, sample, params, times, options)
-
-                jobs = [schedule_computation(sample, self.params.specification_for(sample))
-                        for sample in initial_condition]
-
-                traj = [job.result() for job in jobs]
-
-        return xr.DataArray(traj, [(dim, initial_condition.indexes[dim])
-                                   for dim in initial_condition.dims] + [times],
-                            name="concentration")
+        warnings.warn("CRN.integrate is deprecated and will be removed. "
+                      "Use CRN.trajectory().eval() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.trajectory(initial_condition).eval(t_eval, **options)
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
@@ -834,6 +730,8 @@ class CRN:
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
+        **Deprecated since version 0.3.1**: Use CRN.trajectory().fit() instead.
+
         Parameters
         ----------
         data: xarray.DataArray with rfu over time
@@ -852,23 +750,45 @@ class CRN:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        conversion = conversion or (lambda conc: conc.sel(species=data.species))
-        initial = initial[initial.sample.isin(data.sample)]
+        warnings.warn("CRN.fit is deprecated and will be removed. "
+                      "Use CRN.trajectory().fit() instead.",
+                      DeprecationWarning, stacklevel=2)
+        return self.trajectory(initial).fit(data, conversion, error, **options)
 
-        cache = Cache(2*len(initial))
+    def trajectory(self, initial: xr.DataArray|dict) -> Trajectory:
+        """Trajectory of a CRN for a given initial condition
 
-        def objective(params):
-            self.params = params
-            model = conversion(self.integrate(initial, t_eval=data.time, cache=cache))
-            return (data-model)/error
+        Parameters
+        ----------
+        initial: 1D or 2D xarray.DataArray
 
-        original = self.params
-        params = self.params.copy()
-        params.fix_outside(data)
-        params['t0'].max = float(data.time[0]) # TODO: respect injections
-        fit = lmfit.minimize(objective, params, **options)
-        self.params = original
-        return fit
+        Returns
+        -------
+        A Trajectory object that can be used for integration or
+        rate constant fitting.
+        """
+        return Trajectory(self, initial)
+
+    def equilibrium(self, initial: xr.DataArray|dict) -> Equilibrium:
+        """Equilibrium model
+
+        This returns an Equilibrium model of the CRN.
+
+        >>> model = from_string("A + B <=> C; k_f=1, k_r=10")
+        >>> initial = model.state(A=100, B=50)
+        >>> eq = model.equilibrium(initial)
+        >>> distribution = eq.eval()
+
+        Parameters
+        ----------
+        initial: xarray.DataArray
+            The initial state for which the equilibrium should be computed 
+
+        Returns
+        -------
+        An Equilibrium model
+        """
+        return Equilibrium(self, initial)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
@@ -877,13 +797,14 @@ class CRN:
             for species, stoich in multiset
         )
 
+
 class PartitionedCRN(CRN):
     """CRN with subspecies partitioning
 
     This subclass allows for modelling of CRNs where certain species are a
     mixture of subspecies. Consider for example a biomarker where 1% is a mutant,
     the rest being wildtype. PartitionedCRN allows one to provide initial
-    states in biomarker concentrations, whicu are converted to subspecies
+    states in biomarker concentrations, which are converted to subspecies
     concentratrations before dynamics are simulated. Before reporting results
     back to the user, overall species concentrations are updated from the
     subspecies concentrations.
@@ -929,7 +850,9 @@ class PartitionedCRN(CRN):
 
 
     def __init__(self,
-                 reactions: dict[tuple[Reactants, Reactants], tuple[lmfit.Parameter, lmfit.Parameter|None]]|None = None,
+                 reactions: dict[tuple[Reactants, Reactants],
+                                 tuple[lmfit.Parameter,
+                                 lmfit.Parameter|None]]|None = None,
                  species_defs : list[tuple[str, dict[str, lmfit.Parameter], str]]|None = None,
                  species: Iterable[str]|None = None):
         super().__init__(reactions, species)
@@ -1013,32 +936,19 @@ class PartitionedCRN(CRN):
 
         if len(state.dims) == 1:
             return xr.DataArray(state.values @ self.split_species(), state.coords)
-        content_dim = next(iter(state.coords))
+        content_dim = state.dims[0]
         return xr.DataArray([sample.values @ self.split_species(sample.coords[content_dim].data)
-                                 for sample in state],
-                                state.coords)
+                             for sample in state],
+                            state.coords)
 
-    def equilibrate(self, initial_condition: xr.DataArray|dict, **options) -> xr.DataArray:
-        initial = self.state(initial_condition)
-        initial_subspecies = xr.DataArray(initial.values @ self.split_species(),
-                                          initial.coords)
-        eq_subspecies = super().equilibrate(initial_subspecies, **options)
-        return xr.DataArray(self.merge_subspecies @ eq_subspecies.values, eq_subspecies.coords,
-                            name=eq_subspecies.name)
+    def post_process_state(self, state: xr.DataArray) -> xr.DataArray:
+        """Recalculate correct summary concentrations
 
-    def integrate(self, initial_condition: xr.DataArray|dict,  # pylint: disable=invalid-name
-                  t_eval: Iterable|float|None = None,
-                  cache: Cache|None = None, **options) -> xr.DataArray:
-        """Generate trajectory for given initial condition(s).
-
-        This converts the given initial condition to subspecies concentrations
-        which are then integrated using CRN.integrate. Trajectories are merged
-        back into total species concentrations.
+        This method returns a state or trajectory with unaltered subspecies
+        concentrations, but recalculates the overall species concentrations
+        from the concentrations of subspecies.
         """
-        initial = self.state(initial_condition)
-        traj_subspecies = super().integrate(initial, t_eval, cache, **options)
-        return xr.DataArray(self.merge_subspecies @ traj_subspecies.values, traj_subspecies.coords,
-                            name=traj_subspecies.name)
+        return xr.DataArray(self.merge_subspecies @ state.values, state.coords, name=state.name)
 
 
 def from_string(string: str, species: list[str]|None = None) -> CRN|PartitionedCRN:
