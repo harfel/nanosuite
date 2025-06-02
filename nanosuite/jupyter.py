@@ -30,7 +30,7 @@ def ion() -> ExitStack:
     >>> with ns.jupyter.ion():
     >>>     perform_fit()
     """
-    global interactive
+    global interactive  # pylint: disable=global-statement
     stack = ExitStack()
     stack.callback(ion if interactive else ioff)
     interactive = True
@@ -44,7 +44,7 @@ def ioff() -> ExitStack:
     >>> with ns.jupyter.ioff():
     >>>     perform_fit()
     """
-    global interactive
+    global interactive  # pylint: disable=global-statement
     stack = ExitStack()
     stack.callback(ion if interactive else ioff)
     interactive = False
