@@ -14,7 +14,7 @@ from matplotlib import colormaps           # type: ignore
 from matplotlib.figure import Figure       # type: ignore
 import numpy as np
 import xarray as xr                        # type: ignore
-from . import crn, mars
+from . import crn, mars, numerics
 
 ####################################################################################################
 #
@@ -151,7 +151,7 @@ class EquilibriumFitProgress:
     def __call__(self, params, num_it, residuals, *args, **kwargs):
         original = deepcopy(self.crn.params)
         self.crn.params = params
-        eq = self.conversion(self.crn.equilibrate(self.initial))
+        eq = self.conversion(self.crn.equilibrium(self.initial).eval())
         self.crn.params = original
 
         fig = Figure()
@@ -179,6 +179,7 @@ class EquilibriumFitProgress:
 
 class CRN(crn.CRN):
     """CRN class that visualizes fit progress"""
+    # FIXME: Implement a monkey patch for numerics.Trajectory instead
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray,
@@ -192,10 +193,8 @@ class CRN(crn.CRN):
         with FitProgress(self, data, initial, conversion, error) as progress:
             return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
 
-class PartitionedCRN(crn.PartitionedCRN, CRN):
-    """PartitionedCRN class that visualizes fit progress"""
 
-class Equilibrium(crn.Equilibrium):
+class Equilibrium(numerics.Equilibrium):
     """Equilibrium class that visualizes fit progress"""
     def fit(self,
             data: xr.DataArray,
@@ -204,15 +203,15 @@ class Equilibrium(crn.Equilibrium):
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
             return super().fit(data, conversion, iter_cb=iter_cb, **options)
-        initial = self.initial[self.initial.sample.isin(data.sample)]
+        content_dim = next(iter(data.coords))
+        initial = self.initial.loc[data.coords[content_dim]]
         with EquilibriumFitProgress(self.crn, data, initial, conversion) as progress:
             return super().fit(data, conversion, iter_cb=progress, **options)
 
 
 # monkey patches
-crn.CRN = CRN                        # type: ignore
-crn.PartitionedCRN = PartitionedCRN  # type: ignore
-crn.Equilibrium = Equilibrium        # type: ignore
+crn.CRN = CRN                             # type: ignore
+numerics.Equilibrium = Equilibrium        # type: ignore
 
 
 ####################################################################################################

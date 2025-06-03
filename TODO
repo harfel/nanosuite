@@ -1,14 +1,15 @@
+? feature/sample_index: move group from multiindex into coordinate
 - improved calibration via assay.setup controls
   - endpoint calibration as alternative to "proper" controls
   - permit scalar pos_rfu, neg_rfu arguments in addition to 1D/2D arrays
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
-- allow to turn jupyter interactive mode on or off
 - set sensible crn.params['t0'] bounds for/from injectors
 - update and add nanosuite/examples
 = 0.3.1
 - extended port mapping: allow rate constant definitions such as "; k = [1, 1e1, 1e2, 1e3]"
 - can I automatically assign new coordinates (e.g. systems) to both setup and sample_map?
-? CRN could be immutable and additive/extenable
+? figure out relation of CRN, PortMap and Trajectory/Equilibrium -- who owns what
+? CRN could be immutable and additive/extendable
 ? integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/
 - implement better hierarchical indexing, support assay.plate - assay.mean
 - equilibrate irreversible reactions

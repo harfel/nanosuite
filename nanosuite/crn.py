@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd                      # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
-from .numerics import Trajectory, Equilibrium
+from . import numerics
 
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -161,8 +161,8 @@ class ParameterMap(lmfit.Parameters):
         """
         if len(self.mapping) == 0:
             return self
-        content_dim = next(iter(sample.coords))
-        specification = self.mapping.loc[sample.coords[content_dim].values]
+        idx = tuple(str(sample.coords[c].values) for c in self.mapping.index.names)
+        specification = self.mapping.loc[idx]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
@@ -755,7 +755,7 @@ class CRN:
                       DeprecationWarning, stacklevel=2)
         return self.trajectory(initial).fit(data, conversion, error, **options)
 
-    def trajectory(self, initial: xr.DataArray|dict) -> Trajectory:
+    def trajectory(self, initial: xr.DataArray|dict) -> numerics.Trajectory:
         """Trajectory of a CRN for a given initial condition
 
         Parameters
@@ -767,9 +767,9 @@ class CRN:
         A Trajectory object that can be used for integration or
         rate constant fitting.
         """
-        return Trajectory(self, initial)
+        return numerics.Trajectory(self, initial)
 
-    def equilibrium(self, initial: xr.DataArray|dict) -> Equilibrium:
+    def equilibrium(self, initial: xr.DataArray|dict) -> numerics.Equilibrium:
         """Equilibrium model
 
         This returns an Equilibrium model of the CRN.
@@ -788,7 +788,7 @@ class CRN:
         -------
         An Equilibrium model
         """
-        return Equilibrium(self, initial)
+        return numerics.Equilibrium(self, initial)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
