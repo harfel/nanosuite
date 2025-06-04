@@ -21,19 +21,30 @@ from . import crn, mars
 # control interactivity
 #
 ####################################################################################################
-interactive: bool = True
+interactive: bool|str = True
 
-def ion() -> ExitStack:
+def ion(mode: bool|str = False) -> ExitStack:
     """Turn interactive mode on
 
     Allows to temporarily turn on interactive mode. Can be used as a context manager:
     >>> with ns.jupyter.ion():
     >>>     perform_fit()
+
+    Parameters
+    ----------
+    mode: bool or 'temporary' (default False)
+        False:       no interactive output
+        True:        permanent interactive output
+        'temporary': interactive output deleted after operation
     """
     global interactive  # pylint: disable=global-statement
+
+    if mode not in [False, True, 'temporary']:
+        raise ValueError("Mode must be one of True, False or 'temporary'.")
+
     stack = ExitStack()
     stack.callback(ion if interactive else ioff)
-    interactive = True
+    interactive = mode
     return stack
 
 def ioff() -> ExitStack:
@@ -71,7 +82,8 @@ class FitProgress:
         return self
 
     def __exit__(self, typ, value, traceback):
-        pass # self.hdisplay.update(HTML('<div/>'))
+        if interactive == 'temporary':
+            self.hdisplay.update(HTML(''))
 
     def __call__(self, params, num_it, residuals, *args, **kwargs):
         def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
@@ -114,6 +126,7 @@ class FitProgress:
         </div>
         '''))
 
+
 class EquilibriumFitProgress:
     """Live visualization of Equilibrium.fit"""
     def __init__(self,
@@ -132,7 +145,8 @@ class EquilibriumFitProgress:
         return self
 
     def __exit__(self, typ, value, traceback):
-        pass # self.hdisplay.update(HTML('<div/>'))
+        if interactive == 'temporary':
+            self.hdisplay.update(HTML(''))
 
     def __call__(self, params, num_it, residuals, *args, **kwargs):
         original = deepcopy(self.crn.params)
