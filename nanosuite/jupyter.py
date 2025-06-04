@@ -64,10 +64,10 @@ def ioff() -> ExitStack:
 
 ####################################################################################################
 #
-# crn enhancements
+# numerics enhancements
 #
 ####################################################################################################
-class FitProgress:
+class TrajectoryFitProgress:
     """Live visualization for CRN.fit"""
     def __init__(self, crn_, data, initial, conversion, error):
         self.crn = crn_
@@ -177,21 +177,20 @@ class EquilibriumFitProgress:
         '''))
 
 
-class CRN(crn.CRN):
-    """CRN class that visualizes fit progress"""
-    # FIXME: Implement a monkey patch for numerics.Trajectory instead
+class Trajectory(numerics.Trajectory):
+    """Trajectory class that visualizes fit progress"""
     def fit(self,
             data: xr.DataArray,
-            initial: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
-            error: float|xr.DataArray=1.,
-            *,
-            iter_cb: Callable|None = None,
+            error: float|xr.DataArray = 1.,
+            *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, initial, conversion, error, iter_cb=iter_cb, **options)
-        with FitProgress(self, data, initial, conversion, error) as progress:
-            return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
+            return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
+        content_dim = next(iter(data.coords))
+        initial = self.initial.loc[data.coords[content_dim]]
+        with TrajectoryFitProgress(self.crn, data, self.initial, conversion) as progress:
+            return super().fit(data, conversion, error, iter_cb=progress, **options)
 
 
 class Equilibrium(numerics.Equilibrium):
@@ -210,7 +209,7 @@ class Equilibrium(numerics.Equilibrium):
 
 
 # monkey patches
-crn.CRN = CRN                             # type: ignore
+numerics.Trajectory = Trajectory          # type: ignore
 numerics.Equilibrium = Equilibrium        # type: ignore
 
 
