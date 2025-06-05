@@ -5,7 +5,7 @@ These methods work in conjunction with crn.CRN and crn.PartitionedCRN.
 from __future__ import annotations
 from concurrent import futures
 from typing import Iterable, TYPE_CHECKING
-import lmfit
+import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
 from scipy.integrate import solve_ivp    # type: ignore
@@ -301,7 +301,7 @@ class Equilibrium:
         """
         orig_initial = self.initial
 
-        if data.ndim == 2:
+        if data.ndim == 1 and len(data) > 1:
             content_dim = data.dims[0]
             self.initial = self.initial.loc[data.coords[content_dim]]
 

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd                      # type: ignore
 import xarray as xr                      # type: ignore
 from . import crn_parser
-from .numerics import Trajectory, Equilibrium
+from . import numerics
 
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
@@ -76,7 +76,7 @@ class ParameterMap(lmfit.Parameters):
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
 
-        index = sample_map.index if sample_map is not None else pd.Index([])
+        index = sample_map.index if sample_map is not None else pd.Index([], name='sample')
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
 
@@ -493,7 +493,9 @@ class CRN:
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
-            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+            samples = pd.Index([f'Sample X{idx+1}' for idx in range(n_samples[0])]
+                                if n_samples else [],
+                               name='sample')
         elif conc.ndim == 1:
             n_samples = list(set(len(value) for value in extra_conc.values()
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
@@ -504,11 +506,11 @@ class CRN:
             samples = conc.indexes[conc.dims[0]] if conc.ndim>1 else []
 
         # initialize state DataArray
-        if isinstance(conc, dict) and conc and samples:
+        if isinstance(conc, dict) and conc and len(samples):
             state = xr.DataArray([value if isinstance(value, (Sequence, np.ndarray))
                                         else len(samples)*[value] for value in conc.values()],
                                  {'species': list(conc.keys()), 'sample': samples}).T
-        elif isinstance(conc, dict) and samples:
+        elif isinstance(conc, dict) and len(samples):
             state = xr.DataArray(()).expand_dims({'sample': samples, 'species': []})
         elif isinstance(conc, dict) and conc:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
@@ -755,7 +757,7 @@ class CRN:
                       DeprecationWarning, stacklevel=2)
         return self.trajectory(initial).fit(data, conversion, error, **options)
 
-    def trajectory(self, initial: xr.DataArray|dict) -> Trajectory:
+    def trajectory(self, initial: xr.DataArray|dict) -> numerics.Trajectory:
         """Trajectory of a CRN for a given initial condition
 
         Parameters
@@ -767,9 +769,9 @@ class CRN:
         A Trajectory object that can be used for integration or
         rate constant fitting.
         """
-        return Trajectory(self, initial)
+        return numerics.Trajectory(self, initial)
 
-    def equilibrium(self, initial: xr.DataArray|dict) -> Equilibrium:
+    def equilibrium(self, initial: xr.DataArray|dict) -> numerics.Equilibrium:
         """Equilibrium model
 
         This returns an Equilibrium model of the CRN.
@@ -788,7 +790,7 @@ class CRN:
         -------
         An Equilibrium model
         """
-        return Equilibrium(self, initial)
+        return numerics.Equilibrium(self, initial)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
