@@ -76,7 +76,7 @@ class ParameterMap(lmfit.Parameters):
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
 
-        index = sample_map.index if sample_map is not None else pd.Index([])
+        index = sample_map.index if sample_map is not None else pd.Index([], name='sample')
         self.mapping = pd.DataFrame([], index=index)
         self.general_params = {}
 
@@ -161,8 +161,8 @@ class ParameterMap(lmfit.Parameters):
         """
         if len(self.mapping) == 0:
             return self
-        idx = tuple(str(sample.coords[c].values) for c in self.mapping.index.names)
-        specification = self.mapping.loc[idx]
+        content_dim = next(iter(sample.coords))
+        specification = self.mapping.loc[sample.coords[content_dim].values]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
@@ -493,7 +493,9 @@ class CRN:
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
-            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+            samples = pd.Index([f'Sample X{idx+1}' for idx in range(n_samples[0])]
+                                if n_samples else [],
+                               name='sample')
         elif conc.ndim == 1:
             n_samples = list(set(len(value) for value in extra_conc.values()
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
@@ -504,11 +506,11 @@ class CRN:
             samples = conc.indexes[conc.dims[0]] if conc.ndim>1 else []
 
         # initialize state DataArray
-        if isinstance(conc, dict) and conc and samples:
+        if isinstance(conc, dict) and conc and len(samples):
             state = xr.DataArray([value if isinstance(value, (Sequence, np.ndarray))
                                         else len(samples)*[value] for value in conc.values()],
                                  {'species': list(conc.keys()), 'sample': samples}).T
-        elif isinstance(conc, dict) and samples:
+        elif isinstance(conc, dict) and len(samples):
             state = xr.DataArray(()).expand_dims({'sample': samples, 'species': []})
         elif isinstance(conc, dict) and conc:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})

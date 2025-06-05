@@ -407,7 +407,7 @@ def test_equilibrate_with_sample_map():
         ['A', 'B1'],
         ['A', 'B2'],
         ['A', 'B3'],
-    ], columns=['A', 'B'], index=initial.coords['sample'])
+    ], columns=['A', 'B'], index=initial.indexes['sample'])
 
     model.params = model.parametrize_for(sample_map, kr = ['B'])
     model.params['kr'].value = [0.1, 1., 10.]

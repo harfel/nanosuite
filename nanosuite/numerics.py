@@ -301,7 +301,7 @@ class Equilibrium:
         """
         orig_initial = self.initial
 
-        if data.ndim == 1:
+        if data.ndim == 1 and len(data) > 1:
             content_dim = data.dims[0]
             self.initial = self.initial.loc[data.coords[content_dim]]
 
