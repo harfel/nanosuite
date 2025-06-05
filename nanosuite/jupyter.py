@@ -43,7 +43,7 @@ def ion(mode: bool|str = False) -> ExitStack:
         raise ValueError("Mode must be one of True, False or 'temporary'.")
 
     stack = ExitStack()
-    stack.callback(ion if interactive else ioff)
+    stack.callback(ion if interactive else ioff)  # type: ignore
     interactive = mode
     return stack
 
@@ -57,7 +57,7 @@ def ioff() -> ExitStack:
     """
     global interactive  # pylint: disable=global-statement
     stack = ExitStack()
-    stack.callback(ion if interactive else ioff)
+    stack.callback(ion if interactive else ioff)  # type: ignore
     interactive = False
     return stack
 
@@ -68,33 +68,37 @@ def ioff() -> ExitStack:
 #
 ####################################################################################################
 class TrajectoryFitProgress:
-    """Live visualization for CRN.fit"""
-    def __init__(self, crn_, data, initial, conversion, error):
-        self.crn = crn_
+    """Live visualization for Trajectory.fit"""
+    def __init__(self,
+                 trajectory: numerics.Trajectory,
+                 data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+                 error: float|xr.DataArray = 1):
+        self.trajectory = trajectory
         self.data = data
-        self.initial = initial[initial.sample.isin(data.sample)]
-        self.conversion = conversion or (lambda conc: conc.sel(species=data.species))
+        self.conversion = conversion
         self.error = error
-        self.hdisplay = None
+        self.hdisplay = display(HTML('<div/>'), display_id=True)
 
     def __enter__(self):
-        self.hdisplay = display(HTML('<div/>'), display_id=True)
         return self
 
     def __exit__(self, typ, value, traceback):
         if interactive == 'temporary':
             self.hdisplay.update(HTML(''))
 
-    def __call__(self, params, num_it, residuals, *args, **kwargs):
-        def gradient(dataset: Sequence[Any], cmap: str = 'rainbow') -> Iterable[tuple]:
+    def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence, *args, **kwargs) -> None:
+        def gradient(dataset: Sequence|xr.DataArray, cmap: str = 'rainbow') -> Iterable[tuple]:
             size = len(dataset)
             for idx, _ in enumerate(dataset):
                 yield colormaps[cmap](idx/size)
 
-        original = deepcopy(self.crn.params)
-        self.crn.params = params
-        traj = self.conversion(self.crn.integrate(self.initial, t_eval=self.data.time))
-        self.crn.params = original
+        conversion = self.conversion or (lambda conc: conc.sel(species=self.data.species))
+
+        original = deepcopy(self.trajectory.crn.params)
+        self.trajectory.crn.params = params
+        traj = conversion(self.trajectory.eval(self.data.time))
+        self.trajectory.crn.params = original
 
         fig = Figure()
         ax = fig.gca()
@@ -130,29 +134,27 @@ class TrajectoryFitProgress:
 class EquilibriumFitProgress:
     """Live visualization of Equilibrium.fit"""
     def __init__(self,
-                 crn_: crn.CRN,
+                 equilibrium: numerics.Equilibrium,
                  data: xr.DataArray,
-                 initial: xr.DataArray,
                  conversion: Callable[[xr.DataArray], xr.DataArray]):
-        self.crn = crn_
+        self.equilibrium = equilibrium
         self.data = data
-        self.initial = initial
         self.conversion = conversion
-        self.hdisplay = None
+        self.hdisplay = display(HTML('<div/>'), display_id=True)
 
     def __enter__(self):
-        self.hdisplay = display(HTML('<div/>'), display_id=True)
         return self
 
     def __exit__(self, typ, value, traceback):
         if interactive == 'temporary':
             self.hdisplay.update(HTML(''))
 
-    def __call__(self, params, num_it, residuals, *args, **kwargs):
-        original = deepcopy(self.crn.params)
-        self.crn.params = params
-        eq = self.conversion(self.crn.equilibrium(self.initial).eval())
-        self.crn.params = original
+    def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence,
+                 *args, **kwargs) -> None:
+        original = deepcopy(self.equilibrium.crn.params)
+        self.equilibrium.crn.params = params
+        eq = self.conversion(self.equilibrium.eval())
+        self.equilibrium.crn.params = original
 
         fig = Figure()
         ax = fig.gca()
@@ -188,8 +190,7 @@ class Trajectory(numerics.Trajectory):
         if iter_cb or not interactive:
             return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
         content_dim = next(iter(data.coords))
-        initial = self.initial.loc[data.coords[content_dim]]
-        with TrajectoryFitProgress(self.crn, data, self.initial, conversion) as progress:
+        with TrajectoryFitProgress(self, data, conversion, error) as progress:
             return super().fit(data, conversion, error, iter_cb=progress, **options)
 
 
@@ -204,7 +205,7 @@ class Equilibrium(numerics.Equilibrium):
             return super().fit(data, conversion, iter_cb=iter_cb, **options)
         content_dim = next(iter(data.coords))
         initial = self.initial.loc[data.coords[content_dim]]
-        with EquilibriumFitProgress(self.crn, data, initial, conversion) as progress:
+        with EquilibriumFitProgress(self, data, conversion) as progress:
             return super().fit(data, conversion, iter_cb=progress, **options)
 
 
