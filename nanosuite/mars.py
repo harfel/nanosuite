@@ -76,7 +76,6 @@ class Assay:
             Only allowed it neither setup_file nor setup are provided.
         """
         self.rfu_file = rfu_file
-
         self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
                                                                          groups or {})
 
@@ -98,22 +97,22 @@ class Assay:
         elif isinstance(setup, dict):
             self.setup = xr.DataArray(
                 dims=['content', 'species'],
-                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique(),
+                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique().rename('content'),
                         'species': list(setup.keys())})
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
 
-        # reset self.all_rfu index
-        if self.setup is not None:
-            content = self.all_rfu.indexes['content'].droplevel('group').to_frame()
-            content['group'] = content.apply(
-                lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
-
-            content.set_index('group', append=True, inplace=True)
-            content = content.reorder_levels(['group', 'sample', 'well'])
-            coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
-            self.all_rfu = self.all_rfu.assign_coords(coords=coord)
-            self.active_wells = self.active_wells.assign_coords(coords=coord)
+        # reset self.all_rfu index  # FIXME: none of this appears to be required in the future
+        #if self.setup is not None:
+        #    content = self.all_rfu.indexes['content'].droplevel('group').to_frame()
+        #    content['group'] = content.apply(
+        #        lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
+        #
+        #    content.set_index('group', append=True, inplace=True)
+        #    content = content.reorder_levels(['group', 'sample', 'well'])
+        #    coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
+        #    self.all_rfu = self.all_rfu.assign_coords(coords=coord)
+        #    self.active_wells = self.active_wells.assign_coords(coords=coord)
 
         self.rfu = self.all_rfu[self.active_wells]
 
@@ -149,7 +148,7 @@ class Assay:
             df = df.replace(r'^\s+$', np.nan, regex=True).dropna(axis=0, how='all')
 
         # generate groups
-        content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
+        content = pd.Index(df[df.columns[1]].ffill(), name='content')
         df.set_index(content, inplace=True)
         df = df[df.columns[2:]]
         units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
@@ -263,16 +262,16 @@ class Assay:
         samples = df_main['Content'][1:]
 
         df_content = df_main[['Content', 'Well']][1:]
-        df_content['group'] = "Unknown"
-        df_content.columns = pd.Index(['sample', 'well', 'group'])
-        df_content = df_content.reindex(columns=['group', 'sample', 'well'])
-        for group, group_samples in groups.items():
-            if isinstance(group_samples, slice):
-                start = samples[samples==group_samples.start].index[0]
-                end = samples[samples==group_samples.stop].index[-1]
-                group_samples = list(samples.loc[start:end].unique())
-            for sample in group_samples:
-                df_content.loc[df_content['sample']==sample, 'group'] = group
+        df_content.columns = pd.Index(['sample', 'well'])
+        df_content = df_content.reindex(columns=['sample', 'well'])
+        # FIXME: assign to coord instead
+        #for group, group_samples in groups.items():
+        #    if isinstance(group_samples, slice):
+        #        start = samples[samples==group_samples.start].index[0]
+        #        end = samples[samples==group_samples.stop].index[-1]
+        #        group_samples = list(samples.loc[start:end].unique())
+        #    for sample in group_samples:
+        #        df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
         # The line below blindly assumes that injections happen over
@@ -346,18 +345,8 @@ class Assay:
         DataArray of average fluorescence of all active wells that belong to
         the same sample.
         """
-        samples = pd.Series(self.rfu.sample.data).unique()
-        return xr.DataArray(
-            [self.rfu.sel(sample=sample).mean(dim='content').data for sample in samples],
-            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
-             'time': self.rfu.time,
-             'seconds': self.rfu.seconds,
-             'minutes': self.rfu.minutes,
-             'hours': self.rfu.hours},
-            dims=('content', 'time'),
-            attrs=self.rfu.attrs,
-            name=self.rfu.name
-        )
+        m = self.rfu.groupby('sample').mean('content')
+        return m.loc[pd.Series(self.rfu.sample).unique()]
 
     @cached_property
     def std(self) -> xr.DataArray:
@@ -368,19 +357,8 @@ class Assay:
         DataArray of fluorescence standard deviation of all active wells
         that belong to the same sample.
         """
-        samples = pd.Series(self.rfu.sample.data).unique()
-        return xr.DataArray(
-            [self.rfu.sel(sample=sample).std(ddof=1, dim='content').data
-             for sample in samples],
-            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
-             'time': self.rfu.time,
-             'seconds': self.rfu.seconds,
-             'minutes': self.rfu.minutes,
-             'hours': self.rfu.hours},
-            dims=('content', 'time'),
-            attrs=self.rfu.attrs,
-            name=self.rfu.name
-        )
+        m = self.rfu.groupby('sample').std(dim='content', ddof=1)
+        return m.loc[pd.Series(self.rfu.sample).unique()]
 
     @property
     def plate(self):
@@ -881,7 +859,7 @@ class Assay:
         controls = xr.concat([pos_controls, neg_controls],
                              pd.Index(['positive', 'negative'], name='control'))
 
-        rfu = self.mean.reset_index(["group"], drop=True)
+        rfu = self.mean
 
         # pos_rfu and neg_rfu are xarrays with the same shape as rfu. for each sample
         # the array denotes the rfu values of the corresponding controls
@@ -890,7 +868,7 @@ class Assay:
         pos_rfu = rfu.loc[controls.sel(control='positive')]
         from_rfu, _ = self.convert(pos_rfu, neg_rfu, pos_conc, neg_conc,
                                    method=method, **method_options)
-        concs = from_rfu(self.mean.sel(content=controls.content))
+        concs = from_rfu(self.mean.sel(sample=controls.content.rename(content='sample')))
         concs.name = 'contentation'
         if 'control' in concs.coords:
             return concs.drop_vars(['control'])

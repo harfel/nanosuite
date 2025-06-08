@@ -333,8 +333,7 @@ class Assay(mars.Assay):
         controls = np.concatenate([positive, negative])
         for sample in controls:
             self.palette.loc[self.setup[self.setup.sample==sample].content] = np.array([0, 0, 0, 1])
-        #groups = self.setup.groupby('group')
-        groups = self.setup[~self.setup.sample.isin(controls)].groupby('group')
+        groups = self.setup[~self.setup.sample.isin(controls)].groupby('group') # FIXME: groups don't exist anymore
         cmaps = [colormaps[name] for name in ('Reds', 'Greens', 'Blues', 'Oranges', 'Purples')]
         for (name, group), gradient in zip(groups, cycle(cmaps)):
             samples = len(group)+len(group)//4

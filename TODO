@@ -1,4 +1,3 @@
-- eliminate group from multiindex
 - create group coordinate along sample dim
 - facilitate assigning new sample coordinates (e.g. systems) to all assay array
 - improved calibration via assay.setup controls

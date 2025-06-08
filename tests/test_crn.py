@@ -536,10 +536,10 @@ def test_parameter_map():
     params = system.parametrize_for(assay.sample_map, k1=['Probe'])
 
     assert params.mapping.shape == (len(assay.setup.content), 3)
-    assert params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert params.mapping.loc["Sample X1", 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc["Sample X7", 'k1'] == 'k1_Probe_2'
+    assert params.mapping.loc["Sample X10", 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc["Sample X1", 'k2'] == 'k2'
     assert len(params) == 4
     assert len(params.general_params) == 1
 
