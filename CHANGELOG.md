@@ -1,9 +1,17 @@
+0.4.0 (Unreleased)
+------------------
+
+Changed:
+- Demote Assay.rfu.group and Assay.setup.group from multiindex level to coordinate
+
+
 0.3.1
 -----
 
 Added:
 - CRN.trajectory returns a Trajectory object for integration and fitting
 - CRN.equilibrium returns an Equilibrium object that can be fit to experimental data
+- Assay.annotate allows to add arbitrary annotations to assay samples
 - ns.jupyter.ion and ioff allow to turn interactive output on or off
 
 Changed:

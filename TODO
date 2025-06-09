@@ -1,4 +1,3 @@
-- create group coordinate along sample dim
 - facilitate assigning new sample coordinates (e.g. systems) to all assay array
 - improved calibration via assay.setup controls
   - endpoint calibration as alternative to "proper" controls
@@ -9,7 +8,7 @@
 - extended port mapping: allow rate constant definitions such as "; k = [1, 1e1, 1e2, 1e3]"
 - set sensible crn.params['t0'] bounds for/from injectors
 - update and add nanosuite/examples
-= 0.4
+= 0.3.2
 ? figure out relation of CRN, PortMap and Trajectory/Equilibrium -- who owns what
 ? CRN could be immutable and additive/extendable
 ? integration using diffrax: https://docs.kidger.site/diffrax/examples/stiff_ode/

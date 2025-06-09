@@ -6,7 +6,7 @@ Assay(rfu=path_to_excel_rfu_data).
 """
 from functools import cached_property
 import re
-from typing import cast, Callable, Iterable
+from typing import cast, Callable, Iterable, Sequence
 import warnings
 import lmfit         # type: ignore
 import numpy as np
@@ -75,9 +75,9 @@ class Assay:
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
             Only allowed it neither setup_file nor setup are provided.
         """
+        groups = groups or {}
         self.rfu_file = rfu_file
-        self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
-                                                                         groups or {})
+        self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file)
 
         self.sample_map = sample_map  # may be overwritten by setup_file
 
@@ -97,24 +97,20 @@ class Assay:
         elif isinstance(setup, dict):
             self.setup = xr.DataArray(
                 dims=['content', 'species'],
-                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique().rename('content'),
+                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique()
+                                   .rename('content'),
                         'species': list(setup.keys())})
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
 
-        # reset self.all_rfu index  # FIXME: none of this appears to be required in the future
-        #if self.setup is not None:
-        #    content = self.all_rfu.indexes['content'].droplevel('group').to_frame()
-        #    content['group'] = content.apply(
-        #        lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
-        #
-        #    content.set_index('group', append=True, inplace=True)
-        #    content = content.reorder_levels(['group', 'sample', 'well'])
-        #    coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
-        #    self.all_rfu = self.all_rfu.assign_coords(coords=coord)
-        #    self.active_wells = self.active_wells.assign_coords(coords=coord)
-
         self.rfu = self.all_rfu[self.active_wells]
+
+        if self.setup is not None and 'group' in self.setup.coords:
+            # we copy setup groups to rfu groups
+            self.annotate(group=self.setup.group)
+        if groups:
+            # and overwrite groups from keyword argument
+            self.annotate(group=groups)
 
     def read_setup(self, setup_file: str) -> xr.DataArray:
         """Read plate setup from excel file
@@ -147,11 +143,9 @@ class Assay:
             # remove spurious whitespace
             df = df.replace(r'^\s+$', np.nan, regex=True).dropna(axis=0, how='all')
 
-        # generate groups
-        content = pd.Index(df[df.columns[1]].ffill(), name='content')
+        content = pd.Index(df['Sample ID'].ffill(), name='content')
         df.set_index(content, inplace=True)
-        df = df[df.columns[2:]]
-        units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
+        units = [match[1] for s in df.columns[5::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
         sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
         sample_map.replace([np.nan], [None], inplace=True)
@@ -177,23 +171,19 @@ class Assay:
             concs,
             {'content': content, 'species': concs.columns},
             attrs=attrs
-        ).assign_coords(positive=('content', df['Positive'].values),
+        ).assign_coords(group=('content', df['Group'].ffill().values),
+                        positive=('content', df['Positive'].values),
                         negative=('content', df['Negative'].values))
 
-    def read_rfu(self, rfu_file: str,
-                 groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu
-                                                              xr.DataArray,  # active_wells
-                                                              pd.Index]:     # injections
+    def read_rfu(self, rfu_file: str) -> tuple[xr.DataArray,  # all_rfu
+                                               xr.DataArray,  # active_wells
+                                               pd.Index]:     # injections
         """Read fluoresence data from Excel
 
         Parameters
         ----------
         rfu_file: str
             path to Excel file exported from MARS
-
-        groups: dict
-            mapping of group names to a list or slice of sample names
-            e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
 
         Returns
         -------
@@ -264,14 +254,6 @@ class Assay:
         df_content = df_main[['Content', 'Well']][1:]
         df_content.columns = pd.Index(['sample', 'well'])
         df_content = df_content.reindex(columns=['sample', 'well'])
-        # FIXME: assign to coord instead
-        #for group, group_samples in groups.items():
-        #    if isinstance(group_samples, slice):
-        #        start = samples[samples==group_samples.start].index[0]
-        #        end = samples[samples==group_samples.stop].index[-1]
-        #        group_samples = list(samples.loc[start:end].unique())
-        #    for sample in group_samples:
-        #        df_content.loc[df_content['sample']==sample, 'group'] = group
         df_multicontent = pd.MultiIndex.from_frame(df_content)
 
         # The line below blindly assumes that injections happen over
@@ -296,6 +278,69 @@ class Assay:
 
         return all_rfu, active_wells, injections
 
+    def annotate(self, coords: dict[str, Sequence[str]|slice]|Sequence[str]|None = None, /,
+                 **kwargs: dict[str, list[str]|slice]|Sequence[str]) -> None:
+        """Annotate samples
+
+        This allows to annotate assay samples with arbitrary information.
+        Annotations are added as coordinates to the content coordinate of
+        assay.rfu and assay.setup and are also propagated through into
+        assay.mean and assay.std.
+
+        >>> assay.annotate(system={'variant_a': slice('Sample X1', 'Sample X10'),
+                                   'variant_b': slice('Sample X11', 'Sample X20')})
+        >>> assay.sel(system='variant_a')
+
+        Parameters
+        ----------
+        coords: mapping of coordinate names to sample-associated values
+            Values are either sequences with the same length as either
+            assay.setup (to annotate samples) or assay.rfu (to annotate
+            repeats); or they are mappings where the keys are annotations
+            and values either sequences or slices of samples that should
+            have the associated annotation.
+        """
+        if not coords:
+            coords = {}
+        coords.update(kwargs)
+        coord_samples = pd.Series(self.all_rfu.sample).unique()
+
+        for name, attrib in coords.items():
+            coord = xr.DataArray(np.full(len(self.all_rfu), 'Unknown', dtype=object),
+                                 {'content': self.all_rfu.content})
+            if isinstance(attrib, dict):
+                for attr, samples in attrib.items():
+                    if isinstance(samples, slice):
+                        samples = coord.sel(sample=samples)
+                    for sample in samples:
+                        coord[coord.sample == sample] = attr
+            elif len(attrib) == len(coord_samples):
+                for sample, attr in zip(coord_samples, attrib):
+                    coord[coord.sample == sample] = attr
+            elif len(attrib) == len(coord):
+                coord = attrib
+            else:
+                raise ValueError(f"attrib must be of length {len(coord)} or {len(coord_samples)}")
+            coords[name] = coord
+
+        self.all_rfu = self.all_rfu.assign_coords(coords)
+        self.rfu = self.all_rfu[self.active_wells]
+        if self.setup is not None:
+            self.setup = self.setup.assign_coords({
+                name: ('content', coord.groupby('sample').map(lambda sample: sample[0])
+                                                         .drop_vars(['content', 'well'])
+                                                         .rename(sample='content').data)
+                for name, coord in coords.items()})
+
+        try:
+            del self.mean
+        except AttributeError:
+            pass
+        try:
+            del self.std
+        except AttributeError:
+            pass
+
     def __repr__(self) -> str:
         return f'<Assay "{self.rfu_file}">'
 
@@ -314,10 +359,14 @@ class Assay:
         self.rfu = self.all_rfu[self.active_wells]
         self.rfu.attrs['deactivated_cells'] = ', '.join(
             self.all_rfu[~self.active_wells].well.values)
-        if hasattr(self, 'mean'):
+        try:
             del self.mean
-        if hasattr(self, 'std'):
+        except AttributeError:
+            pass
+        try:
             del self.std
+        except AttributeError:
+            pass
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
@@ -331,10 +380,14 @@ class Assay:
         self.rfu = self.all_rfu[self.active_wells]
         self.rfu.attrs['deactivated_cells'] = ', '.join(
             self.all_rfu[~self.active_wells].well.values)
-        if hasattr(self, 'mean'):
+        try:
             del self.mean
-        if hasattr(self, 'std'):
+        except AttributeError:
+            pass
+        try:
             del self.std
+        except AttributeError:
+            pass
 
     @cached_property
     def mean(self) -> xr.DataArray:
@@ -346,6 +399,13 @@ class Assay:
         the same sample.
         """
         m = self.rfu.groupby('sample').mean('content')
+        # The below copies over all coordinates from assay.rfu that are linked
+        # to the content index whitout being part of it.
+        coords = {n: ('sample', c.groupby('sample').map(lambda sample: getattr(sample[0], n)).data)
+                  for n, c in self.rfu.coords.items()
+                  if n != 'content' and 'content' in c.dims
+                  and n not in self.rfu.indexes['content'].names}
+        m = m.assign_coords(coords)
         return m.loc[pd.Series(self.rfu.sample).unique()]
 
     @cached_property
@@ -358,6 +418,13 @@ class Assay:
         that belong to the same sample.
         """
         m = self.rfu.groupby('sample').std(dim='content', ddof=1)
+        # The below copies over all coordinates from assay.rfu that are linked
+        # to the content index whitout being part of it.
+        coords = {n: ('sample', c.groupby('sample').map(lambda sample: getattr(sample[0], n)).data)
+                  for n, c in self.rfu.coords.items()
+                  if n != 'content' and 'content' in c.dims
+                  and n not in self.rfu.indexes['content'].names}
+        m = m.assign_coords(coords)
         return m.loc[pd.Series(self.rfu.sample).unique()]
 
     @property

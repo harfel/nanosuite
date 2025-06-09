@@ -95,6 +95,12 @@ def test_init_setup_dict_with_groups():
     })
     assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
 
+def test_init_supports_groups():
+    assay = Assay(rfu_file=rfu_file, groups={'Positive': ['Sample X17', 'Sample X18'],
+                                             'Negative': ['Sample X10', 'Sample X11']})
+    assert len(assay.rfu[assay.rfu.group == 'Positive'].sample) == 5
+    assert len(assay.mean[assay.mean.group == 'Positive'].sample) == 2
+
 def test_deactivate():
     """Ensure that wells can be activated and deactivated"""
     assay = Assay(rfu_file)
@@ -131,31 +137,28 @@ def test_ensure_all_testdata_can_be_loaded(assayfile):
     """Ensure correct handling of different header field formatting"""
     Assay(Path(__file__).parent / 'data' / assayfile)
 
-@pytest.mark.skip("FIXME: fix test once assay.rfu.group exists again")
 def test_convert_accepts_one_arg():
     """Ensure Assay.convert can be called with one argument for pos_rfu"""
     assay = Assay(rfu_file,
                   groups={'positive': ['Sample X17', 'Sample X18']},
                   setup={'Signal': 5})
-    from_rfu, to_rfu = assay.convert(assay.rfu.sel(group="positive"))
+    from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"])
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
     assert to_rfu(assay.setup).dims == ('content', 'time')
 
-@pytest.mark.skip("FIXME: fix test once assay.rfu.group exists again")
 def test_convert_accepts_two_args():
     """Ensure Assay.convert can be called with two arguments for pos_rfu and neg_rfu"""
     assay = Assay(rfu_file,
                   groups={'negative': ['Sample X11', 'Sample X12'],
                           'positive': ['Sample X17', 'Sample X18']},
                   setup={'Signal': 5})
-    from_rfu, to_rfu = assay.convert(assay.rfu.sel(group="positive"),
-                                     assay.rfu.sel(group="negative"))
+    from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"],
+                                     assay.rfu[assay.rfu.group=="negative"])
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
     assert to_rfu(assay.setup).dims == ('content', 'time')
 
-@pytest.mark.skip("FIXME: fix test once assay.rfu.group exists again")
 def test_convert_accepts_four_args():
     """Ensure Assay.convert can be called with four arguments"""
     assay = Assay(rfu_file,
@@ -164,17 +167,16 @@ def test_convert_accepts_four_args():
                   setup={'Signal': 5})
     neg_conc = 1e-9*xr.DataArray([10], {'species': ['Probe']})
     pos_conc = 1e-9*xr.DataArray([10], {'species': ['Signal']})
-    from_rfu, to_rfu = assay.convert(assay.rfu.sel(group="positive"),
-                                     assay.rfu.sel(group="negative"),
+    from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"],
+                                     assay.rfu[assay.rfu.group=="negative"],
                                      neg_conc, pos_conc)
 
     assert from_rfu(assay.rfu).dims == ('content', 'species', 'time')
     assert to_rfu(assay.setup).dims == ('content', 'time')
 
-@pytest.mark.skip("FIXME: fix test once assay.rfu.group exists again")
 def test_convert_average():
     assay = Assay(rfu_file, setup_file)
-    control = assay.rfu.sel(group='Positive')
+    control = assay.rfu[assay.rfu.group=='Positive']
     from_rfu, to_rfu = assay.convert(control, method='average', transient=assay.rfu.time[-1]//2)
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
