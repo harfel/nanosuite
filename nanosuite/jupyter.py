@@ -8,12 +8,12 @@ from copy import deepcopy
 from itertools import cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
-from IPython.display import display, HTML  # type: ignore
-import lmfit                               # type: ignore
-from matplotlib import colormaps           # type: ignore
-from matplotlib.figure import Figure       # type: ignore
+from IPython import display           # type: ignore
+import lmfit                          # type: ignore
+from matplotlib import colormaps      # type: ignore
+from matplotlib.figure import Figure  # type: ignore
 import numpy as np
-import xarray as xr                        # type: ignore
+import xarray as xr                   # type: ignore
 from . import crn, mars, numerics
 
 ####################################################################################################
@@ -23,7 +23,7 @@ from . import crn, mars, numerics
 ####################################################################################################
 interactive: bool|str = True
 
-def ion(mode: bool|str = False) -> ExitStack:
+def ion(mode: bool|str = True) -> ExitStack:
     """Turn interactive mode on
 
     Allows to temporarily turn on interactive mode. Can be used as a context manager:
@@ -78,14 +78,15 @@ class TrajectoryFitProgress:
         self.data = data
         self.conversion = conversion
         self.error = error
-        self.hdisplay = display(HTML('<div/>'), display_id=True)
+        self.hdisplay = display.display(display.HTML('<div/>'), display_id=True)
 
     def __enter__(self):
+        self(self.trajectory.crn.params, 0, [])
         return self
 
     def __exit__(self, typ, value, traceback):
         if interactive == 'temporary':
-            self.hdisplay.update(HTML(''))
+            display.clear_output()
 
     def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence, *args, **kwargs) -> None:
         def gradient(dataset: Sequence|xr.DataArray, cmap: str = 'rainbow') -> Iterable[tuple]:
@@ -97,7 +98,7 @@ class TrajectoryFitProgress:
 
         original = deepcopy(self.trajectory.crn.params)
         self.trajectory.crn.params = params
-        traj = conversion(self.trajectory.eval(self.data.time))
+        traj = conversion(self.trajectory.last_result)
         self.trajectory.crn.params = original
 
         fig = Figure()
@@ -122,7 +123,7 @@ class TrajectoryFitProgress:
         # outer dimension. But for this to work I cannot update (recreate) the
         # display HTML. Instead, I have to update the model of a persistent
         # data view.
-        self.hdisplay.update(HTML(f'''
+        self.hdisplay.update(display.HTML(f'''
         <div style="display: flex; flex-wrap: wrap; align-items: flex-start">
             <div style="width: 100%">Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
@@ -140,29 +141,29 @@ class EquilibriumFitProgress:
         self.equilibrium = equilibrium
         self.data = data
         self.conversion = conversion
-        self.hdisplay = display(HTML('<div/>'), display_id=True)
+        self.hdisplay = display.display(display.HTML('<div/>'), display_id=True)
 
     def __enter__(self):
         return self
 
     def __exit__(self, typ, value, traceback):
         if interactive == 'temporary':
-            self.hdisplay.update(HTML(''))
+            display.clear_output()
 
     def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence,
                  *args, **kwargs) -> None:
         original = deepcopy(self.equilibrium.crn.params)
         self.equilibrium.crn.params = params
-        eq = self.conversion(self.equilibrium.eval())
+        eq = self.conversion(self.equilibrium.last_result)
         self.equilibrium.crn.params = original
 
         fig = Figure()
         ax = fig.gca()
 
-        x = np.arange(0, len(eq.sample))
-        ax.set_xticks(x, eq.sample.data, rotation=90)
-        ax.bar(x, self.data, label="experiment", width=0.4)
-        ax.bar(x+0.4, eq, label="model", width=0.4)
+        x = np.arange(0, len(eq.sample) if 'sample' in eq.coords else 1)
+        ax.set_xticks(x, eq.sample.data if 'sample' in eq.coords else ['Sample'], rotation=90)
+        ax.bar(x-0.2, self.data, label="experiment", width=0.4)
+        ax.bar(x+0.2, eq, label="model", width=0.4)
         ax.legend()
         ax.grid(axis='y')
 
@@ -170,7 +171,7 @@ class EquilibriumFitProgress:
         fig.savefig(buf, format='png')
         buf.seek(0)
 
-        self.hdisplay.update(HTML(f'''
+        self.hdisplay.update(display.HTML(f'''
         <div style="display: flex; flex-wrap: wrap; align-items: flex-start">
             <div style="width: 100%">Iteration: {num_it}</div>
             <img src="data:image/png;base64,{base64.b64encode(buf.read()).decode()}">
@@ -181,6 +182,10 @@ class EquilibriumFitProgress:
 
 class Trajectory(numerics.Trajectory):
     """Trajectory class that visualizes fit progress"""
+    def eval(self, *args, **opts):
+        self.last_result = super().eval(*args, **opts)
+        return self.last_result
+
     def fit(self,
             data: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
@@ -196,6 +201,10 @@ class Trajectory(numerics.Trajectory):
 
 class Equilibrium(numerics.Equilibrium):
     """Equilibrium class that visualizes fit progress"""
+    def eval(self, *args, **opts):
+        self.last_result = super().eval(*args, **opts)
+        return self.last_result
+
     def fit(self,
             data: xr.DataArray,
             conversion: Callable[[xr.DataArray], xr.DataArray],
@@ -203,8 +212,7 @@ class Equilibrium(numerics.Equilibrium):
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
             return super().fit(data, conversion, iter_cb=iter_cb, **options)
-        content_dim = next(iter(data.coords))
-        initial = self.initial.loc[data.coords[content_dim]]
+
         with EquilibriumFitProgress(self, data, conversion) as progress:
             return super().fit(data, conversion, iter_cb=progress, **options)
 
