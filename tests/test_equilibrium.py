@@ -86,7 +86,7 @@ def test_eval_with_subspecies():
     conc_ratio = result.sel(species='B') / result.sel(species='A_reactive')
     rate_ratio = model.params['kf'].value / model.params['kb'].value
     assert conc_ratio == pytest.approx(rate_ratio)
-    assert result.sel(species='A') == 7
+    assert result.sel(species='A') == pytest.approx(7)
 
 def test_fit():
     model = ns.crn.from_string("""A <=> Z""")

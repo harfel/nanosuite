@@ -241,7 +241,6 @@ def test_impurities():
     """)
     initial = test_crn.state(A=1.)
     traj = test_crn.trajectory(initial).eval()
-    print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
@@ -448,7 +447,7 @@ def test_equilibrate_subspecies():
     conc_ratio = eq.sel(species='B') / eq.sel(species='A_reactive')
     rate_ratio = model.params['kf'].value / model.params['kb'].value
     assert conc_ratio == pytest.approx(rate_ratio)
-    assert eq.sel(species='A') == 7
+    assert eq.sel(species='A') == pytest.approx(7)
 
 def test_perform_burst_reactions_works_with_multiple_samples():
     """Ensure that burst reactions can be performed for a set of samples."""

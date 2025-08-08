@@ -4,12 +4,14 @@ These methods work in conjunction with crn.CRN and crn.PartitionedCRN.
 """
 from __future__ import annotations
 from concurrent import futures
+from threading import Lock
 from typing import Iterable, TYPE_CHECKING
+import warnings
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
 from scipy.integrate import solve_ivp    # type: ignore
-from scipy.optimize import basinhopping  # type: ignore
+from scipy import optimize               # type: ignore
 import xarray as xr                      # type: ignore
 from .utils import Cache
 
@@ -124,7 +126,7 @@ class Trajectory:
         traj = xr.DataArray(traj,
                             [(dim, self.initial.indexes[dim]) for dim in self.initial.dims]
                             + [times],
-                            name=self.initial.name)
+                            name='concentration')
         return self.crn.post_process_state(traj)
 
     def fit(self,
@@ -152,6 +154,7 @@ class Trajectory:
             attribute params, which are the optimized parameters.
         """
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
+        options = {'xtol': 1e-14} | options
 
         if data.ndim == 2:
             content_dim = data.dims[0]
@@ -164,7 +167,7 @@ class Trajectory:
         def objective(params):
             self.crn.params = params
             model = conversion(self.eval(t_eval=data.time, cache=cache))
-            return (data-model)/error
+            return (model/data - 1)**2
 
         original = self.crn.params
         params = original.copy()
@@ -182,6 +185,7 @@ class Trajectory:
         (2011) SIAM J Appl Math 73(2):953-973.
         """
         # pylint: disable=invalid-name
+        options = {'atol': 1e-10*initial.max() or 1e-10, 'rtol': 1e-10} | options
 
         Z = self.crn.complex_graph
         A = self.crn.get_complex_adjacency(params)
@@ -194,16 +198,41 @@ class Trajectory:
                 tmp = np.nansum(Z.T*tmp, axis=1)
             return -Z @ L @ np.exp(tmp)
 
-        if 'atol' not in options:
-            options['atol'] = 1e-8*initial.max() or 1e-8
-        if 'rtol' not in options:
-            options['rtol'] = 1e-8
-
         result = solve_ivp(kinetics, (params['t0'], times[-1]), initial,
                            t_eval=times, **options)
         if not result.success:
             raise RuntimeError(result.message)
         return result.y
+
+
+class DummyExecutor(futures.Executor):
+    """Executor that runs jobs sequentially in the main thread
+
+    Meant to simplify debugging. Do not use in production.
+    """
+    def __init__(self):
+        self._shutdown = False
+        self._shutdown_lock = Lock()
+
+    def submit(self, fn, /, *args, **kwargs):
+        warnings.warn("Using DummyExecutor. Do not use in production.")
+        with self._shutdown_lock:
+            if self._shutdown:
+                raise RuntimeError("Cannot schedule new futures after shutdown")
+
+            f = futures.Future()
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException as e:  # pylint: disable=broad-exception-caught
+                f.set_exception(e)
+            else:
+                f.set_result(result)
+
+            return f
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        with self._shutdown_lock:
+            self._shutdown = True
 
 
 class Equilibrium:
@@ -230,7 +259,7 @@ class Equilibrium:
         else:
             self.initial = initial
 
-    def eval(self, **options) -> xr.DataArray:
+    def eval(self, basinhopping: int = 100, **options) -> xr.DataArray:
         """Compute equilibrium state
 
         Uses gradient decent to find the equilibrium state for a given
@@ -250,15 +279,15 @@ class Equilibrium:
         N = self.crn.stoichiometry_matrix
 
         kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
-                                  'options': {'xatol': 1e-21, 'maxiter': 100}}
+                                  'options': {'xatol': 1e-21, 'maxiter': 500}}
         kwargs.update(options)
 
         if self.initial.ndim == 1:
             params = self.crn.params.specification_for(self.initial)
             lnK = np.log(self.crn.get_equilibrium_constants(params))
             kwargs['args'] = (N, self.initial, lnK)
-            result = basinhopping(self._dist_to_equilib, np.zeros(N.shape[0]), niter=100,
-                                  minimizer_kwargs = kwargs)
+            result = optimize.basinhopping(self._dist_to_equilib, np.zeros(N.shape[0]),
+                                           niter=basinhopping, minimizer_kwargs = kwargs)
             equilibrium = N.T @ result.x + self.initial
 
         else:
@@ -266,15 +295,18 @@ class Equilibrium:
                 def schedule_computation(sample):
                     params = self.crn.params.specification_for(sample)
                     lnK = np.log(self.crn.get_equilibrium_constants(params))
-                    return executor.submit(basinhopping,
+                    return executor.submit(optimize.basinhopping,
                                            self._dist_to_equilib,
                                            np.zeros(N.shape[0]),
-                                           niter=100,
+                                           niter=basinhopping,
                                            minimizer_kwargs = kwargs | {'args': (N, sample, lnK)})
 
                 jobs = [schedule_computation(sample) for sample in self.initial]
-                equilibrium = [N.T @ job.result().x + C
-                               for job, C in zip(jobs, self.initial)]
+                results = [job.result() for job in jobs]
+                if not all(res['success'] for res in results):
+                    warnings.warn('\n'.join(res['message'] for res in results
+                                            if not res['success']))
+                equilibrium = [N.T @ result.x + C for result, C in zip(results, self.initial)]
 
         return xr.DataArray(self.crn.post_process_state(equilibrium),
                             self.initial.coords, name=self.initial.name)
@@ -302,6 +334,7 @@ class Equilibrium:
         orig_initial = self.initial
 
         if data.ndim == 1 and len(data) > 1:
+            # FIXME: only if self.initial has sample dimension
             content_dim = data.dims[0]
             self.initial = self.initial.loc[data.coords[content_dim]]
 
@@ -309,14 +342,13 @@ class Equilibrium:
             self.crn.params = params
             eq = self.eval(**opts)
             self.initial = eq
-            return ((data - conversion(eq))**2).data
+            return (conversion(eq)/data - 1)**2
 
         orig_params = self.crn.params
         params = orig_params.copy()
         params.fix_outside(data)
         params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
-        opts = {'method': 'nelder-mead'}
-        opts.update(**options)
+        opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simlex to opts
         fit = lmfit.minimize(objective, params, **opts)
         self.initial = orig_initial
         self.crn.params = orig_params

@@ -161,7 +161,7 @@ class ParameterMap(lmfit.Parameters):
         """
         if len(self.mapping) == 0:
             return self
-        content_dim = next(iter(sample.coords))
+        content_dim = self.mapping.index.name
         specification = self.mapping.loc[sample.coords[content_dim].values]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
@@ -174,7 +174,7 @@ class ParameterMap(lmfit.Parameters):
         samples: xarray.DataArray
             samples to vary parameters for
         """
-        if samples.ndim == 1:
+        if samples.ndim == 1 or self.mapping.empty:
             return
         content_dim = samples.dims[0]
         subset = self.mapping.loc[samples.coords[content_dim].data].values

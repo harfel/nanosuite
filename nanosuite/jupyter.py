@@ -81,14 +81,15 @@ class TrajectoryFitProgress:
         self.hdisplay = display.display(display.HTML('<div/>'), display_id=True)
 
     def __enter__(self):
-        self(self.trajectory.crn.params, 0, [])
+        # self(self.trajectory.crn.params, 0, [])
         return self
 
     def __exit__(self, typ, value, traceback):
         if interactive == 'temporary':
             display.clear_output()
 
-    def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence, *args, **kwargs) -> None:
+    def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence,
+                 *args, **kwargs) -> None:
         def gradient(dataset: Sequence|xr.DataArray, cmap: str = 'rainbow') -> Iterable[tuple]:
             size = len(dataset)
             for idx, _ in enumerate(dataset):
@@ -182,6 +183,8 @@ class EquilibriumFitProgress:
 
 class Trajectory(numerics.Trajectory):
     """Trajectory class that visualizes fit progress"""
+    last_result: xr.DataArray|None = None
+
     def eval(self, *args, **opts):
         self.last_result = super().eval(*args, **opts)
         return self.last_result
@@ -194,13 +197,14 @@ class Trajectory(numerics.Trajectory):
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
             return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
-        content_dim = next(iter(data.coords))
         with TrajectoryFitProgress(self, data, conversion, error) as progress:
             return super().fit(data, conversion, error, iter_cb=progress, **options)
 
 
 class Equilibrium(numerics.Equilibrium):
     """Equilibrium class that visualizes fit progress"""
+    last_result: xr.DataArray|None = None
+
     def eval(self, *args, **opts):
         self.last_result = super().eval(*args, **opts)
         return self.last_result
