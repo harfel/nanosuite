@@ -67,12 +67,52 @@ def ioff() -> ExitStack:
 # numerics enhancements
 #
 ####################################################################################################
+class Trajectory(numerics.Trajectory):
+    """Trajectory class that visualizes fit progress"""
+    last_result: xr.DataArray = xr.DataArray()
+
+    def eval(self, *args, **opts):
+        self.last_result = super().eval(*args, **opts)
+        return self.last_result
+
+    def fit(self,
+            data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+            error: float|xr.DataArray = 1.,
+            *, iter_cb: Callable|None = None,
+            **options) -> lmfit.minimizer.MinimizerResult:
+        if iter_cb or not interactive:
+            return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
+        with TrajectoryFitProgress(self, data, conversion, error) as progress:
+            return super().fit(data, conversion, error, iter_cb=progress, **options)
+
+
+class Equilibrium(numerics.Equilibrium):
+    """Equilibrium class that visualizes fit progress"""
+    last_result: xr.DataArray = xr.DataArray()
+
+    def eval(self, *args, **opts):
+        self.last_result = super().eval(*args, **opts)
+        return self.last_result
+
+    def fit(self,
+            data: xr.DataArray,
+            conversion: Callable[[xr.DataArray], xr.DataArray],
+            *, iter_cb: Callable|None = None,
+            **options) -> lmfit.minimizer.MinimizerResult:
+        if iter_cb or not interactive:
+            return super().fit(data, conversion, iter_cb=iter_cb, **options)
+
+        with EquilibriumFitProgress(self, data, conversion) as progress:
+            return super().fit(data, conversion, iter_cb=progress, **options)
+
+
 class TrajectoryFitProgress:
     """Live visualization for Trajectory.fit"""
     def __init__(self,
-                 trajectory: numerics.Trajectory,
+                 trajectory: Trajectory,
                  data: xr.DataArray,
-            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+                 conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
                  error: float|xr.DataArray = 1):
         self.trajectory = trajectory
         self.data = data
@@ -97,10 +137,7 @@ class TrajectoryFitProgress:
 
         conversion = self.conversion or (lambda conc: conc.sel(species=self.data.species))
 
-        original = deepcopy(self.trajectory.crn.params)
-        self.trajectory.crn.params = params
         traj = conversion(self.trajectory.last_result)
-        self.trajectory.crn.params = original
 
         fig = Figure()
         ax = fig.gca()
@@ -136,7 +173,7 @@ class TrajectoryFitProgress:
 class EquilibriumFitProgress:
     """Live visualization of Equilibrium.fit"""
     def __init__(self,
-                 equilibrium: numerics.Equilibrium,
+                 equilibrium: Equilibrium,
                  data: xr.DataArray,
                  conversion: Callable[[xr.DataArray], xr.DataArray]):
         self.equilibrium = equilibrium
@@ -179,46 +216,6 @@ class EquilibriumFitProgress:
             <div style="display: inline-block">{params._repr_html_()}</div>
         </div>
         '''))
-
-
-class Trajectory(numerics.Trajectory):
-    """Trajectory class that visualizes fit progress"""
-    last_result: xr.DataArray|None = None
-
-    def eval(self, *args, **opts):
-        self.last_result = super().eval(*args, **opts)
-        return self.last_result
-
-    def fit(self,
-            data: xr.DataArray,
-            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
-            error: float|xr.DataArray = 1.,
-            *, iter_cb: Callable|None = None,
-            **options) -> lmfit.minimizer.MinimizerResult:
-        if iter_cb or not interactive:
-            return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
-        with TrajectoryFitProgress(self, data, conversion, error) as progress:
-            return super().fit(data, conversion, error, iter_cb=progress, **options)
-
-
-class Equilibrium(numerics.Equilibrium):
-    """Equilibrium class that visualizes fit progress"""
-    last_result: xr.DataArray|None = None
-
-    def eval(self, *args, **opts):
-        self.last_result = super().eval(*args, **opts)
-        return self.last_result
-
-    def fit(self,
-            data: xr.DataArray,
-            conversion: Callable[[xr.DataArray], xr.DataArray],
-            *, iter_cb: Callable|None = None,
-            **options) -> lmfit.minimizer.MinimizerResult:
-        if iter_cb or not interactive:
-            return super().fit(data, conversion, iter_cb=iter_cb, **options)
-
-        with EquilibriumFitProgress(self, data, conversion) as progress:
-            return super().fit(data, conversion, iter_cb=progress, **options)
 
 
 # monkey patches

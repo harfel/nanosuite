@@ -20,6 +20,36 @@ if TYPE_CHECKING:
     from .crn import CRN, ParameterMap
 
 
+class DummyExecutor(futures.Executor):
+    """Executor that runs jobs sequentially in the main thread
+
+    Meant to simplify debugging. Do not use in production.
+    """
+    def __init__(self):
+        self._shutdown = False
+        self._shutdown_lock = Lock()
+
+    def submit(self, fn, /, *args, **kwargs):
+        warnings.warn("Using DummyExecutor. Do not use in production.")
+        with self._shutdown_lock:
+            if self._shutdown:
+                raise RuntimeError("Cannot schedule new futures after shutdown")
+
+            f = futures.Future()
+            try:
+                result = fn(*args, **kwargs)
+            except BaseException as e:  # pylint: disable=broad-exception-caught
+                f.set_exception(e)
+            else:
+                f.set_result(result)
+
+            return f
+
+    def shutdown(self, wait=True, *, cancel_futures=False):
+        with self._shutdown_lock:
+            self._shutdown = True
+
+
 class Trajectory:
     """Trajectory of a CRN
 
@@ -109,6 +139,7 @@ class Trajectory:
             cache = Cache()
 
         times: pd.Index = stratify_t_eval(t_eval)
+        traj: Iterable[xr.DataArray]
 
         if len(self.initial.dims) == 1:
             params = self.crn.params.specification_for(self.initial)
@@ -158,7 +189,7 @@ class Trajectory:
 
         if data.ndim == 2:
             content_dim = data.dims[0]
-            initial = self.initial[self.initial.coords[content_dim].isin(data.coords[content_dim])]
+            initial = self.initial[self.initial.coords[content_dim].isin(data.coords[content_dim])]  # FIXME: is initial sent to eval???!!
         else:
             initial = self.initial
 
@@ -178,7 +209,7 @@ class Trajectory:
         return fit
 
     def _do_integration(self, initial: xr.DataArray,
-                        params: ParameterMap, times: pd.Index, options: dict) -> np.ndarray:
+                        params: lmfit.Parameters, times: pd.Index, options: dict) -> np.ndarray:
         """Integrate crn for initial condition at given times
 
         Internally, this method uses the method of van der Schaft et al.
@@ -203,36 +234,6 @@ class Trajectory:
         if not result.success:
             raise RuntimeError(result.message)
         return result.y
-
-
-class DummyExecutor(futures.Executor):
-    """Executor that runs jobs sequentially in the main thread
-
-    Meant to simplify debugging. Do not use in production.
-    """
-    def __init__(self):
-        self._shutdown = False
-        self._shutdown_lock = Lock()
-
-    def submit(self, fn, /, *args, **kwargs):
-        warnings.warn("Using DummyExecutor. Do not use in production.")
-        with self._shutdown_lock:
-            if self._shutdown:
-                raise RuntimeError("Cannot schedule new futures after shutdown")
-
-            f = futures.Future()
-            try:
-                result = fn(*args, **kwargs)
-            except BaseException as e:  # pylint: disable=broad-exception-caught
-                f.set_exception(e)
-            else:
-                f.set_result(result)
-
-            return f
-
-    def shutdown(self, wait=True, *, cancel_futures=False):
-        with self._shutdown_lock:
-            self._shutdown = True
 
 
 class Equilibrium:

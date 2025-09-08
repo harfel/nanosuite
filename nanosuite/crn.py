@@ -151,7 +151,7 @@ class ParameterMap(lmfit.Parameters):
 
         Parameters
         ----------
-        samples: xarray.DataArray
+        samples: 1D or 2D xarray.DataArray
             sample for the requested parameter specialization
 
         Returns
@@ -161,8 +161,10 @@ class ParameterMap(lmfit.Parameters):
         """
         if len(self.mapping) == 0:
             return self
-        content_dim = self.mapping.index.name
-        specification = self.mapping.loc[sample.coords[content_dim].values]
+        if (content_dim := self.mapping.index.name):
+            specification = self.mapping.loc[sample.coords[content_dim]]
+        else:
+            specification = self.mapping.loc[sample.content.data]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
@@ -501,7 +503,9 @@ class CRN:
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
-            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+            samples = pd.Index([f'Sample X{idx+1}' for idx in range(n_samples[0])]
+                                if n_samples else [],
+                               name='sample')
         else:
             samples = conc.indexes[conc.dims[0]] if conc.ndim>1 else []
 
