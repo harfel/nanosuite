@@ -77,14 +77,15 @@ class Trajectory(numerics.Trajectory):
 
     def fit(self,
             data: xr.DataArray,
+            initial: xr.DataArray|dict,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, conversion, error, iter_cb=iter_cb, **options)
+            return super().fit(data, initial, conversion, error, iter_cb=iter_cb, **options)
         with TrajectoryFitProgress(self, data, conversion, error) as progress:
-            return super().fit(data, conversion, error, iter_cb=progress, **options)
+            return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
 
 
 class Equilibrium(numerics.Equilibrium):
@@ -97,14 +98,15 @@ class Equilibrium(numerics.Equilibrium):
 
     def fit(self,
             data: xr.DataArray,
+            initial: xr.DataArray|dict,
             conversion: Callable[[xr.DataArray], xr.DataArray],
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, conversion, iter_cb=iter_cb, **options)
+            return super().fit(data, initial, conversion, iter_cb=iter_cb, **options)
 
         with EquilibriumFitProgress(self, data, conversion) as progress:
-            return super().fit(data, conversion, iter_cb=progress, **options)
+            return super().fit(data, initial, conversion, iter_cb=progress, **options)
 
 
 class TrajectoryFitProgress:

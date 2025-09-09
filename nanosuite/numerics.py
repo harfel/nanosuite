@@ -26,11 +26,11 @@ class DummyExecutor(futures.Executor):
     Meant to simplify debugging. Do not use in production.
     """
     def __init__(self):
+        warnings.warn("Using DummyExecutor. Do not use in production.")
         self._shutdown = False
         self._shutdown_lock = Lock()
 
     def submit(self, fn, /, *args, **kwargs):
-        warnings.warn("Using DummyExecutor. Do not use in production.")
         with self._shutdown_lock:
             if self._shutdown:
                 raise RuntimeError("Cannot schedule new futures after shutdown")
@@ -55,26 +55,13 @@ class Trajectory:
 
     Parameters
     ----------
-    initial_condition: 1D or 2D xarray.DataArray
-        the last coord must denote species concentrations
-
-        If initial_condition is a 1D vector, Trajectory.eval returns
-        a 2D DataArray of states. If initial_condition is a 2D DataArray,
-        the return value is a 3D DataArray with trajectories for
-        each initial condition.
     """
-    def __init__(self, crn: CRN, initial: xr.DataArray|dict):
+    def __init__(self, crn: CRN):
+        # FIXME: elevate eval and fit options to constructor?
         self.crn = crn
 
-        initial = crn.state(initial)
-        if initial.ndim not in [1, 2]:
-            raise ValueError("Initial condition must be 1D or 2D")
-        if any(param.value==float('inf') for param in crn.params.values()):
-            self.initial = crn.perform_burst_reactions(initial)
-        else:
-            self.initial = initial
-
     def eval(self,
+             initial: xr.DataArray|dict,
              t_eval: Iterable[float]|float|None = None,
              cache: Cache|None = None, **options) -> xr.DataArray:
         """Evaluate trajectory at given time points
@@ -85,6 +72,14 @@ class Trajectory:
 
     Parameters
     ----------
+    initial_condition: 1D or 2D xarray.DataArray
+        the last coord must denote species concentrations
+
+        If initial_condition is a 1D vector, Trajectory.eval returns
+        a 2D DataArray of states. If initial_condition is a 2D DataArray,
+        the return value is a 3D DataArray with trajectories for
+        each initial condition.
+
     t_eval: float, tuple, Iterable or None
         Time points at which system states should be reported.
         If t_eval is scalar, the reported range starts at self.params['t0']
@@ -96,6 +91,7 @@ class Trajectory:
         points.
         (t_eval does not influence the numerical step width of
         the integrator).
+
     options
         any remaining keyword arguments are passed to
         scipy.optimize.solve_ivp
@@ -135,33 +131,45 @@ class Trajectory:
                                         DEFAULT_INTEGRATION_POINTS, dtype=float),
                             name="time")
 
+        initial = self.crn.state(initial)
+        if initial.ndim not in [1, 2]:
+            raise ValueError("Initial condition must be 1D or 2D")
+        if any(param.value==float('inf') for param in self.crn.params.values()):
+            initial = self.crn.perform_burst_reactions(initial)
+
         if not cache:
             cache = Cache()
 
         times: pd.Index = stratify_t_eval(t_eval)
         traj: Iterable[xr.DataArray]
 
-        if len(self.initial.dims) == 1:
-            params = self.crn.params.specification_for(self.initial)
-            traj = self._do_integration(self.initial, params, times, options)
+        if len(initial.dims) == 1:
+            params = self.crn.params.specification_for(initial)
+            traj = self._do_integration(initial, params, times, options)
         else:
             with futures.ProcessPoolExecutor() as executor:
-                @cache.compute
-                def schedule_computation(sample):
+                def integrate(sample):
                     params = self.crn.params.specification_for(sample)
-                    return executor.submit(self._do_integration, sample, params, times, options)
+                    return schedule_computation(sample.data,
+                                                {k: v for k, v in params.items()},
+                                                times, options)
 
-                jobs = [schedule_computation(sample) for sample in self.initial]
+                @cache.compute
+                def schedule_computation(init, pardict, times, opts):
+                    return executor.submit(self._do_integration, init, pardict, times, opts)
+
+                jobs = [integrate(sample) for sample in initial]
                 traj = [job.result() for job in jobs]
 
         traj = xr.DataArray(traj,
-                            [(dim, self.initial.indexes[dim]) for dim in self.initial.dims]
+                            [(dim, initial.indexes[dim]) for dim in initial.dims]
                             + [times],
                             name='concentration')
         return self.crn.post_process_state(traj)
 
     def fit(self,
             data: xr.DataArray,
+            initial: xr.DataArray|dict,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
             **options) -> lmfit.minimizer.MinimizerResult:
@@ -185,20 +193,20 @@ class Trajectory:
             attribute params, which are the optimized parameters.
         """
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
-        options = {'xtol': 1e-14} | options
+        options = {'xtol': 1e-5} | options
+
+        initial = self.crn.state(initial)
 
         if data.ndim == 2:
             content_dim = data.dims[0]
-            initial = self.initial[self.initial.coords[content_dim].isin(data.coords[content_dim])]  # FIXME: is initial sent to eval???!!
-        else:
-            initial = self.initial
+            initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
 
         cache = Cache(2*len(initial))
 
         def objective(params):
             self.crn.params = params
-            model = conversion(self.eval(t_eval=data.time, cache=cache))
-            return (model/data - 1)**2
+            model = conversion(self.eval(initial, t_eval=data.time, cache=cache))
+            return model/data - 1
 
         original = self.crn.params
         params = original.copy()
@@ -216,7 +224,7 @@ class Trajectory:
         (2011) SIAM J Appl Math 73(2):953-973.
         """
         # pylint: disable=invalid-name
-        options = {'atol': 1e-10*initial.max() or 1e-10, 'rtol': 1e-10} | options
+        options = {'atol': float(1e-6*initial.max()) or 1e-10, 'rtol': 1e-6} | options
 
         Z = self.crn.complex_graph
         A = self.crn.get_complex_adjacency(params)
@@ -249,18 +257,10 @@ class Equilibrium:
     >>> model.params['k_f'].vary = False
     >>> eq = Equilibrium(model, model.state(A=100, B=100))
     """
-    def __init__(self, crn: CRN, initial: xr.DataArray|dict):
+    def __init__(self, crn: CRN):
         self.crn = crn
 
-        initial = crn.state(initial)
-        if initial.ndim not in [1, 2]:
-            raise ValueError("Initial condition must be 1D or 2D")
-        if any(param.value==float('inf') for param in crn.params.values()):
-            self.initial = crn.perform_burst_reactions(initial)
-        else:
-            self.initial = initial
-
-    def eval(self, basinhopping: int = 100, **options) -> xr.DataArray:
+    def eval(self, initial: xr.DataArray|dict, basinhopping: int = 100, **options) -> xr.DataArray:
         """Compute equilibrium state
 
         Uses gradient decent to find the equilibrium state for a given
@@ -277,19 +277,25 @@ class Equilibrium:
         the initial state
         """
         # pylint: disable=invalid-name
+        initial = self.crn.state(initial)
+        if initial.ndim not in [1, 2]:
+            raise ValueError("Initial condition must be 1D or 2D")
+        if any(param.value==float('inf') for param in self.crn.params.values()):
+            initial = self.crn.perform_burst_reactions(initial)
+
         N = self.crn.stoichiometry_matrix
 
         kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
                                   'options': {'xatol': 1e-21, 'maxiter': 500}}
         kwargs.update(options)
 
-        if self.initial.ndim == 1:
-            params = self.crn.params.specification_for(self.initial)
+        if initial.ndim == 1:
+            params = self.crn.params.specification_for(initial)
             lnK = np.log(self.crn.get_equilibrium_constants(params))
-            kwargs['args'] = (N, self.initial, lnK)
+            kwargs['args'] = (N, initial, lnK)
             result = optimize.basinhopping(self._dist_to_equilib, np.zeros(N.shape[0]),
                                            niter=basinhopping, minimizer_kwargs = kwargs)
-            equilibrium = N.T @ result.x + self.initial
+            equilibrium = N.T @ result.x + initial
 
         else:
             with futures.ProcessPoolExecutor() as executor:
@@ -302,18 +308,19 @@ class Equilibrium:
                                            niter=basinhopping,
                                            minimizer_kwargs = kwargs | {'args': (N, sample, lnK)})
 
-                jobs = [schedule_computation(sample) for sample in self.initial]
+                jobs = [schedule_computation(sample) for sample in initial]
                 results = [job.result() for job in jobs]
                 if not all(res['success'] for res in results):
-                    warnings.warn('\n'.join(res['message'] for res in results
-                                            if not res['success']))
-                equilibrium = [N.T @ result.x + C for result, C in zip(results, self.initial)]
+                    warnings.warn('\n'.join(res.lowest_optimization_result.message
+                                            for res in results if not res['success']))
+                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)]
 
         return xr.DataArray(self.crn.post_process_state(equilibrium),
-                            self.initial.coords, name=self.initial.name)
+                            initial.coords, name=initial.name)
 
     def fit(self,
             data: xr.DataArray,
+            initial: xr.DataArray|dict,
             conversion: Callable[[xr.DataArray], xr.DataArray],
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit rate constants to match experimental equilibrium
@@ -332,17 +339,18 @@ class Equilibrium:
         -------
         lmfit.FitResult
         """
-        orig_initial = self.initial
+        initial = self.crn.state(initial)
 
         if data.ndim == 1 and len(data) > 1:
             # FIXME: only if self.initial has sample dimension
             content_dim = data.dims[0]
-            self.initial = self.initial.loc[data.coords[content_dim]]
+            initial = initial.loc[data.coords[content_dim]]
 
         def objective(params, **opts):
+            nonlocal initial
             self.crn.params = params
-            eq = self.eval(**opts)
-            self.initial = eq
+            eq = self.eval(initial, **opts)
+            initial = eq
             return (conversion(eq)/data - 1)**2
 
         orig_params = self.crn.params
@@ -351,7 +359,6 @@ class Equilibrium:
         params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
         opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simlex to opts
         fit = lmfit.minimize(objective, params, **opts)
-        self.initial = orig_initial
         self.crn.params = orig_params
         return fit
 

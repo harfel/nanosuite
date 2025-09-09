@@ -161,10 +161,8 @@ class ParameterMap(lmfit.Parameters):
         """
         if len(self.mapping) == 0:
             return self
-        if (content_dim := self.mapping.index.name):
-            specification = self.mapping.loc[sample.coords[content_dim]]
-        else:
-            specification = self.mapping.loc[sample.content.data]
+        content_dim = self.mapping.index.name or next(iter(sample.coords))
+        specification = self.mapping.loc[sample.coords[content_dim].data]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
@@ -520,7 +518,7 @@ class CRN:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
         elif isinstance(conc, dict):
             state = xr.DataArray(len(self.species)*[0.], {'species': self.species})
-        elif conc.ndim == 1 and samples:
+        elif conc.ndim == 1 and len(samples):
             state = conc.expand_dims({'sample': samples}, 0)
         else:
             state = conc
@@ -636,7 +634,7 @@ class CRN:
         warnings.warn("CRN.equilibrate is deprecated and will be removed. "
                       "Use CRN.equilibrium().eval() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.equilibrium(initial_condition).eval(**options)
+        return self.equilibrium().eval(initial_condition, **options)
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None, **options) -> xr.DataArray:
@@ -680,7 +678,7 @@ class CRN:
         warnings.warn("CRN.integrate is deprecated and will be removed. "
                       "Use CRN.trajectory().eval() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.trajectory(initial_condition).eval(t_eval, **options)
+        return self.trajectory().eval(initial_condition, t_eval, **options)
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
@@ -759,9 +757,9 @@ class CRN:
         warnings.warn("CRN.fit is deprecated and will be removed. "
                       "Use CRN.trajectory().fit() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.trajectory(initial).fit(data, conversion, error, **options)
+        return self.trajectory().fit(data, initial, conversion, error, **options)
 
-    def trajectory(self, initial: xr.DataArray|dict) -> numerics.Trajectory:
+    def trajectory(self) -> numerics.Trajectory:
         """Trajectory of a CRN for a given initial condition
 
         Parameters
@@ -773,9 +771,9 @@ class CRN:
         A Trajectory object that can be used for integration or
         rate constant fitting.
         """
-        return numerics.Trajectory(self, initial)
+        return numerics.Trajectory(self)
 
-    def equilibrium(self, initial: xr.DataArray|dict) -> numerics.Equilibrium:
+    def equilibrium(self) -> numerics.Equilibrium:
         """Equilibrium model
 
         This returns an Equilibrium model of the CRN.
@@ -794,7 +792,7 @@ class CRN:
         -------
         An Equilibrium model
         """
-        return numerics.Equilibrium(self, initial)
+        return numerics.Equilibrium(self)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
