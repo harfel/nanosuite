@@ -25,8 +25,9 @@ class DummyExecutor(futures.Executor):
 
     Meant to simplify debugging. Do not use in production.
     """
-    def __init__(self):
-        warnings.warn("Using DummyExecutor. Do not use in production.")
+    def __init__(self, warn: bool = True):
+        if warn:
+            warnings.warn("Using DummyExecutor. Do not use in production.")
         self._shutdown = False
         self._shutdown_lock = Lock()
 
@@ -286,7 +287,7 @@ class Equilibrium:
         N = self.crn.stoichiometry_matrix
 
         kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
-                                  'options': {'xatol': 1e-21, 'maxiter': 500}}
+                                  'options': {'xatol': 1e-12, 'maxiter': 500}}
         kwargs.update(options)
 
         if initial.ndim == 1:
@@ -298,6 +299,7 @@ class Equilibrium:
             equilibrium = N.T @ result.x + initial
 
         else:
+            # with DummyExecutor(warn=False) as executor:
             with futures.ProcessPoolExecutor() as executor:
                 def schedule_computation(sample):
                     params = self.crn.params.specification_for(sample)

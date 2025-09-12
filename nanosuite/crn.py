@@ -151,7 +151,7 @@ class ParameterMap(lmfit.Parameters):
 
         Parameters
         ----------
-        samples: 1D or 2D xarray.DataArray
+        samples: 1D xarray.DataArray
             sample for the requested parameter specialization
 
         Returns
@@ -159,6 +159,7 @@ class ParameterMap(lmfit.Parameters):
             A dictionary that maps general parameter names
             to the specific parameters defined for the given sample
         """
+        assert sample.ndim == 1
         if len(self.mapping) == 0:
             return self
         content_dim = self.mapping.index.name or next(iter(sample.coords))
@@ -683,14 +684,14 @@ class CRN:
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
 
-        The given state state is exposed to burst_reactions and species
+        The given state is exposed to burst_reactions and species
         are redistributed according to mass action kinetic proportions until
         an equilibrium is reached. Burst reactions must not be reversible or
         circular.
 
         Parameters
         ----------
-        state: xr.DataArray
+        state: 1D or 2D xr.DataArray
             species distribution before burst reactions
 
         Returns
@@ -698,28 +699,37 @@ class CRN:
             xr.DataArray containing the redistributed species vector
         """
         # pylint: disable=invalid-name
+        state = self.state(state)
+
         Z = self.complex_graph
+
+        def fraction_for(sample: xr.DataArray) -> float:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                # Compute complex graph adjacency with specific rate constants
+                params = self.params.specification_for(sample)
+                A = self.get_complex_adjacency(params, True)
+
+                # Grapg Laplacian of the complex adjacency graph
+                L = np.diag(np.sum(A, axis=0)) - A
+
+                # MAK rates are computed by linear operations in log space:
+                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(sample.values),
+                                                 axis=1))
+
+                return min(x/y for x, y in zip(sample, rates)
+                           if y > 0).values if rates.any() else 0, rates
 
         iterations = 10*len(self.reactions)
         for _ in range(iterations):
-            with np.errstate(divide='ignore', invalid='ignore'):
-                if len(state.dims) == 1:
-                    A = self.get_complex_adjacency(self.params, True)
-                    L = np.diag(np.sum(A, axis=0)) - A
-                    rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
-                    fraction = min(x/y for x, y in zip(state, rates)
-                                   if y > 0).values if rates.any() else 0
-                else:
-                    params = self.params.specification_for(state)
-                    A = self.get_complex_adjacency(params, True)
-                    L = np.diag(np.sum(A, axis=0)) - A
-                    tmp = np.zeros((L.shape[0], state.shape[0]))
-                    for idx, row in enumerate(state.values):
-                        tmp[:, idx] = np.nansum(Z.T*np.log(row), axis=1)
-                    rates = Z @ L @ np.exp(tmp)
-                    fraction = np.array([min(x/y for x,y in zip(s, r) if y>0) if r.any() else 0
-                                        for s, r in zip(state.values, rates.T)])
-            state -= (fraction*rates).T
+            if len(state.dims) == 1:
+                fraction, rates = fraction_for(state)
+            else:
+                # FIXME: fraction_for could return single xr.DataArray or xr.Dataset
+                res = [fraction_for(sample) for sample in state]
+                fraction = np.array([r[0] for r in res]).T
+                rates = np.array([r[1] for r in res]).T
+
+            state -= (rates*fraction).T
             if np.all(fraction < 1e-10):
                 break
         else:
