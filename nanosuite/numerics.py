@@ -107,6 +107,7 @@ class Trajectory:
                               DEFAULT_INTEGRATION_POINTS)
 
             if isinstance(times, tuple):
+                times = tuple(float(t) for t in times[:2]) + tuple(int(t) for t in times[2:])
                 return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
                                             dtype=float),
                                 name="time")
@@ -207,7 +208,7 @@ class Trajectory:
         def objective(params):
             self.crn.params = params
             model = conversion(self.eval(initial, t_eval=data.time, cache=cache))
-            return model/data - 1
+            return (model-data)/error
 
         original = self.crn.params
         params = original.copy()
