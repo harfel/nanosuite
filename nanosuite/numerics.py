@@ -194,6 +194,7 @@ class Trajectory:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
+        # FIXME: allow conversion to be a species name
         conversion = conversion or (lambda conc: conc.sel(species=data.species))
         options = {'xtol': 1e-5} | options
 
@@ -208,11 +209,15 @@ class Trajectory:
         def objective(params):
             self.crn.params = params
             model = conversion(self.eval(initial, t_eval=data.time, cache=cache))
+            # FIXME: use WSSR if error is given, otherwise data/model-1
             return (model-data)/error
 
         original = self.crn.params
         params = original.copy()
         params.fix_outside(data)
+        for p in params.values():
+            if p.value == np.inf:
+                p.vary = False
         params['t0'].max = float(data.time[0]) # TODO: respect injections
         fit = lmfit.minimize(objective, params, **options)
         self.crn.params = original
