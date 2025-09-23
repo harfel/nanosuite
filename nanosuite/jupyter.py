@@ -143,7 +143,7 @@ class TrajectoryFitProgress:
 
         fig = Figure()
         ax = fig.gca()
-        gap = len(traj.time)//15
+        gap = len(traj.time)//15 or 1
         for experiment, model, color in zip(self.data, traj, gradient(self.data)):
             # TODO: it would be nice if this could use Assay colors
             ax.plot(experiment.time, experiment, '-', c=color)
