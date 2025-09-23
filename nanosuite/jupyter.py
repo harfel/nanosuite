@@ -5,16 +5,18 @@ This module requires IPython and matplotlib
 import base64
 from contextlib import ExitStack
 from copy import deepcopy
-from itertools import cycle
+from itertools import chain, cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
-from IPython import display           # type: ignore
-import lmfit                          # type: ignore
-from matplotlib import colormaps      # type: ignore
-from matplotlib.figure import Figure  # type: ignore
+from IPython.display import display, HTML  # type: ignore
+import lmfit                               # type: ignore
+from matplotlib import colormaps           # type: ignore
+from matplotlib.figure import Figure       # type: ignore
 import numpy as np
-import xarray as xr                   # type: ignore
+import pandas as pd
+import xarray as xr                        # type: ignore
 from . import crn, mars, numerics
+
 
 ####################################################################################################
 #
@@ -265,50 +267,57 @@ class Assay(mars.Assay):
 
     def _repr_html_(self, **kwargs) -> str:
         # pylint: disable=protected-access
-        assay_img = base64.b64encode(self._repr_png_(**kwargs)).decode()
-        setup = self.setup._repr_html_() if self.setup is not None else 'No setup provided'
-        sample_map = (self.sample_map._repr_html_()  # type: ignore
-                      if self.sample_map is not None
-                      else 'No sample map provided')
+        cols = [[(species, 'type'), (species, 'conc [M]')] for species in self.sample_map.columns]
+        setup = pd.DataFrame(index=self.sample_map.index,
+                             columns=pd.MultiIndex.from_tuples(chain.from_iterable(cols)))
+        for species in self.sample_map.columns:
+            setup[species, 'type'] = self.sample_map[species]
+            setup[species, 'conc [M]'] = self.setup.sel(species=species)
 
         return f"""
             <div>
-                <script>
-                    function openTab(evt, id) {{
-                      let tab_group = evt.currentTarget.parentNode.parentNode;
-                      tab_group.querySelectorAll('.tabcontent').forEach(
-                        tab => tab.style.display = 'none'
-                      );
-                      tab_group.querySelectorAll('.tab button').forEach(
-                        link => link.classList.remove('active')
-                      );
-                      tab_group.querySelector('.'+id).style.display = 'block';
-                      evt.currentTarget.classList.add('active');
-                    }}
-                </script>
+              <script>
+                function openTab(evt, id) {{
+                  let tab_group = evt.currentTarget.parentNode.parentNode;
+                  tab_group.querySelectorAll('.tabcontent').forEach(
+                    tab => tab.style.display = 'none'
+                  );
+                  tab_group.querySelectorAll('.tab button').forEach(
+                    link => link.classList.remove('active')
+                  );
+                  tab_group.querySelector('.'+id).style.display = 'flex';
+                  evt.currentTarget.classList.add('active');
+                }}
+              </script>
 
-                <div class="tab">
-                    <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
-                    <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
-                    <button onclick="openTab(event, 'samplemap')" style="border: 1px solid grey">Sample Map</button>
-                </div>
+              <div class="tab">
+                <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
+                <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
+                <button onClick="openTab(event, 'info')" style="border: 1px solid grey">Info</button>
+              </div>
 
-                <div class="rfu tabcontent">
-                  <img src="data:image/png;base64,{assay_img}">
-                </div>
-                <div class="setup tabcontent" style="display: none">
-                  {setup}
-                </div>
-                <div class="samplemap tabcontent" style="display: none; font-size: 0.75rem">
-                  {sample_map}
-                </div>
+              <div class="rfu tabcontent">
+                <img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">
+              </div>
+              <div class="setup tabcontent" style="display: none">
+                {itables.to_html_datatable(setup, display_logo_when_loading=False)}
+              </div>
+              <div class="info tabcontent" style="display: none; justify-content: space-evenly">
+                {pd.DataFrame.from_dict(self.setup.attrs, orient='index')
+                             .dropna()
+                             .style.hide(axis='columns')._repr_html_()}
+                {pd.DataFrame.from_dict(self.rfu.attrs, orient='index')
+                             .dropna()
+                             .style.hide(axis='columns')._repr_html_()}
+              </div>
             </div>
         """  # type: ignore
 
     def set_default_palette(self):
         """Set distinct gradients for each sample group"""
-        positive = np.unique(self.setup.positive)
-        negative = np.unique(self.setup.negative)
+        content_dim = self.setup.dims[0]
+        positive = np.unique(self.setup.positive.dropna(dim=content_dim))
+        negative = np.unique(self.setup.negative.dropna(dim=content_dim))
         controls = np.concatenate([positive, negative])
         for sample in controls:
             self.palette.loc[self.setup[self.setup.sample==sample].content] = np.array([0, 0, 0, 1])
