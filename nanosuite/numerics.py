@@ -152,7 +152,9 @@ class Trajectory:
             with futures.ProcessPoolExecutor() as executor:
                 def integrate(sample):
                     params = self.crn.params.specification_for(sample)
-                    return schedule_computation(sample.data, params, times, options)
+                    return schedule_computation(sample.data,
+                                                {k: v.value for k, v in params.items()},
+                                                times, options)
 
                 @cache.compute
                 def schedule_computation(init, pardict, times, opts):
@@ -377,6 +379,8 @@ class Equilibrium:
         gradient decent.
         """
         # pylint: disable=invalid-name
+        if not C.any():
+            return 0
         Y = N.T @ X + C.data
         if out_of_bounds := Y[Y<0].sum():
             return (1-out_of_bounds)*1e14

@@ -24,6 +24,15 @@ def test_eval_reversible():
     assert result.sum() == 10
     assert conc_ratio == pytest.approx(rate_ratio)
 
+def test_eval_empty_state():
+    """Permit equilibration of empty states"""
+    model = ns.crn.from_string("A <=> B")
+    state = model.state()
+
+    eq = model.equilibrium().eval(state)
+
+    assert (eq == state).all()
+
 def test_eval_multiple_state():
     """Permit equilbrium to be calculated for multiple states"""
     model = ns.crn.from_string("A + B <=> C; kf, kb")
