@@ -153,7 +153,7 @@ class Assay:
         units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
         self.sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
-        self.sample_map.replace([np.nan], [None], inplace=True)
+        self.sample_map.replace({np.nan: None}, inplace=True)
         concs = df[df.columns[1-2*len(units)::2]].set_index(content)
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         fac = np.array([factors[u] for u in units])
@@ -251,7 +251,7 @@ class Assay:
 
         # extract coordinates from dataframe
         times = _parse_time(df_main.iloc[0, 1], df_main.iloc[0, 2:])
-        main_array = df_main.iloc[1:, 2:].values
+        main_array: np.ndarray = df_main.iloc[1:, 2:].values
 
         samples = df_main['Content'][1:]
 

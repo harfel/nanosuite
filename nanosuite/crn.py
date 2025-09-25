@@ -445,7 +445,7 @@ class CRN:
                     self.complexes.append(compl)
 
             self.reactions[educts, products] = (forward_rate.name,
-                                                (backward_rate.name if backward_rate else None))
+                                                (backward_rate.name if backward_rate else ''))
 
         if forward_rate.name not in self.params:
             self.params.add(forward_rate)
@@ -488,6 +488,7 @@ class CRN:
         provided as sequence). Unspecified species are padded with 0.
         """
         # determine resultant DataArray shape
+        samples: Sequence[str]|pd.Index[str]
         conc = conc if conc is not None else {}
         if isinstance(conc, dict):
             n_samples = list(set(len(value) for value in chain(conc.values(), extra_conc.values())
@@ -592,7 +593,7 @@ class CRN:
 
         for name, dependencies in parameter_dependencies.items():
             dependencies = sorted(dependencies)
-            sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
+            sample_sets = sample_map[dependencies].drop_duplicates().replace({None: ''})
 
             for _, species in sample_sets.iterrows():
                 if not any(species):
@@ -703,34 +704,30 @@ class CRN:
 
         Z = self.complex_graph
 
-        def fraction_for(sample: xr.DataArray) -> float:
+        def compute_shift(sample: xr.DataArray) -> np.ndarray:
+            # Compute complex graph adjacency with specific rate constants
+            params = self.params.specification_for(sample)
+            A = self.get_complex_adjacency(params, True)
+
+            # Graph Laplacian of the complex adjacency graph
+            L = np.diag(np.sum(A, axis=0)) - A
+
+            # MAK rates are computed by linear operations in log space:
             with np.errstate(divide='ignore', invalid='ignore'):
-                # Compute complex graph adjacency with specific rate constants
-                params = self.params.specification_for(sample)
-                A = self.get_complex_adjacency(params, True)
+                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(sample.values), axis=1))
 
-                # Grapg Laplacian of the complex adjacency graph
-                L = np.diag(np.sum(A, axis=0)) - A
-
-                # MAK rates are computed by linear operations in log space:
-                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(sample.values),
-                                                 axis=1))
-
-                return min(x/y for x, y in zip(sample, rates)
-                           if y > 0).values if rates.any() else 0, rates
+            fraction = min(x/y for x, y in zip(sample, rates)
+                           if y > 0).values if rates.any() else 0
+            return (rates*fraction).T
 
         iterations = 10*len(self.reactions)
         for _ in range(iterations):
             if len(state.dims) == 1:
-                fraction, rates = fraction_for(state)
+                shift = compute_shift(state)
             else:
-                # FIXME: fraction_for could return single xr.DataArray or xr.Dataset
-                res = [fraction_for(sample) for sample in state]
-                fraction = np.array([r[0] for r in res]).T
-                rates = np.array([r[1] for r in res]).T
-
-            state -= (rates*fraction).T
-            if np.all(fraction < 1e-10):
+                shift = np.array([compute_shift(sample) for sample in state])
+            state -= shift
+            if np.all(shift < 1e-10):
                 break
         else:
             raise ValueError(f"Burst reactions did not converge within {iterations} steps.")

@@ -152,9 +152,7 @@ class Trajectory:
             with futures.ProcessPoolExecutor() as executor:
                 def integrate(sample):
                     params = self.crn.params.specification_for(sample)
-                    return schedule_computation(sample.data,
-                                                {k: v for k, v in params.items()},
-                                                times, options)
+                    return schedule_computation(sample.data, params, times, options)
 
                 @cache.compute
                 def schedule_computation(init, pardict, times, opts):
