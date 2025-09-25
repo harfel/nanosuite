@@ -8,7 +8,10 @@ from copy import deepcopy
 from itertools import chain, cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
-from IPython.display import display, HTML  # type: ignore
+import holoviews as hv
+import hvplot.xarray
+from IPython import display                # type: ignore
+import itables
 import lmfit                               # type: ignore
 from matplotlib import colormaps           # type: ignore
 from matplotlib.figure import Figure       # type: ignore
@@ -274,6 +277,8 @@ class Assay(mars.Assay):
             setup[species, 'type'] = self.sample_map[species]
             setup[species, 'conc [M]'] = self.setup.sel(species=species)
 
+        fig = self.plot_bokeh()
+
         return f"""
             <div>
               <script>
@@ -285,7 +290,7 @@ class Assay(mars.Assay):
                   tab_group.querySelectorAll('.tab button').forEach(
                     link => link.classList.remove('active')
                   );
-                  tab_group.querySelector('.'+id).style.display = 'flex';
+                  tab_group.querySelector('.'+id).style.display = 'block';
                   evt.currentTarget.classList.add('active');
                 }}
               </script>
@@ -296,19 +301,26 @@ class Assay(mars.Assay):
                 <button onClick="openTab(event, 'info')" style="border: 1px solid grey">Info</button>
               </div>
 
-              <div class="rfu tabcontent">
-                <img src="data:image/png;base64,{base64.b64encode(self._repr_png_(**kwargs)).decode()}">
-              </div>
-              <div class="setup tabcontent" style="display: none">
-                {itables.to_html_datatable(setup, display_logo_when_loading=False)}
-              </div>
-              <div class="info tabcontent" style="display: none; justify-content: space-evenly">
-                {pd.DataFrame.from_dict(self.setup.attrs, orient='index')
-                             .dropna()
-                             .style.hide(axis='columns')._repr_html_()}
-                {pd.DataFrame.from_dict(self.rfu.attrs, orient='index')
-                             .dropna()
-                             .style.hide(axis='columns')._repr_html_()}
+              <div>
+                <div class="rfu tabcontent" style="display: block">
+                  {fig}
+                </div>
+                <div class="setup tabcontent" style="display: none">
+                  {itables.to_html_datatable(setup, connected=True)}
+                </div>
+                <div class="info tabcontent"
+                     style="display: none">
+                  <div style="display: inline-table">
+                    {pd.DataFrame.from_dict(self.setup.attrs, orient='index')
+                                 .dropna()
+                                 .style.hide(axis='columns')._repr_html_()}
+                  </div>
+                  <div style="display: inline-table">
+                    {pd.DataFrame.from_dict(self.rfu.attrs, orient='index')
+                                 .dropna()
+                                 .style.hide(axis='columns')._repr_html_()}
+                  </div>
+                </div>
               </div>
             </div>
         """  # type: ignore
@@ -362,6 +374,25 @@ class Assay(mars.Assay):
         ax.legend(ncols=4, loc='upper center', bbox_to_anchor=(0.5, 0),
                   bbox_transform=fig.transFigure)
         return fig
+
+    def plot_bokeh(self) -> tuple[dict, dict]:
+        rfu = self.rfu.groupby('sample').mean(dim='content').loc[self.setup.sample]
+        std = self.rfu.groupby('sample').std(dim='content', ddof=1).loc[rfu.sample]
+        rfu.name = 'fluorescence [RFU]'
+        plot_options = {
+            'color': hv.plotting.util.process_cmap('Turbo', len(rfu)),
+            'frame_width': 400, 'aspect': 4/3,
+            'grid': True,
+            'toolbar': "above", 'autohide_toolbar': True,
+            'legend': "right", 'legend_cols': 4,
+        }
+
+        bokeh_renderer = hv.renderer('bokeh')
+        fig = rfu.hvplot(by='sample', x='hours',
+                         **plot_options) # * rfu.hvplot.area(by='sample', x='hours',
+                                         #                   y=rfu+std, y2=rfu-std,
+                                         #                   **plot_options)
+        return bokeh_renderer.html(fig)
 
 
 # monkey patches
