@@ -172,6 +172,7 @@ class Trajectory:
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray|dict,
+            observe: str|Callable[[xr.DataArray], xr.DataArray]|None = None,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
             **options) -> lmfit.minimizer.MinimizerResult:
@@ -180,12 +181,23 @@ class Trajectory:
         Parameters
         ----------
         data: xarray.DataArray with rfu over time
+
+        observe: string or function
+            If observe is a string, it specifies a species name of the model
+            that is mapped against the provided data. If it is a function,
+            it must map model states to the data domain
+
         conversion: optional function to convert concentrations to RFU values
+
+            *Deprecated since 0.3.1: use observe instead*
+
             The conversion must accept DataArrays of concentrations
             over time and must return a DataArray of RFU values over
             time. Can be obtained from mars.Assay.convert.
+
         error: optional xr.DataArray with rfu over time or float (default 1.)
             Standard deviations of measured data
+
         options:
             Any remaining keyword arguments are pass to lmfit.minimize
 
@@ -194,8 +206,12 @@ class Trajectory:
             An lmfit MinimizerResult that contains (among others) the
             attribute params, which are the optimized parameters.
         """
-        # FIXME: allow conversion to be a species name
-        conversion = conversion or (lambda conc: conc.sel(species=data.species))
+        if conversion:
+            warnings.warn("Argument conversion is deprecated. Use observe instead.")
+            if not observe:
+                observe = conversion
+        convert = lambda conc: conc.sel(species=observe) if isinstance(observe, str) else observe
+
         options = {'xtol': 1e-5} | options
 
         initial = self.crn.state(initial)
@@ -208,7 +224,7 @@ class Trajectory:
 
         def objective(params):
             self.crn.params = params
-            model = conversion(self.eval(initial, t_eval=data.time, cache=cache))
+            model = convert(self.eval(initial, t_eval=data.time, cache=cache))
             # FIXME: use WSSR if error is given, otherwise data/model-1
             return (model-data)/error
 

@@ -78,14 +78,15 @@ class Trajectory(numerics.Trajectory):
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray|dict,
+            observe: str|Callable[[xr.DataArray], xr.DataArray]|None = None,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             error: float|xr.DataArray = 1.,
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, initial, conversion, error, iter_cb=iter_cb, **options)
-        with TrajectoryFitProgress(self, data, conversion, error) as progress:
-            return super().fit(data, initial, conversion, error, iter_cb=progress, **options)
+            return super().fit(data, initial, observe, conversion, error, iter_cb=iter_cb, **options)
+        with TrajectoryFitProgress(self, data, observe, conversion, error) as progress:
+            return super().fit(data, initial, observe, conversion, error, iter_cb=progress, **options)
 
 
 class Equilibrium(numerics.Equilibrium):
@@ -114,10 +115,12 @@ class TrajectoryFitProgress:
     def __init__(self,
                  trajectory: Trajectory,
                  data: xr.DataArray,
+                 observe: str|Callable[[xr.DataArray], xr.DataArray]|None = None,
                  conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
                  error: float|xr.DataArray = 1):
         self.trajectory = trajectory
         self.data = data
+        self.observe = observe
         self.conversion = conversion
         self.error = error
         self.hdisplay = display.display(display.HTML('<div/>'), display_id=True)
@@ -137,9 +140,10 @@ class TrajectoryFitProgress:
             for idx, _ in enumerate(dataset):
                 yield colormaps[cmap](idx/size)
 
-        conversion = self.conversion or (lambda conc: conc.sel(species=self.data.species))
+        observe = self.observe or self.conversion or self.data.species
+        convert = lambda conc: conc.sel(species=observe) if isinstance(observe, str) else observe
 
-        traj = conversion(self.trajectory.last_result)
+        traj = convert(self.trajectory.last_result)
 
         fig = Figure()
         ax = fig.gca()

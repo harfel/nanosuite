@@ -104,3 +104,26 @@ def test_fit():
 
     assert result.params['k'].value == pytest.approx(k)
 
+def test_fit_observe_accepts_species_name():
+    model = ns.crn.from_string("""A -> Z; k""")
+    model.params['t0'].vary = False
+    initial = model.state(A=1)
+    traj = model.trajectory()
+    data = xr.DataArray([0.8], {'time': [10]})
+    k = -np.log(0.2)/10
+
+    result = traj.fit(data, initial, observe='Z')
+
+    assert result.params['k'].value == pytest.approx(k)
+
+def test_fit_observe_accepts_conversion():
+    model = ns.crn.from_string("""A -> Z; k""")
+    model.params['t0'].vary = False
+    initial = model.state(A=1)
+    traj = model.trajectory()
+    data = xr.DataArray([0.8], {'time': [10]})
+    k = -np.log(0.2)/10
+
+    result = traj.fit(data, initial, observe=lambda state: state.sel(species='Z'))
+
+    assert result.params['k'].value == pytest.approx(k)

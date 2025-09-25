@@ -764,7 +764,7 @@ class CRN:
         warnings.warn("CRN.fit is deprecated and will be removed. "
                       "Use CRN.trajectory().fit() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.trajectory().fit(data, initial, conversion, error, **options)
+        return self.trajectory().fit(data, initial, conversion=conversion, error=error, **options)
 
     def trajectory(self) -> numerics.Trajectory:
         """Trajectory of a CRN for a given initial condition
