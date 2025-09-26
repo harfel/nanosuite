@@ -207,10 +207,11 @@ class Trajectory:
             attribute params, which are the optimized parameters.
         """
         if conversion:
-            warnings.warn("Argument conversion is deprecated. Use observe instead.")
+            warnings.warn("Argument conversion is deprecated. Use observe instead.",
+                          DeprecationWarning, stacklevel=2)
             if not observe:
                 observe = conversion
-        convert = lambda conc: conc.sel(species=observe) if isinstance(observe, str) else observe
+        convert = (lambda conc: conc.sel(species=observe)) if isinstance(observe, str) else observe
 
         options = {'xtol': 1e-5} | options
 
@@ -345,7 +346,8 @@ class Equilibrium:
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray|dict,
-            conversion: Callable[[xr.DataArray], xr.DataArray],
+            observe: str|Callable[[xr.DataArray], xr.DataArray],
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit rate constants to match experimental equilibrium
 
@@ -354,7 +356,15 @@ class Equilibrium:
         data: xarray.DataArray
             1D experimental equilibrium data
 
+        observe: string or function
+            If observe is a string, it specifies a species name of the model
+            that is mapped against the provided data. If it is a function,
+            it must map model states to the data domain
+
         conversion: callable
+
+            *Deprecated since 0.3.1: use observe instead*
+
             Function to convert calculated equilibrium into observable,
             typically along the line of
             lambda eq: eq.sel(species='Signal')
@@ -364,6 +374,13 @@ class Equilibrium:
         lmfit.FitResult
         """
         initial = self.crn.state(initial)
+
+        if conversion:
+            warnings.warn("Argument conversion is deprecated. Use observe instead.",
+                          DeprecationWarning, stacklevel=2)
+            if not observe:
+                observe = conversion
+        convert = (lambda conc: conc.sel(species=observe)) if isinstance(observe, str) else observe
 
         if data.ndim == 1 and len(data) > 1:
             # FIXME: only if self.initial has sample dimension
@@ -375,13 +392,13 @@ class Equilibrium:
             self.crn.params = params
             eq = self.eval(initial, **opts)
             initial = eq
-            return (conversion(eq)/data - 1)**2
+            return (convert(eq)/data - 1)**2
 
         orig_params = self.crn.params
         params = orig_params.copy()
         params.fix_outside(data)
         params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
-        opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simlex to opts
+        opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simplex to opts
         fit = lmfit.minimize(objective, params, **opts)
         self.crn.params = orig_params
         return fit

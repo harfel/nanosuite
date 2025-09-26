@@ -107,3 +107,14 @@ def test_fit():
     fit = eq.fit(data, initial, lambda eq: eq.sel(species='A'))
 
     assert fit.params['kb1'] == pytest.approx(0.25, 1e-4)
+
+def test_fit_observe_accepts_species_name():
+    model = ns.crn.from_string("""A <=> Z""")
+    model.params['kf1'].vary = False
+    initial = model.state(A=1)
+    eq = model.equilibrium()
+    data = xr.DataArray([0.2], {'species': ['A']})
+
+    fit = eq.fit(data, initial, observe='A')
+
+    assert fit.params['kb1'] == pytest.approx(0.25, 1e-4)

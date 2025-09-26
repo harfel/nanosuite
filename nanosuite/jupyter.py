@@ -100,14 +100,15 @@ class Equilibrium(numerics.Equilibrium):
     def fit(self,
             data: xr.DataArray,
             initial: xr.DataArray|dict,
-            conversion: Callable[[xr.DataArray], xr.DataArray],
+            observe: str|Callable[[xr.DataArray], xr.DataArray],
+            conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, initial, conversion, iter_cb=iter_cb, **options)
+            return super().fit(data, initial, observe, conversion, iter_cb=iter_cb, **options)
 
-        with EquilibriumFitProgress(self, data, conversion) as progress:
-            return super().fit(data, initial, conversion, iter_cb=progress, **options)
+        with EquilibriumFitProgress(self, data, observe, conversion) as progress:
+            return super().fit(data, initial, observe, conversion, iter_cb=progress, **options)
 
 
 class TrajectoryFitProgress:
@@ -141,7 +142,7 @@ class TrajectoryFitProgress:
                 yield colormaps[cmap](idx/size)
 
         observe = self.observe or self.conversion or self.data.species
-        convert = lambda conc: conc.sel(species=observe) if isinstance(observe, str) else observe
+        convert = (lambda conc: conc.sel(species=observe)) if isinstance(observe, str) else observe
 
         traj = convert(self.trajectory.last_result)
 
@@ -181,9 +182,11 @@ class EquilibriumFitProgress:
     def __init__(self,
                  equilibrium: Equilibrium,
                  data: xr.DataArray,
-                 conversion: Callable[[xr.DataArray], xr.DataArray]):
+                 observe: str|Callable[[xr.DataArray], xr.DataArray],
+                 conversion: Callable[[xr.DataArray], xr.DataArray]|None = None):
         self.equilibrium = equilibrium
         self.data = data
+        self.observe = observe
         self.conversion = conversion
         self.hdisplay = display.display(display.HTML('<div/>'), display_id=True)
 
@@ -196,9 +199,13 @@ class EquilibriumFitProgress:
 
     def __call__(self, params: crn.ParameterMap, num_it: int, residuals: Sequence,
                  *args, **kwargs) -> None:
+        observe = self.observe or self.conversion or self.data.species
+        convert = (lambda conc: conc.sel(species=observe)) if isinstance(observe, str) else observe
+
         original = deepcopy(self.equilibrium.crn.params)
+
         self.equilibrium.crn.params = params
-        eq = self.conversion(self.equilibrium.last_result)
+        eq = convert(self.equilibrium.last_result)
         self.equilibrium.crn.params = original
 
         fig = Figure()

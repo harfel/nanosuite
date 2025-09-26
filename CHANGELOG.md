@@ -8,13 +8,11 @@ Added:
 
 Changed:
 - CRN.equilibrate now accepts 2D initial conditions with specialized CRN.params
-- Trajectory.fit accepts argument observe, which can be a species name of custom conversion function
 
 Deprecated:
 - CRN.integrate is deprecated in favor of CRN.trajectory().eval
 - CRN.fit is deprecated in favor of CRN.trajectory().fit
 - CRN.equilibrate is deprecated in favor of CRN.equilibrium().eval
-- Argument conversion to Trajectory.fit is deprecated in favor of observe
 
 Fixed:
 - ParameterMap.specification for behaves better with absent species
