@@ -8,6 +8,7 @@ Added:
 
 Changed:
 - CRN.equilibrate now accepts 2D initial conditions with specialized CRN.params
+- CRN.param t0 is now fixed by default
 
 Deprecated:
 - CRN.integrate is deprecated in favor of CRN.trajectory().eval

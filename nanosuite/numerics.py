@@ -215,7 +215,7 @@ class Trajectory:
                 observe = conversion
         convert = (lambda conc: conc.sel(species=observe)) if isinstance(observe, str) else observe
 
-        options = {'xtol': 1e-5} | options
+        options = {'xtol': 1e-7} | options
 
         initial = self.crn.state(initial)
 
@@ -420,7 +420,6 @@ class Equilibrium:
         orig_params = self.crn.params
         params = orig_params.copy()
         params.fix_outside(data)
-        params['t0'].vary = False  # TODO: make this the default and only vary in CRN.fit
         opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simplex to opts
         fit = lmfit.minimize(objective, params, **opts)
         self.crn.params = orig_params

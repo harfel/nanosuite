@@ -246,7 +246,7 @@ class CRN:
         self.complexes = []
         self.reactions = {}
         self.params = ParameterMap()
-        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
+        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=False)
         for reaction, rates in (reactions or {}).items():
             self.add_reaction(*reaction, *rates)
 
