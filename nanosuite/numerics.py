@@ -174,7 +174,7 @@ class Trajectory:
             initial: xr.DataArray|dict,
             observe: str|Callable[[xr.DataArray], xr.DataArray]|None = None,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
-            error: float|xr.DataArray = 1.,
+            error: xr.DataArray|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -195,8 +195,10 @@ class Trajectory:
             over time and must return a DataArray of RFU values over
             time. Can be obtained from mars.Assay.convert.
 
-        error: optional xr.DataArray with rfu over time or float (default 1.)
-            Standard deviations of measured data
+        error: optional xr.DataArray with rfu over time or float
+            Standard deviations of measured data. If provided, the fit minimizes
+            the WSSR = (model-data)**2/error**2. Otherwise, it minimizes the
+            relative deviation (data/model - 1)**2
 
         options:
             Any remaining keyword arguments are pass to lmfit.minimize
@@ -223,11 +225,18 @@ class Trajectory:
 
         cache = Cache(2*len(initial))
 
+        def wssr(model):
+            return (model-data)/error
+
+        def reldev(model):
+            return data/model - 1
+
+        residual = wssr if error is not None else reldev
+
         def objective(params):
             self.crn.params = params
             model = convert(self.eval(initial, t_eval=data.time, cache=cache))
-            # FIXME: use WSSR if error is given, otherwise data/model-1
-            return (model-data)/error
+            return residual(model)
 
         original = self.crn.params
         params = original.copy()
@@ -348,6 +357,7 @@ class Equilibrium:
             initial: xr.DataArray|dict,
             observe: str|Callable[[xr.DataArray], xr.DataArray],
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
+            error: xr.DataArray|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit rate constants to match experimental equilibrium
 
@@ -369,6 +379,11 @@ class Equilibrium:
             typically along the line of
             lambda eq: eq.sel(species='Signal')
 
+        error: optional xr.DataArray with rfu over time or float
+            Standard deviations of measured data. If provided, the fit minimizes
+            the WSSR = (model-data)**2/error**2. Otherwise, it minimizes the
+            relative deviation (data/model - 1)**2
+
         Returns
         -------
         lmfit.FitResult
@@ -387,12 +402,20 @@ class Equilibrium:
             content_dim = data.dims[0]
             initial = initial.loc[data.coords[content_dim]]
 
+        def wssr(model):
+            return (model-data)/error
+
+        def reldev(model):
+            return data/model - 1
+
+        residual = wssr if error is not None else reldev
+
         def objective(params, **opts):
             nonlocal initial
             self.crn.params = params
             eq = self.eval(initial, **opts)
             initial = eq
-            return (convert(eq)/data - 1)**2
+            return residual(eq)**2
 
         orig_params = self.crn.params
         params = orig_params.copy()
