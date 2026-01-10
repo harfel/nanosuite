@@ -413,7 +413,7 @@ class Equilibrium:
         def objective(params, **opts):
             nonlocal initial
             self.crn.params = params
-            eq = self.eval(initial, **opts)
+            eq = convert(self.eval(initial, **opts))
             initial = eq
             return residual(eq)**2
 
