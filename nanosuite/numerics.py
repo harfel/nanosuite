@@ -292,6 +292,7 @@ class Equilibrium:
     """
     def __init__(self, crn: CRN):
         self.crn = crn
+        self._simplex = None
 
     def eval(self, initial: xr.DataArray|dict, basinhopping: int = 100, **options) -> xr.DataArray:
         """Compute equilibrium state
@@ -320,6 +321,10 @@ class Equilibrium:
 
         kwargs: dict[str, Any] = {'method': 'Nelder-Mead',
                                   'options': {'xatol': 1e-12, 'maxiter': 500}}
+        # TODO: would it be good to start with the final_simplex of the last evaluation?
+        # if self._simplex is not None:
+        #     print(self._simplex.T)
+        #     kwargs['options']['initial_simplex'] = self._simplex
         kwargs.update(options)
 
         if initial.ndim == 1:
@@ -328,6 +333,7 @@ class Equilibrium:
             kwargs['args'] = (N, initial, lnK)
             result = optimize.basinhopping(self._dist_to_equilib, np.zeros(N.shape[0]),
                                            niter=basinhopping, minimizer_kwargs = kwargs)
+            # self._simplex = result['lowest_optimization_result']['final_simplex'][0]
             equilibrium = N.T @ result.x + initial
 
         else:
@@ -347,7 +353,7 @@ class Equilibrium:
                 if not all(res['success'] for res in results):
                     warnings.warn('\n'.join(res.lowest_optimization_result.message
                                             for res in results if not res['success']))
-                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)]
+                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)] # FIXME: where to set self._simplex?
 
         return xr.DataArray(self.crn.post_process_state(equilibrium),
                             initial.coords, name=initial.name)
@@ -413,14 +419,14 @@ class Equilibrium:
         def objective(params, **opts):
             nonlocal initial
             self.crn.params = params
-            eq = convert(self.eval(initial, **opts))
+            eq = self.eval(initial, **opts)
             initial = eq
-            return residual(eq)**2
+            return residual(convert(eq))**2
 
         orig_params = self.crn.params
         params = orig_params.copy()
         params.fix_outside(data)
-        opts = {'method': 'nelder-mead'} | options  # FIXME: add initial_simplex to opts
+        opts = {'method': 'nelder-mead'} | options
         fit = lmfit.minimize(objective, params, **opts)
         self.crn.params = orig_params
         return fit
