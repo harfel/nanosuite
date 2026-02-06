@@ -145,6 +145,8 @@ class Assay:
             df = pd.read_excel(setup_file, sheet_name='assay_settings')
             attrs = dict(df.to_dict('tight')['data'])
             df = pd.read_excel(setup_file, sheet_name='sample_preparations')
+            # remove spurious whitespace
+            df = df.replace(r'^\s+$', np.nan, regex=True).dropna(axis=0, how='all')
 
         # generate groups
         content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
@@ -152,12 +154,17 @@ class Assay:
         df = df[df.columns[2:]]
         units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
-        self.sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
-        self.sample_map.replace([np.nan], [None], inplace=True)
+        sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
+        sample_map.replace([np.nan], [None], inplace=True)
+        sample_map.replace('[^a-zA-Zα-ωΑ-Ω0-9_]', '_', regex=True, inplace=True)
+        self.sample_map = sample_map
         concs = df[df.columns[1-2*len(units)::2]].set_index(content)
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         fac = np.array([factors[u] for u in units])
-        concs *= fac
+        try:
+            concs *= fac
+        except TypeError as exc:
+            raise ValueError("Non-numerical concentrations encountered in setup_file") from exc
         for species_class in self.sample_map.columns:
             alternatives = pd.Series(self.sample_map[species_class].unique())
             for species in alternatives:

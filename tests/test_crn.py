@@ -210,7 +210,7 @@ def test_burst_reactions(reactions, initial, outcome):
     """Ensure currect treatment of burst reactions"""
     test_crn = crn.from_string(reactions)
     initial = xr.DataArray(initial, {'species': test_crn.species})
-    traj = test_crn.trajectory(initial).eval()
+    traj = test_crn.trajectory().eval(initial)
     assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
 
 def test_burst_must_not_be_reversible():
@@ -229,7 +229,42 @@ def test_circular_burst_reactions(reactions, initial):
     test_crn = crn.from_string(reactions)
     initial = xr.DataArray(initial, {'species': test_crn.species})
     with pytest.raises(ValueError):
-        test_crn.trajectory(initial).eval()
+        test_crn.trajectory().eval(initial)
+
+def test_burst_reactions_work_with_specialized_parameters():
+    """Ensure that burst reactions work with specialized parameters"""
+    assay = Assay(setup_file="nanosuite/examples/edc_setup.xlsx",
+                  rfu_file="nanosuite/examples/edc_RFU.xlsx")
+
+    model = crn.from_string("""
+        Probe contains burst with p_burst = 0.01
+
+        Probe + Input -> Signal;  k_eff
+        Probe [burst] + Input -> Signal;  k_burst = inf
+    """)
+
+    model.params = model.parametrize_for(assay.sample_map, k_eff=['Probe'])
+    model.perform_burst_reactions(assay.setup)
+
+def test_burst_reactions_work_with_multiple_samples():
+    """Ensure that burst reactions can be performed for a set of samples."""
+    model = crn.from_string("A + B -> C; k=inf")
+    init = xr.DataArray([
+        [4, 0],
+        [4, 1],
+        [4, 2],
+        [4, 3],
+        [4, 4],
+        [4, 5],
+        [4, 6],
+        [4, 7],
+        [4, 8],
+    ], {
+        'sample': "a b c d e f g h i".split(),
+        'species': "A B".split(),
+    })
+    traj = model.trajectory().eval(init)
+    assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()
 
 def test_impurities():
     """Ensure correct split into subspecies"""
@@ -240,8 +275,7 @@ def test_impurities():
        A [impure] -> Y;  k
     """)
     initial = test_crn.state(A=1.)
-    traj = test_crn.trajectory(initial).eval()
-    print(abs(traj.sel(species='X') - 9*traj.sel(species='Y')))
+    traj = test_crn.trajectory().eval(initial)
     assert (abs(traj.sel(species='X') - 9*traj.sel(species='Y')) < 1e-15).all()
 
 def test_impurities_can_burst():
@@ -252,7 +286,7 @@ def test_impurities_can_burst():
        A [impure] -> X; k=inf
     """)
     initial = test_crn.state(A=1.0)
-    traj = test_crn.trajectory(initial).eval()
+    traj = test_crn.trajectory().eval(initial)
     assert traj.sel(species="A", time=0) == 0.5
     assert traj.sel(species="A_impure", time=0) == 0.
     assert traj.sel(species="A", time=100) == 0.5
@@ -273,7 +307,7 @@ def test_impurities_support_parallel_systems():
         'system': ['1', '2', '3'],
         'species': ['A']
     })
-    traj = test_crn.trajectory(initial).eval()
+    traj = test_crn.trajectory().eval(initial)
 
     assert (traj.sel(time=0, species="A_impure") - [0.1, 0.2, 0.3] < 1e-15).all()
 
@@ -448,27 +482,7 @@ def test_equilibrate_subspecies():
     conc_ratio = eq.sel(species='B') / eq.sel(species='A_reactive')
     rate_ratio = model.params['kf'].value / model.params['kb'].value
     assert conc_ratio == pytest.approx(rate_ratio)
-    assert eq.sel(species='A') == 7
-
-def test_perform_burst_reactions_works_with_multiple_samples():
-    """Ensure that burst reactions can be performed for a set of samples."""
-    model = crn.from_string("A + B -> C; k=inf")
-    init = xr.DataArray([
-        [4, 0],
-        [4, 1],
-        [4, 2],
-        [4, 3],
-        [4, 4],
-        [4, 5],
-        [4, 6],
-        [4, 7],
-        [4, 8],
-    ], {
-        'sample': "a b c d e f g h i".split(),
-        'species': "A B".split(),
-    })
-    traj = model.trajectory(init).eval()
-    assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()
+    assert eq.sel(species='A') == pytest.approx(7)
 
 @pytest.mark.parametrize("conc, extra_conc", [
     (xr.DataArray([1, 2], {'species': ['A', 'B']}), {}),

@@ -69,9 +69,9 @@ class ParameterMap(lmfit.Parameters):
                         continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, val)
 
-        def __getattr__(self, attr: str) -> np.ndarray:  # FIXME: return DataFrame or DataArray
-            return np.array([getattr(self.params[special], attr)
-                            for special in self.specializations])
+        def __getattr__(self, attr: str) -> pd.DataFrame:
+            return pd.DataFrame([getattr(self.params[p], attr) for p in self.specializations],
+                                index=self.specializations.index)
 
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)
@@ -151,7 +151,7 @@ class ParameterMap(lmfit.Parameters):
 
         Parameters
         ----------
-        samples: xarray.DataArray
+        samples: 1D xarray.DataArray
             sample for the requested parameter specialization
 
         Returns
@@ -159,10 +159,11 @@ class ParameterMap(lmfit.Parameters):
             A dictionary that maps general parameter names
             to the specific parameters defined for the given sample
         """
+        assert sample.ndim == 1
         if len(self.mapping) == 0:
             return self
-        content_dim = next(iter(sample.coords))
-        specification = self.mapping.loc[sample.coords[content_dim].values]
+        content_dim = self.mapping.index.name or next(iter(sample.coords))
+        specification = self.mapping.loc[sample.coords[content_dim].data]
         return {general: self.get(specification[general], self.zero)
                 for general in self.mapping.columns}
 
@@ -174,7 +175,7 @@ class ParameterMap(lmfit.Parameters):
         samples: xarray.DataArray
             samples to vary parameters for
         """
-        if samples.ndim == 1:
+        if samples.ndim == 1 or self.mapping.empty:
             return
         content_dim = samples.dims[0]
         subset = self.mapping.loc[samples.coords[content_dim].data].values
@@ -245,7 +246,7 @@ class CRN:
         self.complexes = []
         self.reactions = {}
         self.params = ParameterMap()
-        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=True)
+        self.params.add('t0', value=DEFAULT_INTEGRATION_START, min=DEFAULT_MIN_T0, vary=False)
         for reaction, rates in (reactions or {}).items():
             self.add_reaction(*reaction, *rates)
 
@@ -444,7 +445,7 @@ class CRN:
                     self.complexes.append(compl)
 
             self.reactions[educts, products] = (forward_rate.name,
-                                                (backward_rate.name if backward_rate else None))
+                                                (backward_rate.name if backward_rate else ''))
 
         if forward_rate.name not in self.params:
             self.params.add(forward_rate)
@@ -487,6 +488,7 @@ class CRN:
         provided as sequence). Unspecified species are padded with 0.
         """
         # determine resultant DataArray shape
+        samples: Sequence[str]|pd.Index[str]
         conc = conc if conc is not None else {}
         if isinstance(conc, dict):
             n_samples = list(set(len(value) for value in chain(conc.values(), extra_conc.values())
@@ -501,7 +503,9 @@ class CRN:
                                  if isinstance(value, (Sequence, np.ndarray, xr.DataArray))))
             if len(n_samples) > 1:
                 raise ValueError("Inconsistent length of samples given.")
-            samples = [f'Sample X{idx+1}' for idx in range(n_samples[0])] if n_samples else []
+            samples = pd.Index([f'Sample X{idx+1}' for idx in range(n_samples[0])]
+                                if n_samples else [],
+                               name='sample')
         else:
             samples = conc.indexes[conc.dims[0]] if conc.ndim>1 else []
 
@@ -516,7 +520,7 @@ class CRN:
             state = xr.DataArray(list(conc.values()), {'species': list(conc.keys())})
         elif isinstance(conc, dict):
             state = xr.DataArray(len(self.species)*[0.], {'species': self.species})
-        elif conc.ndim == 1 and samples:
+        elif conc.ndim == 1 and len(samples):
             state = conc.expand_dims({'sample': samples}, 0)
         else:
             state = conc
@@ -589,7 +593,7 @@ class CRN:
 
         for name, dependencies in parameter_dependencies.items():
             dependencies = sorted(dependencies)
-            sample_sets = sample_map[dependencies].drop_duplicates().replace([None], [''])
+            sample_sets = sample_map[dependencies].drop_duplicates().replace({None: ''})
 
             for _, species in sample_sets.iterrows():
                 if not any(species):
@@ -632,7 +636,7 @@ class CRN:
         warnings.warn("CRN.equilibrate is deprecated and will be removed. "
                       "Use CRN.equilibrium().eval() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.equilibrium(initial_condition).eval(**options)
+        return self.equilibrium().eval(initial_condition, **options)
 
     def integrate(self, initial_condition: xr.DataArray|dict,
                   t_eval: Iterable[float]|float|None = None, **options) -> xr.DataArray:
@@ -676,19 +680,19 @@ class CRN:
         warnings.warn("CRN.integrate is deprecated and will be removed. "
                       "Use CRN.trajectory().eval() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.trajectory(initial_condition).eval(t_eval, **options)
+        return self.trajectory().eval(initial_condition, t_eval, **options)
 
     def perform_burst_reactions(self, state: xr.DataArray) -> xr.DataArray:
         """Perform burst reactions
 
-        The given state state is exposed to burst_reactions and species
+        The given state is exposed to burst_reactions and species
         are redistributed according to mass action kinetic proportions until
         an equilibrium is reached. Burst reactions must not be reversible or
         circular.
 
         Parameters
         ----------
-        state: xr.DataArray
+        state: 1D or 2D xr.DataArray
             species distribution before burst reactions
 
         Returns
@@ -696,29 +700,34 @@ class CRN:
             xr.DataArray containing the redistributed species vector
         """
         # pylint: disable=invalid-name
+        state = self.state(state)
+
         Z = self.complex_graph
+
+        def compute_shift(sample: xr.DataArray) -> np.ndarray:
+            # Compute complex graph adjacency with specific rate constants
+            params = self.params.specification_for(sample)
+            A = self.get_complex_adjacency(params, True)
+
+            # Graph Laplacian of the complex adjacency graph
+            L = np.diag(np.sum(A, axis=0)) - A
+
+            # MAK rates are computed by linear operations in log space:
+            with np.errstate(divide='ignore', invalid='ignore'):
+                rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(sample.values), axis=1))
+
+            fraction = min(x/y for x, y in zip(sample, rates)
+                           if y > 0).values if rates.any() else 0
+            return (rates*fraction).T
 
         iterations = 10*len(self.reactions)
         for _ in range(iterations):
-            with np.errstate(divide='ignore', invalid='ignore'):
-                if len(state.dims) == 1:
-                    A = self.get_complex_adjacency(self.params, True)
-                    L = np.diag(np.sum(A, axis=0)) - A
-                    rates = Z @ L @ np.exp(np.nansum(Z.T*np.log(state.values), axis=1))
-                    fraction = min(x/y for x, y in zip(state, rates)
-                                   if y > 0).values if rates.any() else 0
-                else:
-                    params = self.params.specification_for(state)
-                    A = self.get_complex_adjacency(params, True)
-                    L = np.diag(np.sum(A, axis=0)) - A
-                    tmp = np.zeros((L.shape[0], state.shape[0]))
-                    for idx, row in enumerate(state.values):
-                        tmp[:, idx] = np.nansum(Z.T*np.log(row), axis=1)
-                    rates = Z @ L @ np.exp(tmp)
-                    fraction = np.array([min(x/y for x,y in zip(s, r) if y>0) if r.any() else 0
-                                        for s, r in zip(state.values, rates.T)])
-            state -= (fraction*rates).T
-            if np.all(fraction < 1e-10):
+            if len(state.dims) == 1:
+                shift = compute_shift(state)
+            else:
+                shift = np.array([compute_shift(sample) for sample in state])
+            state -= shift
+            if np.all(shift < 1e-10):
                 break
         else:
             raise ValueError(f"Burst reactions did not converge within {iterations} steps.")
@@ -755,9 +764,9 @@ class CRN:
         warnings.warn("CRN.fit is deprecated and will be removed. "
                       "Use CRN.trajectory().fit() instead.",
                       DeprecationWarning, stacklevel=2)
-        return self.trajectory(initial).fit(data, conversion, error, **options)
+        return self.trajectory().fit(data, initial, conversion=conversion, error=error, **options)
 
-    def trajectory(self, initial: xr.DataArray|dict) -> numerics.Trajectory:
+    def trajectory(self) -> numerics.Trajectory:
         """Trajectory of a CRN for a given initial condition
 
         Parameters
@@ -769,9 +778,9 @@ class CRN:
         A Trajectory object that can be used for integration or
         rate constant fitting.
         """
-        return numerics.Trajectory(self, initial)
+        return numerics.Trajectory(self)
 
-    def equilibrium(self, initial: xr.DataArray|dict) -> numerics.Equilibrium:
+    def equilibrium(self) -> numerics.Equilibrium:
         """Equilibrium model
 
         This returns an Equilibrium model of the CRN.
@@ -790,7 +799,7 @@ class CRN:
         -------
         An Equilibrium model
         """
-        return numerics.Equilibrium(self, initial)
+        return numerics.Equilibrium(self)
 
     @staticmethod
     def _render_reactants(multiset) -> str:
