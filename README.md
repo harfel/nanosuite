@@ -19,7 +19,7 @@ $ pip install git+https://github.com/harfel/nanosuite.git
 ```
 
 Check out available github branches for access to developer and early release versions.
-The project adopts a gitflow branching model
+The project adopts a gitflow branching model.
 
 
 Getting started
@@ -44,11 +44,10 @@ initial = model.state(Sensor=10,
                       Fuel=10,
                       Target=[0.001, 0.01, 0.1, 1])
 
-
-traj = model.simulate(initial, 100)
+traj = model.trajectory(initial)
 ```
-The resulting trajectory is 3D indexed array (using the xarray framework) with
-domensions `content`, `specises` and `time`. This allows you to investigate the
+The resulting trajectory is 3D indexed array (using the [xarray framework](https://xarray.dev/))
+with dimensions `content`, `species` and `time`. This allows you to investigate the
 system behavior in versatile ways.
 
 ```python
@@ -58,7 +57,7 @@ from matplotlib import pyplot as plt
 plt.xlabel("Time")
 lpt.ylabel("Concentration [mM]")
 
-for sample in traj.sel(species='Signal')
+for sample in traj.eval(100).sel(species='Signal')
     conc = initial.sel(content=sample.content, species='Target')
     plt.plot(sample.time, sample, label=f'{str(conc.data)} mM')
 
@@ -66,7 +65,7 @@ plt.legend()
 plt.show()
 ```
 
-And this is how to fit models to experimental data
+And this is how to fit the trajectory to experimental data
 
 ```python
 # Load assay setup and results
@@ -77,7 +76,7 @@ assay = ns.Assay(setup_file = './nanosuite/examples/edc_setup.xlsx',
 experiment = assay.to_concentrations(pos_conc=10)
 
 # Fit signal concentration to all experimental data
-fit = model.fit(experiment, initial, conversion=lambda state: state.sel(species='Signal'))
+fit = traj.fit(experiment, initial, conversion=lambda state: state.sel(species='Signal'))
 
 print(fit.params)
 ```
