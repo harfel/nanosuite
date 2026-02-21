@@ -1,8 +1,9 @@
-0.4.0 (Unreleased)
+0.3.2 (Unreleased)
 ------------------
 
 Changed:
 - Demote Assay.rfu.group and Assay.setup.group from multiindex level to coordinate
+- Assay.setup now uses 'sample' as dimension name rather than 'content'
 
 
 0.3.1

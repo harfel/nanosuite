@@ -1,8 +1,7 @@
-- facilitate assigning new sample coordinates (e.g. systems) to all assay array
 - improved calibration via assay.setup controls
   - endpoint calibration as alternative to "proper" controls
   - permit scalar pos_rfu, neg_rfu arguments in addition to 1D/2D arrays
-- can I automatically assign new coordinates (e.g. systems) to both setup and sample_map?
+  - check if one can use pos_conc and neg_conc from Assay.setup
 = feature/sample_index
 - allow buffer, media, or any non-species dependencies in CRN.parmeter_map(rate_dependencies)
 - extended port mapping: allow rate constant definitions such as "; k = [1, 1e1, 1e2, 1e3]"

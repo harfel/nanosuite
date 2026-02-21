@@ -15,8 +15,8 @@ def test_init_with_rfu():
 
 def test_init_with_setup_file():
     assay = Assay(setup_file=setup_file, rfu_file=rfu_file)
-    content = assay.rfu.sel(sample='Sample X14')
-    assert (assay.setup.sel(content=content.sample, species='Signal') == 4e-9).all()
+    sample = assay.rfu.sel(sample='Sample X14').sample
+    assert (assay.setup.sel(sample=sample, species='Signal') == 4e-9).all()
 
 def test_init_with_groups():
     assay_1 = Assay(rfu_file=rfu_file, setup_file=setup_file)
@@ -50,10 +50,10 @@ def test_init_with_setup_array():
          [0, 2, 7, 8],
          [0, 0, 5, 10],
          [0, 0, 5, 10]],
-        {'content': pd.Index(["Sample X1", "Sample X2", "Sample X3", "Sample X4", "Sample X5",
-                              "Sample X6", "Sample X7", "Sample X8", "Sample X9", "Sample X10",
-                              "Sample X11", "Sample X12", "Sample X13", "Sample X14", "Sample X15",
-                              "Sample X16", "Sample X17", "Sample X18"]),
+        {'sample': pd.Index(["Sample X1", "Sample X2", "Sample X3", "Sample X4", "Sample X5",
+                             "Sample X6", "Sample X7", "Sample X8", "Sample X9", "Sample X10",
+                             "Sample X11", "Sample X12", "Sample X13", "Sample X14", "Sample X15",
+                             "Sample X16", "Sample X17", "Sample X18"]),
          'species': ["Input", "Probe", "Fuel", "Signal"]}
     ))
     assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
@@ -145,7 +145,7 @@ def test_convert_accepts_one_arg():
     from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"])
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
-    assert to_rfu(assay.setup).dims == ('content', 'time')
+    assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_accepts_two_args():
     """Ensure Assay.convert can be called with two arguments for pos_rfu and neg_rfu"""
@@ -157,7 +157,7 @@ def test_convert_accepts_two_args():
                                      assay.rfu[assay.rfu.group=="negative"])
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
-    assert to_rfu(assay.setup).dims == ('content', 'time')
+    assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_accepts_four_args():
     """Ensure Assay.convert can be called with four arguments"""
@@ -172,7 +172,7 @@ def test_convert_accepts_four_args():
                                      neg_conc, pos_conc)
 
     assert from_rfu(assay.rfu).dims == ('content', 'species', 'time')
-    assert to_rfu(assay.setup).dims == ('content', 'time')
+    assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_average():
     assay = Assay(rfu_file, setup_file)
@@ -180,7 +180,7 @@ def test_convert_average():
     from_rfu, to_rfu = assay.convert(control, method='average', transient=assay.rfu.time[-1]//2)
 
     assert from_rfu(assay.rfu).dims == ('content', 'time')
-    assert to_rfu(assay.setup).dims == ('content', 'time')
+    assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_to_concentrations_accepts_scalar_pos_conc():
     assay = Assay(rfu_file, setup_file)

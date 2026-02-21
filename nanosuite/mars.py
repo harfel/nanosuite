@@ -67,7 +67,7 @@ class Assay:
             path to experimental setup file
 
         setup: xarray.DataArray
-            A 2D DataArray with dimensions content and species denoting initial
+            A 2D DataArray with dimensions sample and species denoting initial
             conditions in mol/liter. Only allowed if setup_file is not provided.
 
         groups: dict
@@ -96,9 +96,8 @@ class Assay:
             self.setup = setup
         elif isinstance(setup, dict):
             self.setup = xr.DataArray(
-                dims=['content', 'species'],
-                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique()
-                                   .rename('content'),
+                dims=['sample', 'species'],
+                coords={'sample': pd.Series(self.all_rfu.sample).unique(),
                         'species': list(setup.keys())})
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
@@ -143,15 +142,15 @@ class Assay:
             # remove spurious whitespace
             df = df.replace(r'^\s+$', np.nan, regex=True).dropna(axis=0, how='all')
 
-        content = pd.Index(df['Sample ID'].ffill(), name='content')
-        df.set_index(content, inplace=True)
+        samples = pd.Index(df['Sample ID'].ffill(), name='sample')
+        df.set_index(samples, inplace=True)
         units = [match[1] for s in df.columns[5::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
-        sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
+        sample_map = df[df.columns[-2*len(units)::2]].set_index(samples)
         sample_map.replace([np.nan], [None], inplace=True)
         sample_map.replace('[^a-zA-Zα-ωΑ-Ω0-9_]', '_', regex=True, inplace=True)
         self.sample_map = sample_map
-        concs = df[df.columns[1-2*len(units)::2]].set_index(content)
+        concs = df[df.columns[1-2*len(units)::2]].set_index(samples)
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         fac = np.array([factors[u] for u in units])
         try:
@@ -169,11 +168,11 @@ class Assay:
         # TODO: should controls be optional?
         return xr.DataArray(
             concs,
-            {'content': content, 'species': concs.columns},
+            {'sample': samples, 'species': concs.columns},
             attrs=attrs
-        ).assign_coords(group=('content', df['Group'].ffill().values),
-                        positive=('content', df['Positive'].values),
-                        negative=('content', df['Negative'].values))
+        ).assign_coords(group=('sample', df['Group'].ffill().values),
+                        positive=('sample', df['Positive'].values),
+                        negative=('sample', df['Negative'].values))
 
     def read_rfu(self, rfu_file: str) -> tuple[xr.DataArray,  # all_rfu
                                                xr.DataArray,  # active_wells
@@ -284,12 +283,12 @@ class Assay:
 
         This allows to annotate assay samples with arbitrary information.
         Annotations are added as coordinates to the content coordinate of
-        assay.rfu and assay.setup and are also propagated through into
-        assay.mean and assay.std.
+        assay.rfu and the sample coordinate of assay.setup. New coordinates
+        are propagated through into assay.mean and assay.std.
 
         >>> assay.annotate(system={'variant_a': slice('Sample X1', 'Sample X10'),
                                    'variant_b': slice('Sample X11', 'Sample X20')})
-        >>> assay.sel(system='variant_a')
+        >>> assay.setup[assay.setup.system='variant_a']
 
         Parameters
         ----------
@@ -327,9 +326,8 @@ class Assay:
         self.rfu = self.all_rfu[self.active_wells]
         if self.setup is not None:
             self.setup = self.setup.assign_coords({
-                name: ('content', coord.groupby('sample').map(lambda sample: sample[0])
-                                                         .drop_vars(['content', 'well'])
-                                                         .rename(sample='content').data)
+                name: ('sample', coord.groupby('sample').map(lambda sample: sample[0])
+                                                        .drop_vars(['content', 'well']).data)
                 for name, coord in coords.items()})
 
         try:
@@ -482,8 +480,8 @@ class Assay:
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
-            dims=['content', 'species'],
-            coords={'content': self.rfu.indexes['content'].droplevel('well').unique(),
+            dims=['sample', 'species'],
+            coords={'sample': pd.Series(self.rfu.sample).unique(),
                     'species': list(conc.keys())})
         for species, values in conc.items():
             array.loc[..., species] = values
@@ -774,8 +772,8 @@ class Assay:
         toRFU(rfu: xr.DataArray) -> xr.DataArray
         """
         neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
-        pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
-        neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        pos = pos_rfu.mean(axis=0) if len(pos_rfu.dims)>1 else pos_rfu
+        neg = neg_rfu.mean(axis=0) if len(neg_rfu.dims)>1 else neg_rfu
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
         neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
         pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='content', fill_value=0.)
@@ -901,7 +899,7 @@ class Assay:
 
         Returns
         -------
-        An xarray.DataArray with dimensions (content, species) with
+        An xarray.DataArray with dimensions (sample, species) with
         interpolated concentration values.
         """
         # TODO: allow missing negative controls
@@ -912,10 +910,10 @@ class Assay:
         if self.setup is None:
             raise ValueError('to_concentrations requires Assay.setup')
 
-        pos_controls = self.setup.positive.dropna('content')
-        neg_controls = self.setup.negative.dropna('content')
+        pos_controls = self.setup.positive.dropna('sample')
+        neg_controls = self.setup.negative.dropna('sample')
 
-        if not pos_controls.content.equals(neg_controls.content):
+        if not pos_controls.sample.equals(neg_controls.sample):
             # TODO: just warn and proceed with overlap
             raise ValueError("All samples must either have no control or two controls.")
 
@@ -935,7 +933,7 @@ class Assay:
         pos_rfu = rfu.loc[controls.sel(control='positive')]
         from_rfu, _ = self.convert(pos_rfu, neg_rfu, pos_conc, neg_conc,
                                    method=method, **method_options)
-        concs = from_rfu(self.mean.sel(sample=controls.content.rename(content='sample')))
+        concs = from_rfu(self.mean.sel(sample=controls.sample))
         concs.name = 'contentation'
         if 'control' in concs.coords:
             return concs.drop_vars(['control'])
