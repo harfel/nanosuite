@@ -5,6 +5,9 @@ Changed:
 - Demote Assay.rfu.group and Assay.setup.group from multiindex level to coordinate
 - Assay.setup now uses 'sample' as dimension name rather than 'content'
 
+Removed:
+- Assay.calibrate and Assay.calibrate_* (deprecated since 0.2.4)
+
 
 0.3.1
 -----
@@ -29,6 +32,6 @@ Deprecated:
 - CRN.equilibrate is deprecated in favor of CRN.equilibrium().eval
 
 Fixed:
-- ParameterMap.specification for behaves better with absent species
+- ParameterMap.specification_for behaves better with absent species
 - CRN.parametrize_for is now more careful when substituting specialized parameters in expressions
 - More care is taken with edge cases when reading assay excel setup files

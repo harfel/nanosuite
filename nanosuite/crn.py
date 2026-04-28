@@ -16,6 +16,7 @@ from . import numerics
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
+# TODO: should these be moved into numerics.Trajectory?
 DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
