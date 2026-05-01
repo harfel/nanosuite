@@ -11,6 +11,7 @@ setup_file = Path(__file__).parent / '../nanosuite/examples/edc_setup.xlsx'
 
 def test_init_with_rfu():
     assay = Assay(rfu_file=rfu_file)
+    assert assay.all_rfu.shape == (54, 961)
     assert assay.rfu.shape == (42, 961)
 
 def test_init_with_setup_file():
@@ -27,7 +28,7 @@ def test_init_with_groups():
         "Positive": ["Sample X17", "Sample X18"],
     })
 
-    assert all(assay_1.rfu.content == assay_2.rfu.content)
+    assert all(assay_1.rfu.group == assay_2.rfu.group)
 
 def test_init_with_setup_array():
     assay_1 = Assay(rfu_file=rfu_file, setup_file=setup_file)
@@ -98,8 +99,13 @@ def test_init_setup_dict_with_groups():
 def test_init_supports_groups():
     assay = Assay(rfu_file=rfu_file, groups={'Positive': ['Sample X17', 'Sample X18'],
                                              'Negative': ['Sample X10', 'Sample X11']})
-    assert len(assay.rfu[assay.rfu.group == 'Positive'].sample) == 5
-    assert len(assay.mean[assay.mean.group == 'Positive'].sample) == 2
+    assert len(assay.all_rfu[assay.all_rfu.group == 'Positive']) == 6
+    assert len(assay.mean[assay.mean.group == 'Positive']) == 2
+
+def test_init_imports_deactivated():
+    """Ensure that deactivated wells are properly imported from Excel"""
+    assay = Assay(rfu_file)
+    assert assay.all_rfu.active.any() and not assay.all_rfu.active.all()
 
 def test_deactivate():
     """Ensure that wells can be activated and deactivated"""
@@ -107,29 +113,30 @@ def test_deactivate():
     assay.activate(assay.all_rfu.well)
 
     assay.deactivate(["B03", "C10"])
-    assert len(assay.rfu.content) == len(assay.all_rfu.content) - 2
-    assert assay.rfu.attrs['deactivated_cells'] == "B03, C10"
+    assert tuple(assay.all_rfu.sel(active=False).well.data) == ('B03', 'C10')
+    assert assay.rfu.attrs['deactivated_cells'] == ["B03", "C10"]
 
     assay.activate("B03")
-    assert len(assay.rfu.content) == len(assay.all_rfu.content) - 1
-    assert assay.rfu.attrs['deactivated_cells'] == "C10"
+    assert assay.all_rfu.sel(active=False).well.data == 'C10'
+    assert assay.rfu.attrs['deactivated_cells'] == ["C10"]
 
-def test_import_reactivated():
-    """Ensure that deactivated wells are properly imported from Excel"""
-    assay = Assay(rfu_file)
-    assert not all(assay.active_wells)
-
-def test_avg():
+def test_mean():
     """Ensure correct average calculation"""
     assay = Assay(rfu_file)
-    for sample in pd.Series(assay.rfu.sample.data).unique():
+    for sample in assay.rfu.sample.to_series().unique():
         assert (assay.mean.sel(sample=sample)
-                == assay.rfu.sel(sample=sample).mean(axis=0)).all()
+                == assay.rfu.sel(sample=sample)
+                            .sel(active=True).mean(axis=0)).all()
 
 def test_excel_time_units():
     assay_1 = Assay(Path(__file__).parent / 'data/testdata_003_RUC.xlsx')
     assay_2 = Assay(Path(__file__).parent / 'data/testdata_004_RUC.xlsx')
     assert (assay_1.rfu.time == assay_2.rfu.time).all()
+
+def test_rfu_contains_only_active_wells():
+    assay = Assay(rfu_file)
+    assert not assay.all_rfu.active.all()
+    assert assay.rfu.active.all()
 
 @pytest.mark.parametrize("assayfile", ['testdata_001_RUC.xlsx', 'testdata_002_RUC.xlsx',
                                        'testdata_003_RUC.xlsx', 'testdata_004_RUC.xlsx'])
@@ -144,7 +151,7 @@ def test_convert_accepts_one_arg():
                   setup={'Signal': 5})
     from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"])
 
-    assert from_rfu(assay.rfu).dims == ('content', 'time')
+    assert from_rfu(assay.rfu).dims == ('well', 'time')
     assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_accepts_two_args():
@@ -156,7 +163,7 @@ def test_convert_accepts_two_args():
     from_rfu, to_rfu = assay.convert(assay.rfu[assay.rfu.group=="positive"],
                                      assay.rfu[assay.rfu.group=="negative"])
 
-    assert from_rfu(assay.rfu).dims == ('content', 'time')
+    assert from_rfu(assay.rfu).dims == ('well', 'time')
     assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_accepts_four_args():
@@ -171,7 +178,7 @@ def test_convert_accepts_four_args():
                                      assay.rfu[assay.rfu.group=="negative"],
                                      neg_conc, pos_conc)
 
-    assert from_rfu(assay.rfu).dims == ('content', 'species', 'time')
+    assert from_rfu(assay.rfu).dims == ('well', 'species', 'time')
     assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_convert_average():
@@ -179,7 +186,7 @@ def test_convert_average():
     control = assay.rfu[assay.rfu.group=='Positive']
     from_rfu, to_rfu = assay.convert(control, method='average', transient=assay.rfu.time[-1]//2)
 
-    assert from_rfu(assay.rfu).dims == ('content', 'time')
+    assert from_rfu(assay.rfu).dims == ('well', 'time')
     assert to_rfu(assay.setup).dims == ('sample', 'time')
 
 def test_to_concentrations_accepts_scalar_pos_conc():

@@ -253,7 +253,7 @@ class Assay(mars.Assay):
     def __init__(self, *args, **opts):
         super().__init__(*args, **opts)
         self.palette = xr.DataArray(np.zeros((len(self.setup), 4)),
-                                    {'content': self.setup.content,
+                                    {'sample': self.setup.sample,
                                      'channel': ['R', 'G', 'B', 'A']})
         self.set_default_palette()
 
@@ -332,13 +332,13 @@ class Assay(mars.Assay):
         negative = np.unique(self.setup.negative.dropna(dim=content_dim))
         controls = np.concatenate([positive, negative])
         for sample in controls:
-            self.palette.loc[self.setup[self.setup.sample==sample].content] = np.array([0, 0, 0, 1])
+            self.palette.loc[self.setup[self.setup.sample==sample].sample] = np.array([0, 0, 0, 1])
         groups = self.setup[~self.setup.sample.isin(controls)].groupby('group') # FIXME: groups don't exist anymore
         cmaps = [colormaps[name] for name in ('Reds', 'Greens', 'Blues', 'Oranges', 'Purples')]
         for (name, group), gradient in zip(groups, cycle(cmaps)):
             samples = len(group)+len(group)//4
             for idx, sample in enumerate(group, start=len(group)//4):
-                self.palette.loc[sample.content, :] = np.array(gradient(idx/samples))
+                self.palette.loc[sample.sample, :] = np.array(gradient(idx/samples))
 
     def set_palette(self, color_by, colormap: str = 'brg', portion: tuple[float, float] = (0,1)):
         """Set distinct gradient for each sample group."""
@@ -353,10 +353,10 @@ class Assay(mars.Assay):
             f = start + group_idx/len(groups)*(end-start)
             primary = np.array(group_colors(f))
             base = np.array([1, 1, 1, 1])
-            for count, (content, _) in enumerate(group.iterrows(), start=1):
+            for count, (sample, _) in enumerate(group.iterrows(), start=1):
                 f = count/len(group)
                 color = f*primary + (1-f)*base
-                self.palette.loc[{'content': content}] = color
+                self.palette.loc[{'sample': sample}] = color
 
     def plot(self) -> Figure:
         """Visualize assay as matplotlib figure"""
@@ -366,7 +366,7 @@ class Assay(mars.Assay):
         ax.set_ylabel("RFU")
         ax.set_title(self.rfu.attrs["Test Name"])
         for sample, err in zip(self.mean, self.std):
-            color = self.palette.sel(content=sample.content).data
+            color = self.palette.sel(sample=sample.sample).data
             ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
             ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
         ax.grid()
@@ -375,8 +375,8 @@ class Assay(mars.Assay):
         return fig
 
     def plot_bokeh(self) -> tuple[dict, dict]:
-        rfu = self.rfu.groupby('sample').mean(dim='content').loc[self.setup.sample]
-        std = self.rfu.groupby('sample').std(dim='content', ddof=1).loc[rfu.sample]
+        rfu = self.rfu.groupby('sample').mean(dim='well').loc[self.setup.sample]
+        std = self.rfu.groupby('sample').std(dim='well', ddof=1).loc[rfu.sample]
         rfu.name = 'fluorescence [RFU]'
         plot_options = {
             'color': hv.plotting.util.process_cmap('Turbo', len(rfu)),

@@ -1,9 +1,9 @@
-0.3.2 (Unreleased)
+0.4.0 (Unreleased)
 ------------------
 
 Changed:
-- Demote Assay.rfu.group and Assay.setup.group from multiindex level to coordinate
-- Assay.setup now uses 'sample' as dimension name rather than 'content'
+- Assay.rfu now uses 'well' as index. Group and sample are demoted to well coordinates
+- Assay.setup now uses 'sample' as index. Group is demoted to a sample coordinate
 
 Removed:
 - Assay.calibrate and Assay.calibrate_* (deprecated since 0.2.4)
