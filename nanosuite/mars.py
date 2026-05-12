@@ -156,7 +156,8 @@ class Assay:
         return xr.DataArray(
             concs,
             {'sample': samples, 'species': concs.columns},
-            attrs=attrs
+            attrs=attrs,
+            name='concentration',
         ).assign_coords(group=('sample', df['Group'].ffill().values),
                         positive=('sample', df['Positive']),
                         negative=('sample', df['Negative']))
@@ -300,10 +301,12 @@ class Assay:
 
         self.all_rfu = self.all_rfu.assign_coords(coords)
         if self.setup is not None:
-            self.setup = self.setup.assign_coords({
-                name: ('sample', coord.groupby('sample').map(lambda sample: sample[0])
-                                                        .drop_vars(['well']).data)
-                for name, coord in coords.items()})
+            self.setup = self.setup.assign_coords({name: ('sample', coord.groupby('sample')
+                                                                         .map(lambda s: s[0])
+                                                                         .drop_vars(['well'])
+                                                                         .loc[self.setup.sample]
+                                                                         .data)
+                                                   for name, coord in coords.items()})
 
         try:
             del self.mean
