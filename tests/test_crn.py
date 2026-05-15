@@ -585,6 +585,23 @@ def test_parameter_map_assign_sequence():
     with pytest.raises(ValueError):
         params['k1'].value = [1, 10, 100]
 
+def test_parameter_map_assign_dataarray():
+    model = crn.from_string("""
+        A + B <=> C; k1, k2
+    """)
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ],
+                              columns=["A", "B", "C"]).rename_axis(index='system')
+    params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+
+    params['k1'].value = xr.DataArray([1, 10, 100], {'system': [3, 4, 5]})
+    assert all(params['k1'].value[0] == [1, 10, 100, 1, 10, 100])
+
 def test_parameter_map_respects_expressions():
     model = crn.from_string("""
         A <=> B; kf = 1, kb

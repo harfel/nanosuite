@@ -45,7 +45,7 @@ class ParameterMap(lmfit.Parameters):
         ParameterProxy's are returned by ParameterMap.__getitem__ when accessing
         a general parameter that is overloaded with specializations. The proxy
         allows to set attributes of all specializations of the general parameter
-        either from a sequence of values or from a single value.
+        either from a DataArray, a sequence of values or from a single value.
         """
         # pylint: disable=too-few-public-methods
         params: ParameterMap
@@ -55,9 +55,12 @@ class ParameterMap(lmfit.Parameters):
             self.__dict__.update(specializations=specializations, params=parameter_map)
 
         def __setattr__(self, attr: str, val: Any) -> None:
-            if isinstance(val, xr.DataArray):
-                val = val.data
-            if isinstance(val, Sequence|np.ndarray|pd.Series):
+            if isinstance(val, xr.DataArray): # TODO: could also accept dict and pd.DataFrame
+                samples = val.coords[val.dims[0]]
+                params = self.specializations.loc[samples]
+                for param, value in zip(params, val.data):
+                    self.params[param].value = value
+            elif isinstance(val, Sequence|np.ndarray|pd.Series):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):

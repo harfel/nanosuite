@@ -1,6 +1,9 @@
 0.4.0 (Unreleased)
 ------------------
 
+Added:
+- Specialized parameters in crn.ParameterMap can now be set from an xarray DataArray
+
 Changed:
 - Assay.rfu now uses 'well' as index. Group and sample are demoted to well coordinates
 - Assay.setup now uses 'sample' as index. Group is demoted to a sample coordinate
