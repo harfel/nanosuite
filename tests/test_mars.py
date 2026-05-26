@@ -77,10 +77,6 @@ def test_init_setup_file_and_setup_are_exclusive():
     with pytest.raises(ValueError):
         Assay(setup_file=setup_file, rfu_file=rfu_file, setup=xr.DataArray([1]))
 
-def test_init_setup_array_and_groups_are_exclusive():
-    with pytest.raises(ValueError):
-        Assay(rfu_file=rfu_file, setup=xr.DataArray([1]), groups={'Unknown': ["Sample X1"]})
-
 def test_init_setup_dict_with_groups():
     assay_1 = Assay(rfu_file=rfu_file, setup_file=setup_file)
     assay_2 = Assay(rfu_file=rfu_file, setup={

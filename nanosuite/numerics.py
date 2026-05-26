@@ -217,11 +217,11 @@ class Trajectory:
 
         options = {'xtol': 1e-7} | options
 
-        initial = self.crn.state(initial)
-
         if data.ndim == 2:
             content_dim = data.dims[0]
             initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
+
+        initial = self.crn.state(initial)
 
         cache = Cache(2*len(initial))
 

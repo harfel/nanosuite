@@ -60,7 +60,7 @@ class ParameterMap(lmfit.Parameters):
                 params = self.specializations.loc[samples]
                 for param, value in zip(params, val.data):
                     self.params[param].value = value
-            elif isinstance(val, Sequence|np.ndarray|pd.Series):
+            elif isinstance(val, Sequence|np.ndarray|pd.Series|pd.DataFrame):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):
