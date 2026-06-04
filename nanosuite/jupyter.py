@@ -9,11 +9,10 @@ from itertools import chain, cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
 import holoviews as hv
-import hvplot.xarray
 from IPython import display                # type: ignore
 import itables
 import lmfit                               # type: ignore
-from matplotlib import colormaps           # type: ignore
+from matplotlib import colormaps           # type: ignore  # TODO: remove matplotlib dependency
 from matplotlib.figure import Figure       # type: ignore
 import numpy as np
 import pandas as pd
@@ -89,9 +88,11 @@ class Trajectory(numerics.Trajectory):
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, initial, observe, conversion, error, iter_cb=iter_cb, **options)
+            return super().fit(data, initial, observe, conversion, error, iter_cb=iter_cb,
+                               **options)
         with TrajectoryFitProgress(self, data, observe, conversion, error) as progress:
-            return super().fit(data, initial, observe, conversion, error, iter_cb=progress, **options)
+            return super().fit(data, initial, observe, conversion, error, iter_cb=progress,
+                               **options)
 
 
 class Equilibrium(numerics.Equilibrium):
@@ -268,7 +269,7 @@ class Assay(mars.Assay):
         buf.seek(0)
         return buf.read()
 
-    def _repr_html_(self, **kwargs) -> str:
+    def _repr_html_(self, **_) -> str:
         # pylint: disable=protected-access
         cols = [[(species, 'type'), (species, 'conc [M]')] for species in self.sample_map.columns]
         setup = pd.DataFrame(index=self.sample_map.index,
@@ -296,9 +297,12 @@ class Assay(mars.Assay):
               </script>
 
               <div class="tab">
-                <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
-                <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
-                <button onClick="openTab(event, 'info')" style="border: 1px solid grey">Info</button>
+                <button onclick="openTab(event, 'rfu')"
+                        style="border: 1px solid grey">RFU</button>
+                <button onclick="openTab(event, 'setup')"
+                        style="border: 1px solid grey">Setup</button>
+                <button onClick="openTab(event, 'info')"
+                        style="border: 1px solid grey">Info</button>
               </div>
 
               <div>
@@ -375,6 +379,7 @@ class Assay(mars.Assay):
         return fig
 
     def plot_bokeh(self) -> tuple[dict, dict]:
+        """Visualize assay as holoviews figures"""
         rfu = self.rfu.groupby('sample').mean(dim='well').loc[self.setup.sample]
         std = self.rfu.groupby('sample').std(dim='well', ddof=1).loc[rfu.sample]
         rfu.name = 'fluorescence [RFU]'
@@ -386,6 +391,7 @@ class Assay(mars.Assay):
             'legend': "right", 'legend_cols': 4,
         }
 
+        # TODO: plot standard deviation
         bokeh_renderer = hv.renderer('bokeh')
         fig = rfu.hvplot(by='sample', x='hours',
                          **plot_options) # * rfu.hvplot.area(by='sample', x='hours',

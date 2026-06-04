@@ -353,7 +353,8 @@ class Equilibrium:
                 if not all(res['success'] for res in results):
                     warnings.warn('\n'.join(res.lowest_optimization_result.message
                                             for res in results if not res['success']))
-                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)] # FIXME: where to set self._simplex?
+                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)]
+                # FIXME: where to set self._simplex?
 
         return xr.DataArray(self.crn.post_process_state(equilibrium),
                             initial.coords, name=initial.name)
