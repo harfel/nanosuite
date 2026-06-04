@@ -7,6 +7,7 @@ Added:
 Changed:
 - Assay.rfu now uses 'well' as index. Group and sample are demoted to well coordinates
 - Assay.setup now uses 'sample' as index. Group is demoted to a sample coordinate
+- CRN ParameterProxy now returns values as a pandas Series instead of DataFrames
 
 Removed:
 - Assay.calibrate and Assay.calibrate_* (deprecated since 0.2.4)

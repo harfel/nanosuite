@@ -73,9 +73,8 @@ class ParameterMap(lmfit.Parameters):
                         continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, val)
 
-        def __getattr__(self, attr: str) -> pd.DataFrame:
-            return pd.DataFrame([getattr(self.params[p], attr) for p in self.specializations],
-                                index=self.specializations.index)
+        def __getattr__(self, attr: str) -> pd.Series:
+            return pd.Series([getattr(self.params[p], attr) for p in self.specializations])
 
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)

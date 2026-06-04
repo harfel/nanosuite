@@ -586,9 +586,6 @@ def test_parameter_map_assign_sequence():
         params['k1'].value = [1, 10, 100]
 
 def test_parameter_map_assign_specialized_parameters():
-    model_a = crn.from_string("""
-        A + B -> C; k1
-    """)
     sample_map = pd.DataFrame([["A1", "B", "C"],
                                ["A2", "B", "C"],
                                ["A3", "B", "C"],
@@ -596,16 +593,21 @@ def test_parameter_map_assign_specialized_parameters():
                                ["A2", "B", "C"],
                                ["A3", "B", "C"],
                                ], columns=["A", "B", "C"])
-    model_a.params = model_a.parametrize_for(sample_map, k1=["A"])
+
+    model_a = crn.from_string("""
+        A + B -> A + C; k_amp
+    """)
+    model_a.params = model_a.parametrize_for(sample_map, k_amp=['A'])
+    model_a.params['k_amp'].value = 1e5
 
     model_b = crn.from_string("""
-        A + B <=> C; k1, k2
+        B -> C; k_leak
+        A + B -> C; k_amp
     """)
-    model_b.params = model_b.parametrize_for(sample_map, k1=['A'])
+    model_b.params = model_b.parametrize_for(sample_map, k_amp=['A'])
+    model_b.params['k_amp'].value = model_a.params['k_amp'].value
 
-    vals = model_a.params['k1'].value
-    model_b.params['k1'].value = vals
-
+    assert all(model_b.params['k_amp'].value == model_a.params['k_amp'].value)
 
 def test_parameter_map_assign_dataarray():
     model = crn.from_string("""
@@ -622,7 +624,7 @@ def test_parameter_map_assign_dataarray():
     params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
 
     params['k1'].value = xr.DataArray([1, 10, 100], {'system': [3, 4, 5]})
-    assert all(params['k1'].value[0] == [1, 10, 100, 1, 10, 100])
+    assert all(params['k1'].value == [1, 10, 100, 1, 10, 100])
 
 def test_parameter_map_respects_expressions():
     model = crn.from_string("""
