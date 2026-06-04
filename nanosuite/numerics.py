@@ -217,11 +217,11 @@ class Trajectory:
 
         options = {'xtol': 1e-7} | options
 
-        initial = self.crn.state(initial)
-
         if data.ndim == 2:
             content_dim = data.dims[0]
             initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
+
+        initial = self.crn.state(initial)
 
         cache = Cache(2*len(initial))
 
@@ -353,7 +353,8 @@ class Equilibrium:
                 if not all(res['success'] for res in results):
                     warnings.warn('\n'.join(res.lowest_optimization_result.message
                                             for res in results if not res['success']))
-                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)] # FIXME: where to set self._simplex?
+                equilibrium = [N.T @ result.x + C for result, C in zip(results, initial)]
+                # FIXME: where to set self._simplex?
 
         return xr.DataArray(self.crn.post_process_state(equilibrium),
                             initial.coords, name=initial.name)

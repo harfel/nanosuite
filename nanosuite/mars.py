@@ -2,11 +2,11 @@
 
 Due to proprietary data formats, MARS files cannot be read directly but have
 to be exported to excel. The generated excel files can be loaded with
-Assay(rfu=path_to_excel_rfu_data).
+Assay(rfu_file=path_to_excel_rfu_data).
 """
 from functools import cached_property
 import re
-from typing import cast, Callable, Iterable
+from typing import cast, Callable, Iterable, Sequence
 import warnings
 import lmfit         # type: ignore
 import numpy as np
@@ -29,25 +29,16 @@ class Assay:
     rfu_file: str
         Path of the associated xlsx file (read only)
 
-    rfu: 2D xarray DataArray
-        Fluorescence values of all active wells and time points
-
     all_rfu: 2D xarray DataArray
-        Fluorescence values of all wells and time points
-
-    active_wells: 1D xarray DataArray
-        Wells that have not been blanked by the user
-
-    injections: pandas.Index
-        Times (in seconds) at which injections occurred
+        Fluorescence values of all wells (whether active or not) and time points
 
     setup: 2D xarray DataArray
         Initial concentrations in mol/liter for each sample
+
+    FIXME: document sample_map
     """
     rfu_file: str
     all_rfu: xr.DataArray
-    rfu: xr.DataArray
-    injections: pd.Index
     setup: xr.DataArray|None = None
     sample_map: pd.DataFrame|None = None
 
@@ -55,7 +46,7 @@ class Assay:
     def __init__(self, rfu_file: str, setup_file: str|None = None, *,
                  setup: xr.DataArray|None = None,
                  sample_map: pd.DataFrame|None = None,
-                 groups: dict[str, list[str]|slice]|None = None):
+                 groups: dict[str, Sequence[str]|slice]|xr.DataArray|None = None):
         """A plate reader assay
 
         Parameters
@@ -67,7 +58,7 @@ class Assay:
             path to experimental setup file
 
         setup: xarray.DataArray
-            A 2D DataArray with dimensions content and species denoting initial
+            A 2D DataArray with dimensions sample and species denoting initial
             conditions in mol/liter. Only allowed if setup_file is not provided.
 
         groups: dict
@@ -75,10 +66,9 @@ class Assay:
             e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
             Only allowed it neither setup_file nor setup are provided.
         """
+        groups = groups or {}
         self.rfu_file = rfu_file
-
-        self.all_rfu, self.active_wells, self.injections = self.read_rfu(self.rfu_file,
-                                                                         groups or {})
+        self.all_rfu = self.read_rfu(self.rfu_file)
 
         self.sample_map = sample_map  # may be overwritten by setup_file
 
@@ -92,30 +82,21 @@ class Assay:
                 raise ValueError("Arguments setup_file and sample_map are mutually exclusive")
             self.setup = self.read_setup(setup_file)
         elif isinstance(setup, xr.DataArray):
-            if groups:
-                raise ValueError("Arguments setup and groups are mutually exclusive")
             self.setup = setup
-        elif isinstance(setup, dict):
+        elif isinstance(setup, dict) or setup is None:
             self.setup = xr.DataArray(
-                dims=['content', 'species'],
-                coords={'content': self.all_rfu.indexes['content'].droplevel('well').unique(),
-                        'species': list(setup.keys())})
+                dims=['sample', 'species'],
+                coords={'sample': self.all_rfu.sample.to_series().unique(),
+                        'species': list(setup.keys()) if setup else []})
+        if isinstance(setup, dict):
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
 
-        # reset self.all_rfu index
-        if self.setup is not None:
-            content = self.all_rfu.indexes['content'].droplevel('group').to_frame()
-            content['group'] = content.apply(
-                lambda row: self.setup.sel(sample=row['sample']).group.values[0], axis=1)
-
-            content.set_index('group', append=True, inplace=True)
-            content = content.reorder_levels(['group', 'sample', 'well'])
-            coord = xr.Coordinates.from_pandas_multiindex(content.index, 'content')
-            self.all_rfu = self.all_rfu.assign_coords(coords=coord)
-            self.active_wells = self.active_wells.assign_coords(coords=coord)
-
-        self.rfu = self.all_rfu[self.active_wells]
+        if 'group' in self.setup.coords:
+            # we copy setup groups to rfu groups
+            self.annotate(group=self.setup.group)
+        if groups:
+            self.annotate(group=groups)
 
     def read_setup(self, setup_file: str) -> xr.DataArray:
         """Read plate setup from excel file
@@ -148,17 +129,15 @@ class Assay:
             # remove spurious whitespace
             df = df.replace(r'^\s+$', np.nan, regex=True).dropna(axis=0, how='all')
 
-        # generate groups
-        content = pd.MultiIndex.from_frame(df[df.columns[:2]].ffill(), names=['group', 'sample'])
-        df.set_index(content, inplace=True)
-        df = df[df.columns[2:]]
-        units = [match[1] for s in df.columns[1::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
+        samples = pd.Index(df['Sample ID'].ffill(), name='sample')
+        df.set_index(samples, inplace=True)
+        units = [match[1] for s in df.columns[5::2] if (match:=re.match(r'.*\(([munpfa]M)\)', s))]
         factors = {'mM': 1e-3, 'uM': 1e-6, 'nM': 1e-9, 'pM': 1e-12, 'fM': 1e-15, 'aM': 1e-18}
-        sample_map = df[df.columns[-2*len(units)::2]].set_index(content)
+        sample_map = df[df.columns[-2*len(units)::2]].set_index(samples)
         sample_map.replace([np.nan], [None], inplace=True)
         sample_map.replace('[^a-zA-Zα-ωΑ-Ω0-9_]', '_', regex=True, inplace=True)
         self.sample_map = sample_map
-        concs = df[df.columns[1-2*len(units)::2]].set_index(content)
+        concs = df[df.columns[1-2*len(units)::2]].set_index(samples)
         concs = concs.rename(columns=dict(zip(concs.columns, self.sample_map.columns)))
         fac = np.array([factors[u] for u in units])
         try:
@@ -176,15 +155,14 @@ class Assay:
         # TODO: should controls be optional?
         return xr.DataArray(
             concs,
-            {'content': content, 'species': concs.columns},
-            attrs=attrs
-        ).assign_coords(positive=('content', df['Positive'].values),
-                        negative=('content', df['Negative'].values))
+            {'sample': samples, 'species': concs.columns},
+            attrs=attrs,
+            name='concentration',
+        ).assign_coords(group=('sample', df['Group'].ffill().values),
+                        positive=('sample', df['Positive']),
+                        negative=('sample', df['Negative']))
 
-    def read_rfu(self, rfu_file: str,
-                 groups: dict[str, list[str]|slice]) -> tuple[xr.DataArray,  # all_rfu
-                                                              xr.DataArray,  # active_wells
-                                                              pd.Index]:     # injections
+    def read_rfu(self, rfu_file: str) -> xr.DataArray:
         """Read fluoresence data from Excel
 
         Parameters
@@ -192,22 +170,14 @@ class Assay:
         rfu_file: str
             path to Excel file exported from MARS
 
-        groups: dict
-            mapping of group names to a list or slice of sample names
-            e.g. {'System 1': slice("Sample X1", "Sample X5"), "Control": ["Sample X6"]}
-
         Returns
         -------
-        A three-tuple with the following content:
-        
-        all_rfu: xarray.DataArray
-            Raw RFU values of all wells over time
-
-        active_wells: xarray.DataArray
-            Boolean mask of active wells
-
-        injections: pandas.Index
-            time points at which injections occured
+        An xarray.DataArray of all raw RFU values with 2 dimensions well and time.
+        The well dimension is annotated with a sample coordinate and a coordinate active
+        which denotes whether or not the well had been deactivated in MARS. The time
+        dimension is annotated with coordinates seconds, minutes and hours.
+        DataArray attributes are read from the header section of the excel file, and
+        also contain the list of times where injections occurred. 
         """
         def _parse_time(label, times):
             def convert(string):
@@ -229,7 +199,7 @@ class Assay:
         content_start = df_total[df_total[0]=='Well'].index[0]
         df_header = df_total.iloc[:content_start, :1]
 
-        # extract info from headers, into dictionary
+        # Extract info from headers, into dictionary
         attributes = {}
         for field in df_header[0]:
             if isinstance(field, float):
@@ -244,10 +214,10 @@ class Assay:
 
         deactivated = attributes.pop(
             'Grey fields contain deactivated wells:   /   Disabled by user', '').split('; ')
-        attributes['deactivated_cells'] = ', '.join(deactivated)
+        attributes['deactivated_cells'] = deactivated
 
         # Create main df and eval if it needs to be transposed
-        df_main = df_total.iloc[len(df_header):,]
+        df_main = df_total.iloc[content_start:,]
 
         if df_main.iloc[1,0] == 'Content':
             df_main = df_main.T
@@ -260,42 +230,92 @@ class Assay:
         times = _parse_time(df_main.iloc[0, 1], df_main.iloc[0, 2:])
         main_array = df_main.iloc[1:, 2:].values
 
-        samples = df_main['Content'][1:]
-
-        df_content = df_main[['Content', 'Well']][1:]
-        df_content['group'] = "Unknown"
-        df_content.columns = pd.Index(['sample', 'well', 'group'])
-        df_content = df_content.reindex(columns=['group', 'sample', 'well'])
-        for group, group_samples in groups.items():
-            if isinstance(group_samples, slice):
-                start = samples[samples==group_samples.start].index[0]
-                end = samples[samples==group_samples.stop].index[-1]
-                group_samples = list(samples.loc[start:end].unique())
-            for sample in group_samples:
-                df_content.loc[df_content['sample']==sample, 'group'] = group
-        df_multicontent = pd.MultiIndex.from_frame(df_content)
-
-        # The line below blindly assumes that injections happen over
-        # a single plate reader cycle.
+        # The line below blindly assumes that injections happen over a single plate reader cycle.
         inj_indexes = sorted(set(np.where(main_array == 'Inj.')[1]))
         for index in reversed(inj_indexes):
             main_array = np.delete(main_array, index, 1)
             times = np.delete(times, index, 0)
-        injections = pd.Index([times[index] for index in inj_indexes], name="time")
+        attributes['injections'] = pd.Index([times[index] for index in inj_indexes], name="time")
 
         # from dataframe to xarray
         all_rfu = xr.DataArray(main_array,
-            {"content": df_multicontent, "time": times},
-            name="RFU",
-            attrs=attributes,).astype(float).assign_coords(
-                seconds=('time', times),
-                minutes=('time', times/60),
-                hours=('time', times/3600),
-            )
+                               coords={'well': df_main['Well'][1:],
+                                   'time': times,
+                                   'sample': ('well', df_main['Content'][1:]),
+                                   'active': ('well', [well not in deactivated
+                                                       for well in df_main['Well'][1:]]),
+                                   'seconds': ('time', times),
+                                   'minutes': ('time', times/60),
+                                   'hours': ('time', times/3600)},
+                               dims=('well', 'time'),
+                               attrs=attributes,
+                               name="RFU").astype(float)
 
-        active_wells = ~all_rfu.well.isin(deactivated)
+        return all_rfu
 
-        return all_rfu, active_wells, injections
+    def annotate(self, coords: dict[str, dict[str, Sequence[str]|slice]|xr.DataArray]|None = None,
+                 /, **kwargs: dict[str, Sequence[str]|slice]|xr.DataArray) -> None:
+        """Annotate samples
+
+        This allows to annotate assay samples with arbitrary information.
+        Annotations are added as coordinates to the well coordinate of
+        assay.all_rfu and the sample coordinate of assay.setup. New coordinates
+        are propagated through into assay.rfu, assay.mean and assay.std.
+
+        >>> assay.annotate(system={'variant_a': slice('Sample X1', 'Sample X10'),
+                                   'variant_b': slice('Sample X11', 'Sample X20')})
+        >>> assay.setup[assay.setup.system='variant_a']
+
+        Parameters
+        ----------
+        coords: mapping of coordinate names to sample-associated values.
+            Values are either sequences with the same length as either
+            assay.setup (to annotate samples) or assay.all_rfu (to annotate
+            repeats); or they are mappings where the keys are annotations
+            and values either sequences or slices of samples that should
+            have the associated annotation.
+        """
+        if not coords:
+            coords = {}
+        coords.update(kwargs)
+        coord_samples = self.all_rfu.sample.to_series().unique()
+
+        for name, attrib in coords.items():
+            coord = xr.DataArray(np.full(len(self.all_rfu), 'Unknown', dtype=object),
+                                 self.all_rfu.well.coords)
+            if isinstance(attrib, dict):
+                for attr, target_samples in attrib.items():
+                    if isinstance(target_samples, slice):
+                        target_samples = (coord.sel(sample=target_samples)
+                                               .sample.to_series().unique())
+                    for sample in target_samples:
+                        coord[coord.sample == sample] = attr
+            elif len(attrib) == len(coord_samples):
+                for sample, attr in zip(coord_samples, attrib):
+                    coord[coord.sample == sample] = attr
+            elif len(attrib) == len(coord):
+                coord = attrib
+            else:
+                raise ValueError(f"attrib must be of length {len(coord)} or {len(coord_samples)}")
+            coords[name] = coord
+
+        self.all_rfu = self.all_rfu.assign_coords(coords)
+        if self.setup is not None:
+            self.setup = self.setup.assign_coords({name: ('sample', coord.groupby('sample')
+                                                                         .map(lambda s: s[0])
+                                                                         .drop_vars(['well'])
+                                                                         .loc[self.setup.sample]
+                                                                         .data)
+                                                   for name, coord in coords.items()})
+
+        try:
+            del self.mean
+        except AttributeError:
+            pass
+        try:
+            del self.std
+        except AttributeError:
+            pass
 
     def __repr__(self) -> str:
         return f'<Assay "{self.rfu_file}">'
@@ -306,36 +326,36 @@ class Assay:
     def deactivate(self, wells: str|list[str]) -> None:
         """Deactivate a well or list of wells
 
-        Activating and deactivating wells will set a new Assay.rfu --
-        invalidating any reference to the previous rfu attribute.
+        Activating and deactivating wells will set a new Assay.all_rfu --
+        invalidating any reference to the previous attribute.
         """
         if isinstance(wells, str):
             wells = [wells]
-        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), False)
-        self.rfu = self.all_rfu[self.active_wells]
-        self.rfu.attrs['deactivated_cells'] = ', '.join(
-            self.all_rfu[~self.active_wells].well.values)
-        if hasattr(self, 'mean'):
-            del self.mean
-        if hasattr(self, 'std'):
-            del self.std
+        self.all_rfu.active[self.all_rfu.well.isin(wells)] = False
+        self.all_rfu.attrs['deactivated_cells'] = list(
+            self.all_rfu.well[~self.all_rfu.active].data)
+        for attr in ('rfu', 'mean', 'std'):
+            try:
+                delattr(self, attr)
+            except AttributeError:
+                pass
 
     def activate(self, wells: str|list[str]) -> None:
         """Activate a well or list of wells
 
-        Activating and deactivating wells will set a new Assay.rfu --
-        invalidating any reference to the previous rfu attribute.
+        Activating and deactivating wells will set a new Assay.all_rfu --
+        invalidating any reference to the previous attribute.
         """
         if isinstance(wells, str):
             wells = [wells]
-        self.active_wells = self.active_wells.where(~self.active_wells.well.isin(wells), True)
-        self.rfu = self.all_rfu[self.active_wells]
-        self.rfu.attrs['deactivated_cells'] = ', '.join(
-            self.all_rfu[~self.active_wells].well.values)
-        if hasattr(self, 'mean'):
-            del self.mean
-        if hasattr(self, 'std'):
-            del self.std
+        self.all_rfu.active[self.all_rfu.well.isin(wells)] = True
+        self.all_rfu.attrs['deactivated_cells'] = list(
+            self.all_rfu.well[~self.all_rfu.active].data)
+        for attr in ('rfu', 'mean', 'std'):
+            try:
+                delattr(self, attr)
+            except AttributeError:
+                pass
 
     @cached_property
     def mean(self) -> xr.DataArray:
@@ -344,20 +364,24 @@ class Assay:
         Returns
         -------
         DataArray of average fluorescence of all active wells that belong to
-        the same sample.
+        the same sample. Deactivated wells are not included in the mean
+        fluorescence.
         """
-        samples = pd.Series(self.rfu.sample.data).unique()
-        return xr.DataArray(
-            [self.rfu.sel(sample=sample).mean(dim='content').data for sample in samples],
-            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
-             'time': self.rfu.time,
-             'seconds': self.rfu.seconds,
-             'minutes': self.rfu.minutes,
-             'hours': self.rfu.hours},
-            dims=('content', 'time'),
-            attrs=self.rfu.attrs,
-            name=self.rfu.name
-        )
+        def all_same(values):
+            return (values == values[0]).all()
+
+        # Retain coordinates that have homogeneous values in all samples
+        homogeneous = {name: coord.groupby('sample').first()
+                       for name, coord in self.rfu.coords.items()
+                       if 'well' in coord.dims
+                       and coord.groupby('sample').map(all_same).all('sample')}
+
+        result = (self.rfu.sel(active=True)
+                          .groupby('sample').mean('well')
+                          .set_xindex('sample')
+                          .assign_coords(homogeneous)
+                          .loc[self.setup.sample])
+        return result
 
     @cached_property
     def std(self) -> xr.DataArray:
@@ -365,22 +389,29 @@ class Assay:
 
         Returns
         -------
-        DataArray of fluorescence standard deviation of all active wells
-        that belong to the same sample.
+        DataArray of fluorescence sample standard deviations of all active
+        wells that belong to the same sample. Deactivated wells are not included
+        in the standard deviation.
         """
-        samples = pd.Series(self.rfu.sample.data).unique()
-        return xr.DataArray(
-            [self.rfu.sel(sample=sample).std(ddof=1, dim='content').data
-             for sample in samples],
-            {'content': self.rfu.indexes['content'].droplevel('well').unique(),
-             'time': self.rfu.time,
-             'seconds': self.rfu.seconds,
-             'minutes': self.rfu.minutes,
-             'hours': self.rfu.hours},
-            dims=('content', 'time'),
-            attrs=self.rfu.attrs,
-            name=self.rfu.name
-        )
+        def all_same(values):
+            return (values == values[0]).all()
+
+        # Retain coordinates that have homogeneous values in all samples
+        homogeneous = {name: coord.groupby('sample').first().loc[self.setup.sample]
+                       for name, coord in self.rfu.coords.items()
+                       if 'well' in coord.dims
+                       and coord.groupby('sample').map(all_same).all('sample')}
+
+        return (self.rfu.sel(active=True)
+                    .groupby('sample').std('well', ddof=1)
+                    .set_xindex('sample')
+                    .assign_coords(homogeneous)
+                    .loc[self.setup.sample])
+
+    @cached_property
+    def rfu(self):
+        """Raw RFU values of all activated wells"""
+        return self.all_rfu.sel(active=True)
 
     @property
     def plate(self):
@@ -398,7 +429,7 @@ class Assay:
         *Deprecated since 0.3.0*: use Assay.all_rfu instead"""
         warnings.warn("Assay.full_plate is deprecated. Use Assay.full_rfu instead",
                       DeprecationWarning, stacklevel=2)
-        return self.all_rfu
+        return self.rfu
 
     def plate_setup(self, conc: dict[str, float|Iterable]|None = None,
                     **kwargs: float|Iterable) -> xr.DataArray:
@@ -427,7 +458,7 @@ class Assay:
 
         Returns
         -------
-        An xarray DataArray with dimensions 'content' (taken from Assay.plate)
+        An xarray DataArray with dimensions 'sample' (taken from Assay.plate)
         and 'species', where each sample has species concentrations as
         provided in the method arguments.
         """
@@ -437,225 +468,12 @@ class Assay:
         conc = conc if conc else {}
         conc.update(kwargs)
         array = xr.DataArray(
-            dims=['content', 'species'],
-            coords={'content': self.rfu.indexes['content'].droplevel('well').unique(),
+            dims=['sample', 'species'],
+            coords={'sample': self.rfu.sample.to_series().unique(),
                     'species': list(conc.keys())})
         for species, values in conc.items():
             array.loc[..., species] = values
         return array
-
-    def calibrate(  # pylint: disable=too-many-arguments
-        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
-        pos_rfu: xr.DataArray|None = None,
-        neg_rfu: xr.DataArray|None = None, *,
-        method: str = 'direct',
-        error: Callable[[float], float]|None = None,
-    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
-        """Compute transforms between modelled RFU values and concentrations
-
-        *Deprecated since 0.2.4*: Use Assay.convert
-
-        Parameters
-        ----------
-        pos_conc, neg_conc: xr.DataArray
-            Concentration vector of the positive and negative controls
-        pos_rfu, neg_rfu: optional xr.DataArray
-            RFU values of positive and negative controls
-            (for direct method only)
-        method: 'direct' (default) or 'relaxation'
-        error: optional function mapping float on float values
-            Error model used for fitting when using the 'relaxation' method 
-
-        Returns
-        -------
-        Two functions from_rfu and to_rfu with signatures
-
-        fromRFU(rfu: xr.DataArray) -> xr.DataArray
-        toRFU(rfu: xr.DataArray) -> xr.DataArray
-
-        See documentation of the specialized calibration methods for detail.
-        """
-        warnings.warn("Assay.calibrate is deprecated and will be removed in a future "
-                      "version of nanosuite. Change your code to use Assay.convert.",
-                      DeprecationWarning, stacklevel=2)
-
-        if method == 'direct':
-            if error is not None:
-                warnings.warn("Argument error is ignored with method 'direct'.")
-            return self.calibrate_direct(pos_conc, neg_conc, pos_rfu, neg_rfu)
-        if method == 'relaxation':
-            return self.calibrate_relaxation(pos_conc, neg_conc, pos_rfu, neg_rfu, error=error)
-        raise ValueError(f"""Unsupported calibration method: '{method}'
-        Needs to be one of: direct [default], relaxation""")
-
-    def calibrate_relaxation(   # pylint: disable=too-many-arguments
-        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
-        pos_rfu: xr.DataArray|None = None,
-        neg_rfu: xr.DataArray|None = None, *,
-        error: Callable[[float], float]|None = None,
-    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
-        """Compute transforms between modelled RFU values and concentrations
-
-        Deprecated since 0.2.4: Use Assay.convert_relexation
-
-        Parameters
-        ----------
-        pos_conc, neg_conc: xr.DataArray
-            Concentration vector of the positive and negative controls
-        error: optional function mapping float on float values
-            If provided, the function should return the expected
-            measurement error for a given fluorescence.
-
-        Returns
-        -------
-        Two functions from_rfu and to_rfu with signatures
-
-        fromRFU(rfu: xr.DataArray) -> xr.DataArray
-        toRFU(rfu: xr.DataArray) -> xr.DataArray
-
-
-        Same as Assay.calibrate_direct, but calibration is based on a
-        double exponential relaxation model that is fitted against
-        the controls. Specifically, the model assumes that fluoresence
-        quickly equilibrates towards an equilibrium value that itself
-        slowly equilibrates over time.
-        """
-        pos_rfu = (
-            pos_rfu
-            if pos_rfu is not None
-            else self.rfu[self.rfu.sample.isin(pos_conc.sample)].mean(axis=0)
-        )
-        neg_rfu = (
-            neg_rfu
-            if neg_rfu is not None
-            else self.rfu[self.rfu.sample.isin(neg_conc.sample)].mean(axis=0)
-        )
-        error = error if error is not None else lambda rfu: 1.
-
-        controls = self.rfu[self.rfu.sample.isin(pos_rfu.sample)
-                              | self.rfu.sample.isin(neg_rfu.sample)]
-
-        def double_relaxation(time, r_1, r_2, rfu_0, rfu_1, rfu_inf):   # pylint: disable=too-many-arguments
-            if r_1 == r_2:
-                return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
-                        + r_1*(rfu_1 - rfu_inf)*time*np.exp(-r_1*time))
-            return (rfu_inf + (rfu_0 - rfu_inf)*np.exp(-r_1*time)
-                    + r_1*(rfu_1 - rfu_inf)/(r_1 - r_2)*(np.exp(-r_2*time)-np.exp(-r_1*time)))
-
-        def well_model(time, params):
-            negative = double_relaxation(
-                time,
-                params['r1'], params['r2'],
-                params['N0'], params['N1'], params['Ninf']
-            )
-            positive = double_relaxation(
-                time,
-                params['r1'], params['r2'],
-                params['P0'], params['P1'], params['Pinf']
-            )
-            return np.array([
-                positive if sample in pos_conc.sample else negative
-                for sample in controls.sample.data
-            ])
-
-        def residuals_for(data):
-            def residuals(params):
-                model = well_model(data.time, params)
-                return (data-model)/error(data)
-            return residuals
-
-        split = controls.shape[-1]//5
-        params = lmfit.create_params(
-            r1 = {'value': float(10/controls.time[split]) , 'min': 0., 'vary': True},
-            r2 = {'value': float(1/controls.time[-1]), 'min': 0., 'vary': True},
-            N0 = {'value': float(controls[:3].mean(axis=0)[0]), 'min': 0.},
-            N1 = {'value': float(controls[:3].mean(axis=0)[split]), 'min': 0.},
-            Ninf = {'value': float(controls[:3].mean(axis=0)[-1]), 'min': 0.},
-            P0 = {'value': float(controls[3:].mean(axis=0)[0]), 'min': 0.},
-            P1 = {'value': float(controls[3:].mean(axis=0)[split]), 'min': 0.},
-            Pinf = {'value': float(controls[3:].mean(axis=0)[-1]), 'min': 0.},
-        )
-        fit = lmfit.minimize(residuals_for(controls), params)
-
-        neg_model = double_relaxation(
-            controls.time, fit.params['r1'], fit.params['r2'],
-            fit.params['N0'], fit.params['N1'], fit.params['Ninf']
-        )
-
-        pos_model = double_relaxation(
-            controls.time, fit.params['r1'], fit.params['r2'],
-            fit.params['P0'], fit.params['P1'], fit.params['Pinf']
-        )
-
-        return self.calibrate_direct(pos_conc, neg_conc, pos_model, neg_model)
-
-    def calibrate_direct(
-        self, pos_conc: xr.DataArray, neg_conc: xr.DataArray,
-        pos_rfu=None, neg_rfu=None
-    ) -> tuple[Callable[[xr.DataArray], xr.DataArray], Callable[[xr.DataArray], xr.DataArray]]:
-        """Compute transforms between raw RFU values and concentrations
-
-        Deprecated since 0.2.4: Use Assay.convert_direct
-
-        Transforms are based on the linear relations
-
-        (rfu-neg_rfu)/(pos_rfu-neg_rfu) = (conc-neg_conc)/(pos_conc-neg_conc)
-
-        where the left hand side isa linear interpolation from negative
-        to positive control RFU values and the right hand side expresses
-        the reaction coordinate from neg_conc to pos_conc.
-
-        Parameters
-        ----------
-        pos_conc: xarray.DataArray
-            Concentrations associated with positive control
-        neg_conc: xarray.DataArray
-            Concentrations associated with negative control
-        pos_rfu: optional xarray.DataArray
-            RFU values of the positive control            
-        neg_rfu: optional xarray.DataArray
-            RFU values of the negative control
-
-        If pos_rfu or neg_rfu are not provided, the method uses
-        the mean fluorescence values of all wells associated with
-        pos_conc.sample and neg_conc.sample.
-
-        Returns
-        -------
-        Two functions from_rfu and to_rfu with signatures
-
-        fromRFU(rfu: xr.DataArray) -> xr.DataArray
-        toRFU(rfu: xr.DataArray) -> xr.DataArray
-        """
-        if len(pos_conc.sample) > 1:
-            assert not any(pos_conc.std(axis=pos_conc.get_axis_num('sample')))
-        if len(neg_conc.sample) > 1:
-            assert not any(neg_conc.std(axis=neg_conc.get_axis_num('sample')))
-
-        pos_rfu = (
-            pos_rfu
-            if pos_rfu is not None
-            else self.rfu[self.rfu.sample.isin(pos_conc.sample)].mean(axis=0)
-        )
-        neg_rfu = (
-            neg_rfu
-            if neg_rfu is not None
-            else self.rfu[self.rfu.sample.isin(neg_conc.sample)].mean(axis=0)
-        )
-
-        pos_conc = pos_conc.mean(axis=pos_conc.get_axis_num('sample'))
-        neg_conc = neg_conc.mean(axis=neg_conc.get_axis_num('sample'))
-
-        def from_rfu(rfu):
-            return neg_conc + (pos_conc-neg_conc) * (rfu-neg_rfu)/(pos_rfu-neg_rfu)
-        def to_rfu(conc):
-            rfu = (neg_rfu + (pos_rfu-neg_rfu)
-                   * ((conc-neg_conc)/(pos_conc-neg_conc))
-                        .where(pos_conc != neg_conc)
-                        .mean(axis=conc.get_axis_num("species")))
-            rfu.name = "RFU"
-            return rfu.transpose()
-        return from_rfu, to_rfu
 
     def convert(
         self, pos_rfu: xr.DataArray, neg_rfu: xr.DataArray|None = None,
@@ -729,11 +547,12 @@ class Assay:
         toRFU(rfu: xr.DataArray) -> xr.DataArray
         """
         neg_rfu = neg_rfu if neg_rfu is not None else 0*pos_rfu
-        pos = pos_rfu.mean(dim='content') if len(pos_rfu.dims)>1 else pos_rfu
-        neg = neg_rfu.mean(dim='content') if len(neg_rfu.dims)>1 else neg_rfu
+        pos = pos_rfu.mean(axis=0) if len(pos_rfu.dims)>1 else pos_rfu
+        neg = neg_rfu.mean(axis=0) if len(neg_rfu.dims)>1 else neg_rfu
         pos_conc = pos_conc if isinstance(pos_conc, xr.DataArray) else xr.DataArray(pos_conc)
         neg_conc = neg_conc if isinstance(neg_conc, xr.DataArray) else xr.DataArray(neg_conc)
-        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='content', fill_value=0.)
+        pos_conc, neg_conc = xr.concat([pos_conc, neg_conc], dim='content',
+                                       fill_value=0., join='outer')
 
         def from_rfu(rfu) :
             return (neg_conc + (pos_conc-neg_conc) * (rfu-neg)/(pos-neg)
@@ -856,7 +675,7 @@ class Assay:
 
         Returns
         -------
-        An xarray.DataArray with dimensions (content, species) with
+        An xarray.DataArray with dimensions (sample, species) with
         interpolated concentration values.
         """
         # TODO: allow missing negative controls
@@ -867,10 +686,10 @@ class Assay:
         if self.setup is None:
             raise ValueError('to_concentrations requires Assay.setup')
 
-        pos_controls = self.setup.positive.dropna('content')
-        neg_controls = self.setup.negative.dropna('content')
+        pos_controls = self.setup.positive.dropna('sample')
+        neg_controls = self.setup.negative.dropna('sample')
 
-        if not pos_controls.content.equals(neg_controls.content):
+        if not pos_controls.sample.equals(neg_controls.sample):
             # TODO: just warn and proceed with overlap
             raise ValueError("All samples must either have no control or two controls.")
 
@@ -881,7 +700,7 @@ class Assay:
         controls = xr.concat([pos_controls, neg_controls],
                              pd.Index(['positive', 'negative'], name='control'))
 
-        rfu = self.mean.reset_index(["group"], drop=True)
+        rfu = self.mean
 
         # pos_rfu and neg_rfu are xarrays with the same shape as rfu. for each sample
         # the array denotes the rfu values of the corresponding controls
@@ -890,7 +709,7 @@ class Assay:
         pos_rfu = rfu.loc[controls.sel(control='positive')]
         from_rfu, _ = self.convert(pos_rfu, neg_rfu, pos_conc, neg_conc,
                                    method=method, **method_options)
-        concs = from_rfu(self.mean.sel(content=controls.content))
+        concs = from_rfu(self.mean.sel(sample=controls.sample))
         concs.name = 'contentation'
         if 'control' in concs.coords:
             return concs.drop_vars(['control'])

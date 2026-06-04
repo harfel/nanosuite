@@ -91,4 +91,4 @@ Please get in touch if you would like to contribute to the project.
 
 License
 -------
-Copyright 2025 Nanovery Ltd. under the MIT License agreement.
+Copyright 2025-2026 Nanovery Ltd. under the MIT License agreement.

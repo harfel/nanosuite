@@ -9,11 +9,10 @@ from itertools import chain, cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
 import holoviews as hv
-import hvplot.xarray
 from IPython import display                # type: ignore
 import itables
 import lmfit                               # type: ignore
-from matplotlib import colormaps           # type: ignore
+from matplotlib import colormaps           # type: ignore  # TODO: remove matplotlib dependency
 from matplotlib.figure import Figure       # type: ignore
 import numpy as np
 import pandas as pd
@@ -89,9 +88,11 @@ class Trajectory(numerics.Trajectory):
             *, iter_cb: Callable|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         if iter_cb or not interactive:
-            return super().fit(data, initial, observe, conversion, error, iter_cb=iter_cb, **options)
+            return super().fit(data, initial, observe, conversion, error, iter_cb=iter_cb,
+                               **options)
         with TrajectoryFitProgress(self, data, observe, conversion, error) as progress:
-            return super().fit(data, initial, observe, conversion, error, iter_cb=progress, **options)
+            return super().fit(data, initial, observe, conversion, error, iter_cb=progress,
+                               **options)
 
 
 class Equilibrium(numerics.Equilibrium):
@@ -253,7 +254,7 @@ class Assay(mars.Assay):
     def __init__(self, *args, **opts):
         super().__init__(*args, **opts)
         self.palette = xr.DataArray(np.zeros((len(self.setup), 4)),
-                                    {'content': self.setup.content,
+                                    {'sample': self.setup.sample,
                                      'channel': ['R', 'G', 'B', 'A']})
         self.set_default_palette()
 
@@ -268,7 +269,7 @@ class Assay(mars.Assay):
         buf.seek(0)
         return buf.read()
 
-    def _repr_html_(self, **kwargs) -> str:
+    def _repr_html_(self, **_) -> str:
         # pylint: disable=protected-access
         cols = [[(species, 'type'), (species, 'conc [M]')] for species in self.sample_map.columns]
         setup = pd.DataFrame(index=self.sample_map.index,
@@ -296,9 +297,12 @@ class Assay(mars.Assay):
               </script>
 
               <div class="tab">
-                <button onclick="openTab(event, 'rfu')" style="border: 1px solid grey">RFU</button>
-                <button onclick="openTab(event, 'setup')" style="border: 1px solid grey">Setup</button>
-                <button onClick="openTab(event, 'info')" style="border: 1px solid grey">Info</button>
+                <button onclick="openTab(event, 'rfu')"
+                        style="border: 1px solid grey">RFU</button>
+                <button onclick="openTab(event, 'setup')"
+                        style="border: 1px solid grey">Setup</button>
+                <button onClick="openTab(event, 'info')"
+                        style="border: 1px solid grey">Info</button>
               </div>
 
               <div>
@@ -332,14 +336,13 @@ class Assay(mars.Assay):
         negative = np.unique(self.setup.negative.dropna(dim=content_dim))
         controls = np.concatenate([positive, negative])
         for sample in controls:
-            self.palette.loc[self.setup[self.setup.sample==sample].content] = np.array([0, 0, 0, 1])
-        #groups = self.setup.groupby('group')
-        groups = self.setup[~self.setup.sample.isin(controls)].groupby('group')
+            self.palette.loc[self.setup[self.setup.sample==sample].sample] = np.array([0, 0, 0, 1])
+        groups = self.setup[~self.setup.sample.isin(controls)].groupby('group') # FIXME: groups don't exist anymore
         cmaps = [colormaps[name] for name in ('Reds', 'Greens', 'Blues', 'Oranges', 'Purples')]
         for (name, group), gradient in zip(groups, cycle(cmaps)):
             samples = len(group)+len(group)//4
             for idx, sample in enumerate(group, start=len(group)//4):
-                self.palette.loc[sample.content, :] = np.array(gradient(idx/samples))
+                self.palette.loc[sample.sample, :] = np.array(gradient(idx/samples))
 
     def set_palette(self, color_by, colormap: str = 'brg', portion: tuple[float, float] = (0,1)):
         """Set distinct gradient for each sample group."""
@@ -354,10 +357,10 @@ class Assay(mars.Assay):
             f = start + group_idx/len(groups)*(end-start)
             primary = np.array(group_colors(f))
             base = np.array([1, 1, 1, 1])
-            for count, (content, _) in enumerate(group.iterrows(), start=1):
+            for count, (sample, _) in enumerate(group.iterrows(), start=1):
                 f = count/len(group)
                 color = f*primary + (1-f)*base
-                self.palette.loc[{'content': content}] = color
+                self.palette.loc[{'sample': sample}] = color
 
     def plot(self) -> Figure:
         """Visualize assay as matplotlib figure"""
@@ -367,7 +370,7 @@ class Assay(mars.Assay):
         ax.set_ylabel("RFU")
         ax.set_title(self.rfu.attrs["Test Name"])
         for sample, err in zip(self.mean, self.std):
-            color = self.palette.sel(content=sample.content).data
+            color = self.palette.sel(sample=sample.sample).data
             ax.fill_between(sample.minutes, sample-err, sample+err, color=color, alpha=0.25)
             ax.plot(sample.minutes, sample, c=color, label=str(sample.sample.values))
         ax.grid()
@@ -376,8 +379,9 @@ class Assay(mars.Assay):
         return fig
 
     def plot_bokeh(self) -> tuple[dict, dict]:
-        rfu = self.rfu.groupby('sample').mean(dim='content').loc[self.setup.sample]
-        std = self.rfu.groupby('sample').std(dim='content', ddof=1).loc[rfu.sample]
+        """Visualize assay as holoviews figures"""
+        rfu = self.rfu.groupby('sample').mean(dim='well').loc[self.setup.sample]
+        std = self.rfu.groupby('sample').std(dim='well', ddof=1).loc[rfu.sample]
         rfu.name = 'fluorescence [RFU]'
         plot_options = {
             'color': hv.plotting.util.process_cmap('Turbo', len(rfu)),
@@ -387,6 +391,7 @@ class Assay(mars.Assay):
             'legend': "right", 'legend_cols': 4,
         }
 
+        # TODO: plot standard deviation
         bokeh_renderer = hv.renderer('bokeh')
         fig = rfu.hvplot(by='sample', x='hours',
                          **plot_options) # * rfu.hvplot.area(by='sample', x='hours',

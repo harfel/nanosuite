@@ -16,6 +16,7 @@ from . import numerics
 
 Reactants = tuple[tuple[str, int], ...] # TODO: support generic tuple[tuple[T, int], ...]
 
+# TODO: should these be moved into numerics.Trajectory?
 DEFAULT_INTEGRATION_START = 0
 DEFAULT_INTEGRATION_END = 100
 DEFAULT_INTEGRATION_POINTS = 501
@@ -44,7 +45,7 @@ class ParameterMap(lmfit.Parameters):
         ParameterProxy's are returned by ParameterMap.__getitem__ when accessing
         a general parameter that is overloaded with specializations. The proxy
         allows to set attributes of all specializations of the general parameter
-        either from a sequence of values or from a single value.
+        either from a DataArray, a sequence of values or from a single value.
         """
         # pylint: disable=too-few-public-methods
         params: ParameterMap
@@ -54,9 +55,12 @@ class ParameterMap(lmfit.Parameters):
             self.__dict__.update(specializations=specializations, params=parameter_map)
 
         def __setattr__(self, attr: str, val: Any) -> None:
-            if isinstance(val, xr.DataArray):
-                val = val.data
-            if isinstance(val, Sequence|np.ndarray|pd.Series):
+            if isinstance(val, xr.DataArray): # TODO: could also accept dict and pd.DataFrame
+                samples = val.coords[val.dims[0]]
+                params = self.specializations.loc[samples]
+                for param, value in zip(params, val.data):
+                    self.params[param].value = value
+            elif isinstance(val, Sequence|np.ndarray|pd.Series|pd.DataFrame):
                 if len(val) != len(self.specializations):
                     raise ValueError(f"Must provide {len(self.specializations)} values")
                 for special, value in zip(self.specializations, val):
@@ -69,9 +73,8 @@ class ParameterMap(lmfit.Parameters):
                         continue  # don't alter ParameterMap.zero
                     setattr(self.params[special], attr, val)
 
-        def __getattr__(self, attr: str) -> pd.DataFrame:
-            return pd.DataFrame([getattr(self.params[p], attr) for p in self.specializations],
-                                index=self.specializations.index)
+        def __getattr__(self, attr: str) -> pd.Series:
+            return pd.Series([getattr(self.params[p], attr) for p in self.specializations])
 
     def __init__(self, sample_map: pd.DataFrame|None = None, usersyms: Mapping|None = None):
         super().__init__(usersyms)

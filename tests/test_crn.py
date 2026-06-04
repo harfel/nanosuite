@@ -535,11 +535,11 @@ def test_parameter_map():
 
     params = system.parametrize_for(assay.sample_map, k1=['Probe'])
 
-    assert params.mapping.shape == (len(assay.setup.content), 3)
-    assert params.mapping.loc[("Responses", "Sample X1"), 'k1'] == 'k1_Probe_1'
-    assert params.mapping.loc[("Responses", "Sample X7"), 'k1'] == 'k1_Probe_2'
-    assert params.mapping.loc[("Negative", "Sample X10"), 'k1'] == 'k1_Probe_1'
-    assert params.mapping.loc[("Responses", "Sample X1"), 'k2'] == 'k2'
+    assert params.mapping.shape == (len(assay.setup.sample), 3)
+    assert params.mapping.loc["Sample X1", 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc["Sample X7", 'k1'] == 'k1_Probe_2'
+    assert params.mapping.loc["Sample X10", 'k1'] == 'k1_Probe_1'
+    assert params.mapping.loc["Sample X1", 'k2'] == 'k2'
     assert len(params) == 4
     assert len(params.general_params) == 1
 
@@ -584,6 +584,47 @@ def test_parameter_map_assign_sequence():
 
     with pytest.raises(ValueError):
         params['k1'].value = [1, 10, 100]
+
+def test_parameter_map_assign_specialized_parameters():
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ], columns=["A", "B", "C"])
+
+    model_a = crn.from_string("""
+        A + B -> A + C; k_amp
+    """)
+    model_a.params = model_a.parametrize_for(sample_map, k_amp=['A'])
+    model_a.params['k_amp'].value = 1e5
+
+    model_b = crn.from_string("""
+        B -> C; k_leak
+        A + B -> C; k_amp
+    """)
+    model_b.params = model_b.parametrize_for(sample_map, k_amp=['A'])
+    model_b.params['k_amp'].value = model_a.params['k_amp'].value
+
+    assert all(model_b.params['k_amp'].value == model_a.params['k_amp'].value)
+
+def test_parameter_map_assign_dataarray():
+    model = crn.from_string("""
+        A + B <=> C; k1, k2
+    """)
+    sample_map = pd.DataFrame([["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ["A1", "B", "C"],
+                               ["A2", "B", "C"],
+                               ["A3", "B", "C"],
+                               ],
+                              columns=["A", "B", "C"]).rename_axis(index='system')
+    params = model.parametrize_for(sample_map, k1=["A"], k2=['A'])
+
+    params['k1'].value = xr.DataArray([1, 10, 100], {'system': [3, 4, 5]})
+    assert all(params['k1'].value == [1, 10, 100, 1, 10, 100])
 
 def test_parameter_map_respects_expressions():
     model = crn.from_string("""
