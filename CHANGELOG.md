@@ -13,6 +13,11 @@ Removed:
 - Assay.calibrate and Assay.calibrate_* (deprecated since 0.2.4)
 
 
+0.3.2 (Unreleased)
+------------------
+Fixed:
+- Fixed issue in assay explorer
+
 0.3.1
 -----
 

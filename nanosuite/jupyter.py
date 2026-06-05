@@ -9,6 +9,8 @@ from itertools import chain, cycle
 import io
 from typing import Any, Callable, Iterable, Sequence
 import holoviews as hv
+import holoviews.plotting as hv_plotting
+import hvplot.xarray
 from IPython import display                # type: ignore
 import itables
 import lmfit                               # type: ignore
@@ -384,7 +386,7 @@ class Assay(mars.Assay):
         std = self.rfu.groupby('sample').std(dim='well', ddof=1).loc[rfu.sample]
         rfu.name = 'fluorescence [RFU]'
         plot_options = {
-            'color': hv.plotting.util.process_cmap('Turbo', len(rfu)),
+            'color': hv_plotting.util.process_cmap('Turbo', len(rfu)),
             'frame_width': 400, 'aspect': 4/3,
             'grid': True,
             'toolbar': "above", 'autohide_toolbar': True,
