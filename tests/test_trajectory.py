@@ -93,7 +93,6 @@ def test_eval_teval_accepts_scalar_arrays():
     assert result.time[-1] == 4
     assert len(result.time) == ns.crn.DEFAULT_INTEGRATION_POINTS
 
-@deprecated_feature
 def test_fit():
     model = ns.crn.from_string("""A -> Z; k""")
     model.params['t0'].vary = False
@@ -102,7 +101,7 @@ def test_fit():
     data = xr.DataArray([0.8], {'time': [10]})
     k = -np.log(0.2)/10
 
-    result = traj.fit(data, initial, conversion=lambda state: state.sel(species='Z'))
+    result = traj.fit(data, initial, observe='Z')
 
     assert result.params['k'].value == pytest.approx(k)
 

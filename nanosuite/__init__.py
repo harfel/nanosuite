@@ -2,6 +2,9 @@
 
 Toolset for working with experimental DNA nanotechnology.
 """
+import jax
+
+
 __version__ = '0.4.0rc1'
 
 
@@ -16,6 +19,9 @@ def _is_notebook() -> bool:
         return False  # Other type (?)
     except NameError:
         return False      # Probably standard Python interpreter
+
+# enforce JAX 64 bit mode
+jax.config.update("jax_enable_x64", True)
 
 
 if _is_notebook():

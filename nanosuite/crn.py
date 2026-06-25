@@ -352,8 +352,8 @@ class CRN:
 
         Returns
         -------
-        A 2D numpy array denoting reaction rate constants among reaction
-        complexes.
+        Either a 2D jnp array denoting the reaction rate constant matrix among reaction
+        complexes, or a 3D 'stack' of such matrices if params.mapping has a length > 0.
         """
         n = len(self.complexes)
         rate_constants = np.zeros((n, n))
@@ -369,6 +369,44 @@ class CRN:
                 rate_constants[i, j] = kf if kf != float('inf') else 0.
                 rate_constants[j, i] = kr if kr != float('inf') else 0.
         return rate_constants
+
+
+        #n = len(self.complexes)
+        #m = (len(params.mapping) or 1) if isinstance(params, ParameterMap) else 1
+        #     # FIXME: what if params came from specification_for
+        #entries = []
+        #
+        #for (educts, products), (forward, backward) in self.reactions.items():
+        #    j = self.complexes.index(educts)
+        #    i = self.complexes.index(products)
+        #
+        #    kf_val = params[forward].value if hasattr(params[forward],'value') else params[forward]
+        #    kr_val = ((params[backward].value if hasattr(params[backward], 'value')
+        #               else params[backward] if backward in params else jnp.zeros((m,)))
+        #              if backward else jnp.zeros((m,)))
+        #
+        #    kf = jnp.asarray(kf_val, float)
+        #    kr = jnp.asarray(kr_val, float)
+        #
+        #    if burst:
+        #        val_ij = jnp.where(kf == float('inf'), jnp.ones((m,)), jnp.zeros((m,)))
+        #        val_ji = jnp.where(kr == float('inf'), jnp.ones((m,)), jnp.zeros((m,)))
+        #    else:
+        #        val_ij = jnp.where(kf != float('inf'), kf, jnp.zeros((m,)))
+        #        val_ji = jnp.where(kr != float('inf'), kr, jnp.zeros((m,)))
+        #
+        #    entries.append((i, j, val_ij))
+        #    entries.append((j, i, val_ji))
+        #
+        #if not entries:
+        #    return jnp.zeros((m, n, n)) if len(params.mapping) else jnp.zeros((n, n))
+        #
+        #rows = jnp.array([e[0] for e in entries])
+        #cols = jnp.array([e[1] for e in entries])
+        #vals = jnp.array([e[2] for e in entries])
+        #
+        #result = jnp.zeros((m, n, n)).at[..., rows, cols].add(vals.T)
+        #return result if isinstance(params, ParameterMap) and len(params.mapping) else result[0]
 
     def get_equilibrium_constants(self,
                                   params: dict[str, lmfit.Parameter]|None = None) -> np.ndarray:

@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import pickle
 import pytest
+import jax.numpy as jnp
 import lmfit  # type: ignore
 import numpy as np
 import pandas as pd
@@ -211,7 +212,7 @@ def test_burst_reactions(reactions, initial, outcome):
     test_crn = crn.from_string(reactions)
     initial = xr.DataArray(initial, {'species': test_crn.species})
     traj = test_crn.trajectory().eval(initial)
-    assert (abs(traj.sel(time=0.) - outcome) < 1e-5).all()
+    assert (abs(traj.sel(time=0.) - jnp.array(outcome)) < 1e-5).all()
 
 def test_burst_must_not_be_reversible():
     with pytest.raises(ValueError):
@@ -264,7 +265,7 @@ def test_burst_reactions_work_with_multiple_samples():
         'species': "A B".split(),
     })
     traj = model.trajectory().eval(init)
-    assert (traj.sel(time=0, species='B') == [0, 0, 0, 0, 0, 1, 2, 3, 4]).all()
+    assert (traj.sel(time=0, species='B') == jnp.array([0, 0, 0, 0, 0, 1, 2, 3, 4])).all()
 
 def test_impurities():
     """Ensure correct split into subspecies"""

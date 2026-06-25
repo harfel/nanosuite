@@ -3,14 +3,16 @@
 These methods work in conjunction with crn.CRN and crn.PartitionedCRN.
 """
 from __future__ import annotations
-from concurrent import futures
+from concurrent import futures # FIXME: remove all old parallelization
 from threading import Lock
 from typing import Iterable, TYPE_CHECKING
 import warnings
+import diffrax
+from jax import jit
+import jax.numpy as jnp
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
-from scipy.integrate import solve_ivp    # type: ignore
 from scipy import optimize               # type: ignore
 import xarray as xr                      # type: ignore
 from .utils import Cache
@@ -67,7 +69,8 @@ class Trajectory:
              cache: Cache|None = None, **options) -> xr.DataArray:
         """Evaluate trajectory at given time points
 
-    Internally, the method uses scipy.integrate.solve_ivp.
+    Internally, the method uses diffrax.diffeqsolve with a Kvaerno5
+    solver and stepsize controlled adaptively via a PIDController.
     Optional keyword arguments (method, atol, rtol, etc.) are
     passed to solve_ivp.
 
@@ -95,7 +98,7 @@ class Trajectory:
 
     options
         any remaining keyword arguments are passed to
-        scipy.optimize.solve_ivp
+        scipy.optimize.solve_ivp FIXME
 
     Returns
     -------
@@ -120,7 +123,7 @@ class Trajectory:
                                                 dtype=float),
                                     name="time")
                 if times.ndim == 1:
-                    return times
+                    return pd.Index(times, name=times.dims[0])
                 raise ValueError("t_eval must have either zero or one dimension.")
             if isinstance(times, Iterable):
                 return pd.Index(times, name="time")
@@ -145,11 +148,12 @@ class Trajectory:
         times: pd.Index = stratify_t_eval(t_eval)
         traj: Iterable[xr.DataArray]
 
-        if len(initial.dims) == 1:
+        if initial.ndim == 1:
             params = self.crn.params.specification_for(initial)
             traj = self._do_integration(initial, params, times, options)
         else:
-            with futures.ProcessPoolExecutor() as executor:
+            # FIXME: parallelize using jax.vmap
+            with DummyExecutor() as executor:
                 def integrate(sample):
                     params = self.crn.params.specification_for(sample)
                     return schedule_computation(sample.data,
@@ -217,11 +221,11 @@ class Trajectory:
 
         options = {'xtol': 1e-7} | options
 
+        initial = self.crn.state(initial)
+
         if data.ndim == 2:
             content_dim = data.dims[0]
             initial = initial[initial.coords[content_dim].isin(data.coords[content_dim])]
-
-        initial = self.crn.state(initial)
 
         cache = Cache(2*len(initial))
 
@@ -229,7 +233,7 @@ class Trajectory:
             return (model-data)/error
 
         def reldev(model):
-            return data/model - 1
+            return data/model - 1  # FIXME: what if model=0 ???  why not (model-data)/data?
 
         residual = wssr if error is not None else reldev
 
@@ -253,28 +257,34 @@ class Trajectory:
                         params: lmfit.Parameters, times: pd.Index, options: dict) -> np.ndarray:
         """Integrate crn for initial condition at given times
 
-        Internally, this method uses the method of van der Schaft et al.
-        (2011) SIAM J Appl Math 73(2):953-973.
+        Internally, this uses the method of van der Schaft et al. (2011) SIAM J Appl Math
+        73(2):953-973.
         """
         # pylint: disable=invalid-name
-        options = {'atol': float(1e-6*initial.max()) or 1e-10, 'rtol': 1e-6} | options
-
         Z = self.crn.complex_graph
         A = self.crn.get_complex_adjacency(params)
         L = np.diag(np.sum(A, axis=0)) - A
 
-        def kinetics(_, state):
+        @diffrax.ODETerm
+        @jit
+        def kinetics(_, state, __):
             # Z.T @ log(state) with convention 0*inf = 0
-            with np.errstate(divide='ignore', invalid='ignore'):
-                tmp = np.log(state, out=-np.inf*np.ones_like(state), where=state != 0)
-                tmp = np.nansum(Z.T*tmp, axis=1)
-            return -Z @ L @ np.exp(tmp)
+            tmp = jnp.where(state != 0, jnp.log(state), -jnp.inf)
+            tmp = jnp.nansum(Z.T*tmp, axis=1)
+            return -Z @ L @ jnp.exp(tmp)
 
-        result = solve_ivp(kinetics, (params['t0'], times[-1]), initial,
-                           t_eval=times, **options)
-        if not result.success:
-            raise RuntimeError(result.message)
-        return result.y
+        solution = diffrax.diffeqsolve(kinetics,
+                                       diffrax.Kvaerno5(),
+                                       float(params['t0']), times[-1],
+                                       0.0001,
+                                       jnp.array(initial),
+                                       saveat=diffrax.SaveAt(ts=times),
+                                       stepsize_controller=diffrax.PIDController(atol=float(1e-7*initial.max()), rtol=1e-7),
+                                       **options)
+        # FIXME: change for errors
+        #if not result.success:
+        #    raise RuntimeError(result.message)
+        return solution.ys.T
 
 
 class Equilibrium:
@@ -311,6 +321,7 @@ class Equilibrium:
         the initial state
         """
         # pylint: disable=invalid-name
+        # FIXME: move implmentation to JAX
         initial = self.crn.state(initial)
         if initial.ndim not in [1, 2]:
             raise ValueError("Initial condition must be 1D or 2D")
@@ -337,8 +348,8 @@ class Equilibrium:
             equilibrium = N.T @ result.x + initial
 
         else:
-            # with DummyExecutor(warn=False) as executor:
-            with futures.ProcessPoolExecutor() as executor:
+            with DummyExecutor(warn=False) as executor:
+                #with futures.ProcessPoolExecutor() as executor:
                 def schedule_computation(sample):
                     params = self.crn.params.specification_for(sample)
                     lnK = np.log(self.crn.get_equilibrium_constants(params))

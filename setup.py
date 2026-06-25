@@ -15,12 +15,14 @@ setup(name='Nanosuite',
       packages=['nanosuite'],
       include_package_data=True,
       install_requires=[
-        "numpy",
+        "diffrax",
+        "jax",
+        "lmfit",
         "openpyxl", # required by pandas.read_excel
         "pandas",
-        "xarray",
-        "scipy",
-        "lmfit",
         "ply",
+        "scipy",
+        "xarray",
+        "git+https://github.com/google-deepmind/xarray_jax.git@v0.1.0",
       ]
 )
