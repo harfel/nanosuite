@@ -8,7 +8,7 @@ from threading import Lock
 from typing import Iterable, TYPE_CHECKING
 import warnings
 import diffrax
-from jax import jit
+from jax import jit, vmap
 import jax.numpy as jnp
 import lmfit                             # type: ignore
 import numpy as np
@@ -97,8 +97,7 @@ class Trajectory:
         the integrator).
 
     options
-        any remaining keyword arguments are passed to
-        scipy.optimize.solve_ivp FIXME
+        any remaining keyword arguments are passed to diffrax.diffeqsolve
 
     Returns
     -------
@@ -148,28 +147,19 @@ class Trajectory:
         times: pd.Index = stratify_t_eval(t_eval)
         traj: Iterable[xr.DataArray]
 
+        # FIXME: can the below be simplified?
         if initial.ndim == 1:
             params = self.crn.params.specification_for(initial)
-            traj = self._do_integration(initial, params, times, options)
+            traj = self._do_integration(initial.data, params, times, options)
         else:
-            # FIXME: parallelize using jax.vmap
-            with DummyExecutor() as executor:
-                def integrate(sample):
-                    params = self.crn.params.specification_for(sample)
-                    return schedule_computation(sample.data,
-                                                {k: v.value for k, v in params.items()},
-                                                times, options)
-
-                @cache.compute
-                def schedule_computation(init, pardict, times, opts):
-                    return executor.submit(self._do_integration, init, pardict, times, opts)
-
-                jobs = [integrate(sample) for sample in initial]
-                traj = [job.result() for job in jobs]
+            params = {k: jnp.array([self.crn.params.specification_for(sample)[k].value
+                                    for sample in initial])
+                      for k in self.crn.params.mapping.columns}
+            integrator = vmap(self._do_integration, in_axes=[0, 0, None, None])
+            traj = integrator(initial.data, params, times, options)
 
         traj = xr.DataArray(traj,
-                            [(dim, initial.indexes[dim]) for dim in initial.dims]
-                            + [times],
+                            [(dim, initial.indexes[dim]) for dim in initial.dims] + [times],
                             name='concentration')
         return self.crn.post_process_state(traj)
 
@@ -260,10 +250,11 @@ class Trajectory:
         Internally, this uses the method of van der Schaft et al. (2011) SIAM J Appl Math
         73(2):953-973.
         """
+        # FIXME: move this into Trajectory.eval
         # pylint: disable=invalid-name
         Z = self.crn.complex_graph
         A = self.crn.get_complex_adjacency(params)
-        L = np.diag(np.sum(A, axis=0)) - A
+        L = jnp.diag(jnp.sum(A, axis=0)) - A
 
         @diffrax.ODETerm
         @jit
@@ -273,15 +264,19 @@ class Trajectory:
             tmp = jnp.nansum(Z.T*tmp, axis=1)
             return -Z @ L @ jnp.exp(tmp)
 
+        stepsize_controller = diffrax.PIDController(atol=jnp.asarray(1e-7*initial.max(), float),
+                                                    rtol=1e-7)
         solution = diffrax.diffeqsolve(kinetics,
                                        diffrax.Kvaerno5(),
-                                       float(params['t0']), times[-1],
+                                       jnp.asarray(params['t0'].value
+                                                   if isinstance(params['t0'], lmfit.Parameter)
+                                                   else params['t0'], float), times[-1],
                                        0.0001,
                                        jnp.array(initial),
                                        saveat=diffrax.SaveAt(ts=times),
-                                       stepsize_controller=diffrax.PIDController(atol=float(1e-7*initial.max()), rtol=1e-7),
+                                       stepsize_controller=stepsize_controller,
                                        **options)
-        # FIXME: change for errors
+        # FIXME: check for errors
         #if not result.success:
         #    raise RuntimeError(result.message)
         return solution.ys.T
