@@ -8,8 +8,9 @@ from threading import Lock
 from typing import Iterable, TYPE_CHECKING
 import warnings
 import diffrax
-from jax import jit, vmap
+from jax import Array, jit, vmap
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
@@ -110,14 +111,14 @@ class Trajectory:
 
             if isinstance(times, tuple):
                 times = tuple(float(t) for t in times[:2]) + tuple(int(t) for t in times[2:])
-                return pd.Index(np.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
+                return pd.Index(jnp.linspace(*((times + (DEFAULT_INTEGRATION_POINTS,))[:3]),
                                             dtype=float),
                                 name="time")
             if isinstance(times, pd.Index):
                 return times
             if isinstance(times, xr.DataArray):
                 if times.ndim == 0:
-                    return pd.Index(np.linspace(self.crn.params['t0'].value,
+                    return pd.Index(jnp.linspace(self.crn.params['t0'].value,
                                                 float(t_eval), DEFAULT_INTEGRATION_POINTS,
                                                 dtype=float),
                                     name="time")
@@ -127,11 +128,11 @@ class Trajectory:
             if isinstance(times, Iterable):
                 return pd.Index(times, name="time")
             if times is None:
-                return pd.Index(np.linspace(self.crn.params['t0'].value,
+                return pd.Index(jnp.linspace(self.crn.params['t0'].value,
                                             DEFAULT_INTEGRATION_END,
                                             DEFAULT_INTEGRATION_POINTS, dtype=float),
                                 name="time")
-            return pd.Index(np.linspace(self.crn.params['t0'].value, t_eval,
+            return pd.Index(jnp.linspace(self.crn.params['t0'].value, t_eval,
                                         DEFAULT_INTEGRATION_POINTS, dtype=float),
                             name="time")
 
@@ -141,26 +142,31 @@ class Trajectory:
         if any(param.value==float('inf') for param in self.crn.params.values()):
             initial = self.crn.perform_burst_reactions(initial)
 
-        if not cache:
-            cache = Cache()
-
         times: pd.Index = stratify_t_eval(t_eval)
         traj: Iterable[xr.DataArray]
 
-        # FIXME: can the below be simplified?
-        if initial.ndim == 1:
-            params = self.crn.params.specification_for(initial)
-            traj = self._do_integration(initial.data, params, times, options)
-        else:
-            params = {k: jnp.array([self.crn.params.specification_for(sample)[k].value
-                                    for sample in initial])
-                      for k in self.crn.params.mapping.columns}
-            integrator = vmap(self._do_integration, in_axes=[0, 0, None, None])
-            traj = integrator(initial.data, params, times, options)
+        # FIXME: should I make use of the cache again, or delete this?
+        if not cache:
+            cache = Cache()
 
+        params = self.crn.params.specification_for(initial)
+
+        # pylint: disable=invalid-name
+        Z = self.crn.complex_graph
+        A = self.crn.get_complex_adjacency(params)
+        L = jnp.diag(jnp.sum(A, axis=0)) - A
+
+        t0 = jnp.array(params['t0'])
+
+        if initial.ndim == 1:
+            integrator = self._do_integration
+        else:
+            integrator = vmap(self._do_integration, in_axes=[0, None, 0, 0, None, None])
+
+        traj = integrator(initial.data, Z, L, t0, times, options)
         traj = xr.DataArray(traj,
                             [(dim, initial.indexes[dim]) for dim in initial.dims] + [times],
-                            name='concentration')
+                            name=initial.name)
         return self.crn.post_process_state(traj)
 
     def fit(self,
@@ -168,7 +174,7 @@ class Trajectory:
             initial: xr.DataArray|dict,
             observe: str|Callable[[xr.DataArray], xr.DataArray]|None = None,
             conversion: Callable[[xr.DataArray], xr.DataArray]|None = None,
-            error: xr.DataArray|None = None,
+            error: float|xr.DataArray|None = None,
             **options) -> lmfit.minimizer.MinimizerResult:
         """Fit model parameters to experimental data
 
@@ -243,43 +249,38 @@ class Trajectory:
         self.crn.params = original
         return fit
 
-    def _do_integration(self, initial: xr.DataArray,
-                        params: lmfit.Parameters, times: pd.Index, options: dict) -> np.ndarray:
+    @staticmethod
+    def _do_integration(initial: xr.DataArray, Z: ArrayLike, L: ArrayLike,  # pylint: disable=invalid-name
+                        t0: ArrayLike, times: pd.Index, options: dict) -> Array:
         """Integrate crn for initial condition at given times
 
         Internally, this uses the method of van der Schaft et al. (2011) SIAM J Appl Math
         73(2):953-973.
         """
-        # FIXME: move this into Trajectory.eval
-        # pylint: disable=invalid-name
-        Z = self.crn.complex_graph
-        A = self.crn.get_complex_adjacency(params)
-        L = jnp.diag(jnp.sum(A, axis=0)) - A
-
-        @diffrax.ODETerm
-        @jit
-        def kinetics(_, state, __):
-            # Z.T @ log(state) with convention 0*inf = 0
-            tmp = jnp.where(state != 0, jnp.log(state), -jnp.inf)
-            tmp = jnp.nansum(Z.T*tmp, axis=1)
-            return -Z @ L @ jnp.exp(tmp)
-
         stepsize_controller = diffrax.PIDController(atol=jnp.asarray(1e-7*initial.max(), float),
                                                     rtol=1e-7)
-        solution = diffrax.diffeqsolve(kinetics,
-                                       diffrax.Kvaerno5(),
-                                       jnp.asarray(params['t0'].value
-                                                   if isinstance(params['t0'], lmfit.Parameter)
-                                                   else params['t0'], float), times[-1],
-                                       0.0001,
-                                       jnp.array(initial),
-                                       saveat=diffrax.SaveAt(ts=times),
-                                       stepsize_controller=stepsize_controller,
-                                       **options)
-        # FIXME: check for errors
-        #if not result.success:
-        #    raise RuntimeError(result.message)
-        return solution.ys.T
+        # FIXME: check for integration errors
+        return diffrax.diffeqsolve(_kinetics,
+                                   diffrax.Kvaerno5(),
+                                   t0, times[-1],
+                                   0.0001,
+                                   jnp.array(initial),
+                                   args=(Z, L),
+                                   saveat=diffrax.SaveAt(ts=times.tolist()),
+                                   stepsize_controller=stepsize_controller,
+                                   **options).ys.T
+
+
+@diffrax.ODETerm
+@jit
+def _kinetics(_, x, args):
+    # pylint: disable=invalid-name
+    # Z.T @ log(x) with convention 0*inf = 0
+    Z, L = args
+    x = jnp.where(x != 0, jnp.log(x), -jnp.inf)
+    x = jnp.nansum(Z.T*x, axis=1)
+    return -Z @ L @ jnp.exp(x)
+
 
 
 class Equilibrium:

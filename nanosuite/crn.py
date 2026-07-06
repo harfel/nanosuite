@@ -6,7 +6,9 @@ from itertools import chain
 import re
 from typing import Any, Callable, Iterable, Mapping, Sequence
 import warnings
+from jax import Array
 import jax.numpy as jnp
+from jax.typing import ArrayLike
 import lmfit                             # type: ignore
 import numpy as np
 import pandas as pd                      # type: ignore
@@ -150,26 +152,35 @@ class ParameterMap(lmfit.Parameters):
         for idx in samples:
             self.mapping.at[idx, name] = new_name
 
-    def specification_for(self, sample: xr.DataArray) -> dict[str, lmfit.Parameter]:
+    def specification_for(self, sample: xr.DataArray) -> dict[str, lmfit.Parameter[float]|Array]:
         """Return specific parameters for a given sample
 
         Parameters
         ----------
-        samples: 1D xarray.DataArray
+        sample: 1D or 2D xarray.DataArray
             sample for the requested parameter specialization
 
         Returns
         -------
             A dictionary that maps general parameter names
-            to the specific parameters defined for the given sample
+            to the specific parameter values defined for the given sample.
+            if sample is 1D, values are scalar. Otherwise, they are
+            jnp.arrays with the same length as the sample.
         """
-        assert sample.ndim == 1
-        if len(self.mapping) == 0:
-            return self
-        content_dim = self.mapping.index.name or next(iter(sample.coords))
-        specification = self.mapping.loc[sample.coords[content_dim].data]
-        return {general: self.get(specification[general], self.zero)
-                for general in self.mapping.columns}
+        content_dim = next(iter(sample.coords))
+        if sample.ndim == 1:
+            return {k: self.get(self.mapping.loc[sample.coords[content_dim].data][k],
+                                self.zero)
+                       if len(self.mapping) else self.get(k, self.zero)
+                    for k in self.mapping.columns}
+        elif sample.ndim == 2:
+            return {k: jnp.array([self.get(self.mapping.loc[s.coords[content_dim].data][k],
+                                           self.zero)
+                                  if len(self.mapping) else self.get(k, self.zero)
+                                  for s in sample])
+                    for k in self.mapping.columns}
+        else:
+            raise ValueError("samples must have one or two dimensions.")
 
     def fix_outside(self, samples: xr.DataArray) -> None:
         """Fix all parameters that do not occur in the given samples
@@ -345,7 +356,7 @@ class CRN:
         ])
 
     def get_complex_adjacency(self, params: dict[str, lmfit.Parameter],
-                              burst: bool=False) -> np.ndarray:
+                              burst: bool=False) -> Array:
         """Augmented complex graph adjacency matrix.
 
         See van der Schaft et al. (2011) SIAM J Appl Math 73(2):953-973
@@ -354,11 +365,16 @@ class CRN:
         Returns
         -------
         Either a 2D jnp array denoting the reaction rate constant matrix among reaction
-        complexes, or a 3D 'stack' of such matrices if params.mapping has a length > 0.
+        complexes, or a 3D 'stack' of such matrices if params.mapping has a length > 0
+        or if params contains array-like values.
         """
         n = len(self.complexes)
-        m = (len(params.mapping) or 1) if isinstance(params, ParameterMap) else 1
-             # FIXME: what if params came from specification_for
+        if isinstance(params, ParameterMap):
+            m = len(params.mapping)
+        elif isinstance((vals := next(iter(params.values()))), Array):
+            m = len(vals)
+        else:
+            m = 1
         entries = []
 
         for (educts, products), (forward, backward) in self.reactions.items():
@@ -391,7 +407,7 @@ class CRN:
         vals = jnp.array([e[2] for e in entries])
 
         result = jnp.zeros((m, n, n)).at[..., rows, cols].add(vals.T)
-        return result if isinstance(params, ParameterMap) and len(params.mapping) else result[0]
+        return result if m > 1 else result[0]
 
     def get_equilibrium_constants(self,
                                   params: dict[str, lmfit.Parameter]|None = None) -> np.ndarray:
@@ -676,7 +692,7 @@ class CRN:
         If the initial condition is a 2D DataArray, the return value is
         a 3D DataArray with trajectories for each initial condition.
 
-        Internally, the method uses scipy.integrate.solve_ivp.
+        Internally, the method uses diffrax.diffeqsolve.
         Optional keyword arguments (method, atol, rtol, etc.) are
         passed to solve_ivp.
 
@@ -748,7 +764,7 @@ class CRN:
 
         iterations = 10*len(self.reactions)
         for _ in range(iterations):
-            if len(state.dims) == 1:
+            if state.ndim == 1:
                 shift = compute_shift(state)
             else:
                 shift = np.array([compute_shift(sample) for sample in state])
