@@ -229,7 +229,7 @@ class Trajectory:
             return (model-data)/error
 
         def reldev(model):
-            return data/model - 1
+            return np.where(model==0, np.where(data==0, 0, 10_000), data/model-1)
 
         residual = wssr if error is not None else reldev
 
