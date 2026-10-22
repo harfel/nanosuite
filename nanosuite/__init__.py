@@ -2,7 +2,7 @@
 
 Toolset for working with experimental DNA nanotechnology.
 """
-__version__ = '0.4.0rc1'
+__version__ = '0.4.0rc2'
 
 
 def _is_notebook() -> bool:
@@ -17,11 +17,10 @@ def _is_notebook() -> bool:
     except NameError:
         return False      # Probably standard Python interpreter
 
-
-if _is_notebook():
-    from . import jupyter
-
 try:
+    if _is_notebook():
+        from . import jupyter
+
     from .mars import Assay
     from .crn import from_string as crn_from_string
 

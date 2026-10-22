@@ -15,12 +15,14 @@ setup(name='Nanosuite',
       packages=['nanosuite'],
       include_package_data=True,
       install_requires=[
+        "holoviews",
+        "hvplot",
+        "lmfit",
         "numpy",
         "openpyxl", # required by pandas.read_excel
         "pandas",
-        "xarray",
-        "scipy",
-        "lmfit",
         "ply",
+        "scipy",
+        "xarray",
       ]
 )
