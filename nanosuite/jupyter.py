@@ -157,10 +157,14 @@ class TrajectoryFitProgress:
         fig = Figure()
         ax = fig.gca()
         gap = len(traj.time)//15 or 1
-        for experiment, model, color in zip(self.data, traj, gradient(self.data)):
+        if self.data.ndim == 2:
             # TODO: it would be nice if this could use Assay colors
-            ax.plot(experiment.time, experiment, '-', c=color)
-            ax.plot(model.time[::gap], model[::gap], 'o', c=color)
+            for experiment, model, color in zip(self.data, traj, list(gradient(self.data))):
+                ax.plot(experiment.time, experiment, '-', c=color)
+                ax.plot(model.time[::gap], model[::gap], 'o', c=color)
+        else:
+            ax.plot(self.data.time, self.data, '-', c='C1')
+            ax.plot(traj.time[::gap], traj[::gap], 'o', c='C1')
         ax.set_xlabel('Time [s]')
         ax.set_ylabel('Concentration [M]')
         ax.set_ylim(None, None)
