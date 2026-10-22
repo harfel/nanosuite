@@ -82,19 +82,30 @@ class Assay:
                 raise ValueError("Arguments setup_file and sample_map are mutually exclusive")
             self.setup = self.read_setup(setup_file)
         elif isinstance(setup, xr.DataArray):
-            self.setup = setup
+            coords = {}
+            sample_coord = next(iter(setup.coords))
+            if 'positive' not in setup.coords:
+                coords['positive'] = (sample_coord, np.full(setup.shape[:1], np.nan))
+            if 'negative' not in setup.coords:
+                coords['negative'] = (sample_coord, np.full(setup.shape[:1], np.nan))
+            if 'group' not in setup.coords:
+                coords['group'] = (sample_coord, np.full(setup.shape[:1], "Unknown"))
+            self.setup = setup.assign_coords(coords)
         elif isinstance(setup, dict) or setup is None:
             self.setup = xr.DataArray(
                 dims=['sample', 'species'],
-                coords={'sample': self.all_rfu.sample.to_series().unique(),
-                        'species': list(setup.keys()) if setup else []})
+                coords={'sample': (samples:=self.all_rfu.sample.to_series().unique()),
+                        'species': list(setup.keys()) if setup else [],
+                        'positive': ('sample', np.full(samples.shape[:1], np.nan)),
+                        'negative': ('sample', np.full(samples.shape[:1], np.nan)),
+                        'group': ('sample', np.full(samples.shape[:1], "Unknown")),
+                }
+            )
         if isinstance(setup, dict):
             for species, values in setup.items():
                 self.setup.loc[..., species] = values
 
-        if 'group' in self.setup.coords:
-            # we copy setup groups to rfu groups
-            self.annotate(group=self.setup.group)
+        self.annotate(group=self.setup.group)
         if groups:
             self.annotate(group=groups)
 
