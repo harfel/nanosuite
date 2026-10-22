@@ -99,7 +99,7 @@ def test_fit():
     model.params['t0'].vary = False
     initial = model.state(A=1)
     traj = model.trajectory()
-    data = xr.DataArray([0.8], {'time': [10]})
+    data = xr.DataArray([1, 0.8], {'time': [0, 10]})
     k = -np.log(0.2)/10
 
     result = traj.fit(data, initial, conversion=lambda state: state.sel(species='Z'))

@@ -1,6 +1,7 @@
 """Unit tests for mars
 """
 from pathlib import Path
+import numpy as np
 import pytest
 import pandas as pd
 import xarray as xr
@@ -13,6 +14,8 @@ def test_init_with_rfu():
     assay = Assay(rfu_file=rfu_file)
     assert assay.all_rfu.shape == (54, 961)
     assert assay.rfu.shape == (42, 961)
+    assert assay.setup.positive.isnull().all()
+    assert assay.setup.negative.isnull().all()
 
 def test_init_with_setup_file():
     assay = Assay(setup_file=setup_file, rfu_file=rfu_file)
@@ -66,8 +69,10 @@ def test_init_with_setup_dict():
         "Probe": 9*[1e-8] + [0, 1e-8, 1e-8, 8e-9, 6e-9, 4e-9, 2e-9, 0, 0],
         "Fuel": 9*[1.5e-8] + [0, 0, 0, 1.3e-8, 1.1e-8, 9e-9, 7e-9, 5e-9, 5e-9],
         "Signal": 12*[0] + [2e-9, 4e-9, 6e-9, 8e-9, 1e-8, 1e-8],
+        "Probe_1": 4*[1e-8] + 6*[0] + [1e-8, 1e-8, 8e-9, 6e-9, 4e-9, 2e-9, 0, 0],
+        "Probe_2": 4*[0] + 5*[1e-8] + 9*[0],
     })
-    assert (abs(assay_1.setup-assay_2.setup)<1e-21).all()
+    assert (abs(assay_1.setup.values-assay_2.setup.values)<1e-21).all()
 
 def test_init_setup_file_and_groups_are_exclusive():
     with pytest.raises(ValueError):
